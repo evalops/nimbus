@@ -6,6 +6,7 @@ import time
 
 from smith.common.security import (
     decode_agent_token,
+    decode_agent_token_payload,
     mint_agent_token,
     mint_cache_token,
     verify_cache_token,
@@ -36,9 +37,11 @@ def test_verify_cache_token_wrong_secret() -> None:
 
 def test_agent_token_roundtrip() -> None:
     secret = "agent-secret"
-    token = mint_agent_token(agent_id="agent-1", secret=secret, ttl_seconds=60)
+    token = mint_agent_token(agent_id="agent-1", secret=secret, ttl_seconds=60, version=3)
     subject = decode_agent_token(secret, token)
     assert subject == "agent-1"
+    payload = decode_agent_token_payload(secret, token)
+    assert payload == ("agent-1", 3)
 
 
 def test_agent_token_invalid_secret() -> None:

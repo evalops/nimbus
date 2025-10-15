@@ -128,3 +128,16 @@ class LogIngestRequest(BaseModel):
     """Batch of log entries sent to the logging pipeline."""
 
     entries: list[LogEntry]
+
+
+class AgentTokenMintRequest(BaseModel):
+    agent_id: str
+    ttl_seconds: int = Field(ge=60, default=3600)
+
+
+class AgentTokenResponse(BaseModel):
+    agent_id: str
+    token: str
+    expires_at: datetime
+    ttl_seconds: int
+    version: int

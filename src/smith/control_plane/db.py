@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Column,
+    Integer,
     DateTime,
     MetaData,
     String,
@@ -45,6 +46,16 @@ jobs_table = Table(
     Column("completed_at", DateTime(timezone=True), nullable=True),
     Column("last_message", Text, nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+
+agent_credentials_table = Table(
+    "agent_credentials",
+    metadata,
+    Column("agent_id", String(length=128), primary_key=True),
+    Column("token_version", Integer, nullable=False, default=1),
+    Column("rotated_at", DateTime(timezone=True), nullable=False),
+    Column("ttl_seconds", Integer, nullable=False),
 )
 
 
@@ -137,3 +148,36 @@ async def job_status_counts(session: AsyncSession) -> dict[str, int]:
     stmt = select(jobs_table.c.status, func.count().label("count")).group_by(jobs_table.c.status)
     result = await session.execute(stmt)
     return {row.status: row.count for row in result}
+
+
+async def get_agent_token_record(session: AsyncSession, agent_id: str) -> Optional[dict]:
+    stmt = select(agent_credentials_table).where(agent_credentials_table.c.agent_id == agent_id)
+    result = await session.execute(stmt)
+    row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def rotate_agent_token(
+    session: AsyncSession, agent_id: str, ttl_seconds: int
+) -> int:
+    existing = await get_agent_token_record(session, agent_id)
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        version = 1
+        stmt = insert(agent_credentials_table).values(
+            agent_id=agent_id,
+            token_version=version,
+            rotated_at=now,
+            ttl_seconds=ttl_seconds,
+        )
+        await session.execute(stmt)
+        return version
+
+    version = int(existing.get("token_version", 0)) + 1
+    stmt = (
+        update(agent_credentials_table)
+        .where(agent_credentials_table.c.agent_id == agent_id)
+        .values(token_version=version, rotated_at=now, ttl_seconds=ttl_seconds)
+    )
+    await session.execute(stmt)
+    return version

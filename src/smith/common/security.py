@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 import time
 
 import jwt
@@ -77,12 +77,15 @@ def verify_cache_token(secret: str, token: str) -> Optional[CacheToken]:
     )
 
 
-def mint_agent_token(*, agent_id: str, secret: str, ttl_seconds: int = 3600) -> str:
+def mint_agent_token(
+    *, agent_id: str, secret: str, ttl_seconds: int = 3600, version: int = 1
+) -> str:
     now = int(time.time())
     payload = {
         "sub": agent_id,
         "iat": now,
         "exp": now + ttl_seconds,
+        "ver": version,
     }
     return jwt.encode(payload, secret, algorithm="HS256")
 
@@ -96,6 +99,22 @@ def decode_agent_token(secret: str, token: str) -> Optional[str]:
     if not isinstance(subject, str):
         return None
     return subject
+
+
+def decode_agent_token_payload(secret: str, token: str) -> Optional[Tuple[str, int]]:
+    try:
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        return None
+    version = payload.get("ver")
+    if isinstance(version, int):
+        return subject, version
+    if isinstance(version, str) and version.isdigit():
+        return subject, int(version)
+    return subject, 0
 
 
 def _encode(payload: bytes, signature: str) -> str:

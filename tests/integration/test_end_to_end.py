@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+import jwt
 import pytest
 
 from smith.cache_proxy.app import create_app as create_cache_app
 from smith.common.schemas import RunnerRegistrationToken
-from smith.common.security import mint_agent_token, mint_cache_token
+from smith.common.security import mint_cache_token
 from smith.control_plane.app import create_app as create_control_app
 from smith.logging_pipeline.app import create_app as create_logging_app
 
@@ -176,8 +177,23 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         )
         assert response.status_code == 202
 
-        agent_token = mint_agent_token(agent_id="agent-1", secret=agent_secret)
-        headers = {"Authorization": f"Bearer {agent_token}"}
+        admin_token = jwt.encode(
+            {
+                "sub": "admin",
+                "iat": int(datetime.now(timezone.utc).timestamp()),
+                "exp": int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp()),
+            },
+            env["SMITH_JWT_SECRET"],
+            algorithm="HS256",
+        )
+        mint_response = await control_client.post(
+            "/api/agents/token",
+            json={"agent_id": "agent-1", "ttl_seconds": 900},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert mint_response.status_code == 200
+        minted_payload = mint_response.json()
+        headers = {"Authorization": f"Bearer {minted_payload['token']}"}
         lease_response = await control_client.post(
             "/api/jobs/lease",
             json={"agent_id": "agent-1", "agent_version": "0.1", "capabilities": ["firecracker"]},
@@ -236,6 +252,31 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         fetch_response = await cache_client.get("/cache/artifacts/output.txt", headers=cache_headers)
         assert fetch_response.status_code == 200
         assert fetch_response.content == b"hello"
+
+        rotate_response = await control_client.post(
+            "/api/agents/token",
+            json={"agent_id": "agent-1", "ttl_seconds": 900},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert rotate_response.status_code == 200
+        rotated_payload = rotate_response.json()
+
+        old_headers = headers
+        old_lease = await control_client.post(
+            "/api/jobs/lease",
+            json={"agent_id": "agent-1", "agent_version": "0.1", "capabilities": ["firecracker"]},
+            headers=old_headers,
+        )
+        assert old_lease.status_code == 403
+
+        new_headers = {"Authorization": f"Bearer {rotated_payload['token']}"}
+        empty_lease = await control_client.post(
+            "/api/jobs/lease",
+            json={"agent_id": "agent-1", "agent_version": "0.1", "capabilities": ["firecracker"]},
+            headers=new_headers,
+        )
+        assert empty_lease.status_code == 200
+        assert empty_lease.json()["job"] is None
 
         head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
         assert head_response.status_code == 200

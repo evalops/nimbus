@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -16,6 +17,8 @@ import structlog
 
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.schemas import (
+    AgentTokenMintRequest,
+    AgentTokenResponse,
     JobAssignment,
     JobLeaseRequest,
     JobLeaseResponse,
@@ -24,7 +27,7 @@ from ..common.schemas import (
     WebhookWorkflowJobEvent,
 )
 from ..common.settings import ControlPlaneSettings
-from ..common.security import decode_agent_token
+from ..common.security import decode_agent_token_payload, mint_agent_token
 from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job
@@ -77,17 +80,42 @@ async def get_session(state: AppState = Depends(_get_state)) -> AsyncSession:
         yield session
 
 
-def verify_agent_token(
+async def verify_agent_token(
+    request: Request,
+    state: AppState = Depends(_get_state),
+    settings: ControlPlaneSettings = Depends(get_settings),
+) -> str:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    token = auth_header.split(" ", 1)[1]
+    decoded = decode_agent_token_payload(settings.agent_token_secret, token)
+    if decoded is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+    agent_id, version = decoded
+    async with state.session_factory() as session:  # type: ignore[call-arg]
+        record = await db.get_agent_token_record(session, agent_id)
+    if record:
+        expected_version = int(record.get("token_version", 0))
+        if version != expected_version:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token revoked")
+    elif version != 0:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token revoked")
+    return agent_id
+
+
+def verify_admin_token(
     request: Request, settings: ControlPlaneSettings = Depends(get_settings)
 ) -> str:
     auth_header = request.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    agent_id = decode_agent_token(settings.agent_token_secret, token)
-    if not agent_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
-    return agent_id
+    decoded = decode_agent_token_payload(settings.jwt_secret, token)
+    if decoded is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
+    subject, _ = decoded
+    return subject
 
 
 @asynccontextmanager
@@ -252,6 +280,39 @@ def create_app() -> FastAPI:
             "queue_length": queue_length,
             "jobs_by_status": counts,
         }
+
+    @app.post("/api/agents/token", response_model=AgentTokenResponse)
+    async def mint_agent_token_endpoint(
+        request_body: AgentTokenMintRequest,
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+        settings: ControlPlaneSettings = Depends(get_settings),
+    ) -> AgentTokenResponse:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            version = await db.rotate_agent_token(session, request_body.agent_id, request_body.ttl_seconds)
+            await session.commit()
+
+        token = mint_agent_token(
+            agent_id=request_body.agent_id,
+            secret=settings.agent_token_secret,
+            ttl_seconds=request_body.ttl_seconds,
+            version=version,
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=request_body.ttl_seconds)
+        LOGGER.info(
+            "Minted agent token",
+            agent_id=request_body.agent_id,
+            version=version,
+            ttl=request_body.ttl_seconds,
+        )
+        return AgentTokenResponse(
+            agent_id=request_body.agent_id,
+            token=token,
+            expires_at=expires_at,
+            ttl_seconds=request_body.ttl_seconds,
+            version=version,
+        )
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:
