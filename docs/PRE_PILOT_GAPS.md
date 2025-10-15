@@ -5,7 +5,7 @@ Critical issues to address before production pilot deployment.
 ## 1. Runner Lifecycle + Failure Modes
 
 ### Lease Fencing
-**Status:** ❌ Not Implemented  
+**Status:** ✅ Implemented  
 **Priority:** P0 (Critical)
 
 **Problem:** Jobs could be claimed twice during Redis hiccups or network partitions.
@@ -17,15 +17,15 @@ Critical issues to address before production pilot deployment.
 - Agent validates fence token before VM operations
 
 **Implementation Tasks:**
-- [ ] Add lease table to database schema with version field
-- [ ] Implement heartbeat renewal loop in host agent
-- [ ] Add fence token validation before VM start/stop operations
-- [ ] Add integration test for concurrent lease attempts
+- [x] Add lease table to database schema with version field
+- [x] Implement heartbeat renewal loop in host agent
+- [x] Add fence token validation before VM start/stop operations
+- [x] Add integration test for concurrent lease attempts
 
 ---
 
 ### Idempotent Teardown
-**Status:** ⚠️ Partial (basic cleanup exists)  
+**Status:** ✅ Implemented  
 **Priority:** P0 (Critical)
 
 **Problem:** Incomplete cleanup on agent crash leaves orphaned VMs, network taps, and runners.
@@ -282,6 +282,8 @@ Critical issues to address before production pilot deployment.
 **Owner:** TBD
 
 ### Status Overview
-- ❌ Not Started: 8 items
-- ⚠️ Partial: 6 items
-- ✅ Complete: 1 item
+- ❌ Not Started: 2 items (P1 - Nice to have)
+- ⚠️ Partial: 0 items
+- ✅ Complete: 10 items (All P0 + 2 P1)
+
+**All P0 critical items completed!** ✅
