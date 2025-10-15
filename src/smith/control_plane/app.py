@@ -10,9 +10,11 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
 
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.schemas import (
     JobAssignment,
     JobLeaseRequest,
@@ -27,6 +29,9 @@ from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job
 from ..common.security import mint_cache_token
+REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_requests_total", "Total control plane requests"))
+JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_job_leases_total", "Total leased jobs"))
+QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_control_plane_queue_length", "Current queue length"))
 
 LOGGER = logging.getLogger("smith.control_plane")
 
@@ -119,6 +124,7 @@ def create_app() -> FastAPI:
         session: AsyncSession = Depends(get_session),
         settings: ControlPlaneSettings = Depends(get_settings),
     ) -> Response:
+        REQUEST_COUNTER.inc()
         raw_body = await request.body()
         signature = request.headers.get("x-hub-signature-256")
         if not _verify_github_signature(settings.github_webhook_secret, raw_body, signature):
@@ -164,6 +170,8 @@ def create_app() -> FastAPI:
         await enqueue_job(state.redis, assignment)
         await db.record_job_queued(session, assignment)
         await session.commit()
+        queue_length = await state.redis.llen(QUEUE_KEY)
+        QUEUE_LENGTH_GAUGE.set(queue_length)
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
     @app.post("/api/jobs/lease", response_model=JobLeaseResponse)
@@ -173,6 +181,7 @@ def create_app() -> FastAPI:
         redis_client: Redis = Depends(get_redis),
         session: AsyncSession = Depends(get_session),
     ) -> JobLeaseResponse:
+        REQUEST_COUNTER.inc()
         if token_agent_id != request_body.agent_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
         assignment = await lease_job(redis_client)
@@ -182,6 +191,9 @@ def create_app() -> FastAPI:
             "Leased job",
             extra={"job_id": assignment.job_id, "agent_id": request_body.agent_id},
         )
+        JOB_LEASE_COUNTER.inc()
+        queue_length = await redis_client.llen(QUEUE_KEY)
+        QUEUE_LENGTH_GAUGE.set(queue_length)
         await db.mark_job_leased(
             session,
             job_id=assignment.job_id,
@@ -196,6 +208,7 @@ def create_app() -> FastAPI:
         token_agent_id: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> None:
+        REQUEST_COUNTER.inc()
         if token_agent_id != status_update.agent_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
         LOGGER.info(
@@ -215,6 +228,7 @@ def create_app() -> FastAPI:
         _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> list[JobRecord]:
+        REQUEST_COUNTER.inc()
         limit = max(1, min(limit, 200))
         rows = await db.list_recent_jobs(session, limit=limit)
         return [JobRecord.model_validate(row) for row in rows]
@@ -225,12 +239,17 @@ def create_app() -> FastAPI:
         session: AsyncSession = Depends(get_session),
         redis_client: Redis = Depends(get_redis),
     ) -> dict[str, object]:
+        REQUEST_COUNTER.inc()
         queue_length = await redis_client.llen(QUEUE_KEY)
         counts = await db.job_status_counts(session)
         return {
             "queue_length": queue_length,
             "jobs_by_status": counts,
         }
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics_endpoint() -> PlainTextResponse:
+        return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     return app
 
