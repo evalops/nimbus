@@ -61,6 +61,30 @@ Use the helper script to download Firecracker kernel and root filesystem images:
 python scripts/setup_firecracker_assets.py ./artifacts
 ```
 
+### Rootfs build pipeline
+
+1. Create a YAML configuration that describes your rootfs versions (example `rootfs.yaml`):
+   ```yaml
+   rootfs:
+     output_dir: ./artifacts/rootfs
+     default_version: dev
+     versions:
+       - name: dev
+         base_url: https://example.com/rootfs-dev.ext4
+         overlay_dir: ./rootfs_overlays/dev
+       - name: ci
+         base_path: ./prebuilt/rootfs-ci.ext4
+         description: CI ready image
+   ```
+2. Build all configured versions (downloads, verifies, and stages overlays):
+   ```bash
+   uv run python -m smith.rootfs.cli build --config rootfs.yaml
+   ```
+3. Switch the active rootfs version when rolling out updates:
+   ```bash
+   uv run python -m smith.rootfs.cli activate --config rootfs.yaml ci
+   ```
+
 ## Roadmap
 - Implement multi-tenant cache usage metrics and eviction policies.
 - Support configurable Firecracker rootfs build pipelines and image updates.
