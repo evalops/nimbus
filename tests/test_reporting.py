@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from smith.cli.report import summarize_cache, summarize_jobs, summarize_logs
+
+
+def test_summarize_jobs_counts_and_timeline() -> None:
+    status_payload = {"queue_length": 3, "jobs_by_status": {"queued": 2, "running": 1}}
+    recent_jobs = [
+        {
+            "job_id": 1,
+            "status": "queued",
+            "agent_id": None,
+            "repo_full_name": "acme/repo",
+            "updated_at": "2024-01-01T10:00:00+00:00",
+        },
+        {
+            "job_id": 2,
+            "status": "running",
+            "agent_id": "agent-1",
+            "repo_full_name": "acme/repo",
+            "updated_at": "2024-01-01T11:00:00+00:00",
+        },
+        {
+            "job_id": 3,
+            "status": "queued",
+            "agent_id": "agent-2",
+            "repo_full_name": "acme/other",
+            "updated_at": "2024-01-01T12:00:00+00:00",
+        },
+    ]
+
+    summary = summarize_jobs(status_payload, recent_jobs)
+    assert summary["queue_length"] == 3
+    assert summary["jobs_by_status"] == {"queued": 2, "running": 1}
+    assert summary["top_repositories"] == {"acme/repo": 2, "acme/other": 1}
+    assert summary["top_agents"]["agent-1"] == 1
+    assert summary["top_agents"]["agent-2"] == 1
+    assert summary["top_agents"]["unassigned"] == 1
+    assert summary["recent_timeline"][0]["job_id"] == 3
+
+
+def test_summarize_cache_aggregates_hits_and_bytes() -> None:
+    status_payload = {
+        "backend": "local",
+        "storage_path": "/cache",
+        "total_entries": 10,
+        "top_entries": [
+            {
+                "cache_key": "org/project/a",
+                "total_hits": 5,
+                "total_misses": 1,
+                "total_bytes": 1024,
+            },
+            {
+                "cache_key": "org/project/b",
+                "total_hits": 2,
+                "total_misses": 0,
+                "total_bytes": 2048,
+            },
+        ],
+    }
+
+    summary = summarize_cache(status_payload, top=2)
+    assert summary["backend"] == "local"
+    assert summary["top_hits"] == 7
+    assert summary["top_misses"] == 1
+    assert summary["top_bytes"] == 3072
+    assert len(summary["top_entries"]) == 2
+
+
+def test_summarize_logs_counts_levels_and_samples() -> None:
+    log_entries = [
+        {"job_id": 1, "level": "info", "timestamp": "t1", "message": "log1"},
+        {"job_id": 1, "level": "error", "timestamp": "t2", "message": "log2"},
+        {"job_id": 2, "level": "info", "timestamp": "t3", "message": "log3"},
+    ]
+
+    summary = summarize_logs(log_entries)
+    assert summary["entry_count"] == 3
+    assert summary["levels"] == {"info": 2, "error": 1}
+    assert summary["jobs"][1] == 2
+    assert summary["jobs"][2] == 1
+    assert len(summary["samples"]) == 3

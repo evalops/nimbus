@@ -85,6 +85,30 @@ python scripts/setup_firecracker_assets.py ./artifacts
    uv run python -m smith.rootfs.cli activate --config rootfs.yaml ci
    ```
 
+## Reporting CLI
+
+Use the reporting CLI to generate quick snapshots across services:
+
+- Jobs summary:
+  ```bash
+  python -m smith.cli.report jobs --base-url http://localhost:8000 --token $SMITH_JWT_SECRET
+  ```
+- Cache usage overview:
+  ```bash
+  python -m smith.cli.report cache --cache-url http://localhost:8001
+  ```
+- Log ingestion summary for a specific job:
+  ```bash
+  python -m smith.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
+  ```
+- Full overview combining jobs, cache, and logs:
+  ```bash
+  python -m smith.cli.report overview \
+    --base-url http://localhost:8000 --token $SMITH_JWT_SECRET \
+    --cache-url http://localhost:8001 \
+    --logs-url http://localhost:8002
+  ```
+
 ## Roadmap
 - Implement multi-tenant cache usage metrics and eviction policies.
 - Support configurable Firecracker rootfs build pipelines and image updates.
