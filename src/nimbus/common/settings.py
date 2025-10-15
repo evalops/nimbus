@@ -124,6 +124,7 @@ class CacheProxySettings(BaseSettings):
     s3_circuit_breaker_failures: int = env_field(5, "NIMBUS_CACHE_S3_CIRCUIT_FAILURES")
     s3_circuit_breaker_reset_seconds: float = env_field(30.0, "NIMBUS_CACHE_S3_CIRCUIT_RESET")
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_CACHE_MAX_BYTES")
+    max_artifact_bytes: int = env_field(100 * 1024 * 1024, "NIMBUS_CACHE_MAX_ARTIFACT_BYTES")  # 100MB default
     cache_eviction_batch_size: int = env_field(100, "NIMBUS_CACHE_EVICTION_BATCH")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
@@ -141,6 +142,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
+    log_query_max_hours: int = env_field(168, "NIMBUS_LOG_QUERY_MAX_HOURS")  # 7 days default
     shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")

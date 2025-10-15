@@ -470,6 +470,16 @@ def create_app() -> FastAPI:
         if not validate_cache_scope(cache_token, "push", org_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks push scope")
         
+        # Check Content-Length for size limit
+        content_length = request.headers.get("content-length")
+        if content_length:
+            size = int(content_length)
+            if size > state.settings.max_artifact_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Artifact exceeds max size: {state.settings.max_artifact_bytes} bytes",
+                )
+        
         # Namespace cache key by org to prevent cross-org access
         namespaced_key = f"org-{org_id}/{cache_key}"
         REQUEST_COUNTER.inc()
@@ -567,5 +577,24 @@ def create_app() -> FastAPI:
     async def metrics_endpoint(state: CacheProxyState = Depends(get_state)) -> PlainTextResponse:
         TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
         return PlainTextResponse(GLOBAL_REGISTRY.render())
+
+    @app.get("/healthz", status_code=status.HTTP_200_OK)
+    async def health_check(state: CacheProxyState = Depends(get_state)) -> dict:
+        """Health check for K8s readiness/liveness probes."""
+        health = {"status": "healthy", "checks": {}}
+        
+        # Check backend availability
+        try:
+            backend_status = state.backend.status()
+            health["checks"]["backend"] = backend_status.get("backend", "unknown")
+            health["checks"]["writable"] = backend_status.get("writable", False)
+        except Exception as exc:
+            health["checks"]["backend"] = f"error: {str(exc)}"
+            health["status"] = "unhealthy"
+        
+        if health["status"] != "healthy":
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=health)
+        
+        return health
 
     return app

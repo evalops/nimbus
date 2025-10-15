@@ -303,9 +303,30 @@ async def lifespan(app: FastAPI):
         distributed_limiter=distributed_limiter,
     )
     app.state.container = container
+    
+    # Start background cleanup task for expired SSH sessions
+    async def cleanup_ssh_sessions():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                async with session_factory() as session:
+                    count = await db.expire_stale_ssh_sessions(session)
+                    await session.commit()
+                    if count > 0:
+                        LOGGER.info("Expired SSH sessions cleaned up", count=count)
+            except Exception as exc:
+                LOGGER.warning("SSH cleanup task error", error=str(exc))
+    
+    cleanup_task = asyncio.create_task(cleanup_ssh_sessions())
+    
     try:
         yield
     finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         await redis.aclose()
         await http_client.aclose()
         await engine.dispose()
@@ -846,6 +867,36 @@ def create_app() -> FastAPI:
         async with state.session_factory() as session:  # type: ignore[call-arg]
             records = await db.list_agent_token_audit(session, limit=limit)
         return [AgentTokenAuditRecord(**row) for row in records]
+
+    @app.get("/healthz", status_code=status.HTTP_200_OK)
+    async def health_check(
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        """Health check for K8s readiness/liveness probes."""
+        health = {"status": "healthy", "checks": {}}
+        
+        # Check Redis
+        try:
+            await state.redis.ping()
+            health["checks"]["redis"] = "ok"
+        except Exception as exc:
+            health["checks"]["redis"] = f"error: {str(exc)}"
+            health["status"] = "unhealthy"
+        
+        # Check database
+        try:
+            async with state.session_factory() as session:
+                from sqlalchemy import text
+                await session.execute(text("SELECT 1"))
+            health["checks"]["database"] = "ok"
+        except Exception as exc:
+            health["checks"]["database"] = f"error: {str(exc)}"
+            health["status"] = "unhealthy"
+        
+        if health["status"] != "healthy":
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=health)
+        
+        return health
 
     return app
 

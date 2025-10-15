@@ -91,16 +91,25 @@ class PipelineState:
         repo_id: Optional[int] = None,
         contains: Optional[str] = None,
         limit: int = 100,
+        hours_back: Optional[int] = None,
     ) -> list[dict[str, object]]:
         limit = max(1, min(limit, 500))
+        
+        # Enforce time window to prevent expensive scans
+        if hours_back is None:
+            hours_back = self.settings.log_query_max_hours
+        hours_back = min(hours_back, self.settings.log_query_max_hours)
+        
         with TRACER.start_as_current_span("logging_pipeline.query") as span:
             span.set_attribute("nimbus.query.limit", limit)
+            span.set_attribute("nimbus.query.hours_back", hours_back)
             query_parts = [
                 "SELECT job_id, org_id, repo_id, ts, level, message",
                 f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_table}",
                 "WHERE 1",
+                "AND ts >= now() - INTERVAL {hours_back:UInt32} HOUR",
             ]
-            params: dict[str, object] = {"limit": limit}
+            params: dict[str, object] = {"limit": limit, "hours_back": hours_back}
 
             if job_id is not None:
                 query_parts.append("AND job_id = {job_id:UInt64}")
@@ -278,6 +287,7 @@ def create_app() -> FastAPI:
         repo_id: Optional[int] = None,
         contains: Optional[str] = None,
         limit: int = 100,
+        hours_back: Optional[int] = None,
         token: CacheToken = Depends(require_cache_token),
         state: PipelineState = Depends(get_state),
     ) -> list[dict[str, object]]:
@@ -289,11 +299,36 @@ def create_app() -> FastAPI:
         QUERY_REQUEST_COUNTER.inc()
         # Always scope queries to the authenticated org - ignore client-supplied org_id
         return await state.query_logs(
-            job_id=job_id, org_id=org_id, repo_id=repo_id, contains=contains, limit=limit
+            job_id=job_id, org_id=org_id, repo_id=repo_id, contains=contains, limit=limit, hours_back=hours_back
         )
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:
         return PlainTextResponse(GLOBAL_REGISTRY.render())
+
+    @app.get("/healthz", status_code=status.HTTP_200_OK)
+    async def health_check(state: PipelineState = Depends(get_state)) -> dict:
+        """Health check for K8s readiness/liveness probes."""
+        health = {"status": "healthy", "checks": {}}
+        
+        # Check ClickHouse
+        try:
+            response = await state.http.get(
+                f"{state.settings.clickhouse_url}/?query=SELECT+1",
+                auth=state._auth,
+            )
+            if response.is_success:
+                health["checks"]["clickhouse"] = "ok"
+            else:
+                health["checks"]["clickhouse"] = f"error: HTTP {response.status_code}"
+                health["status"] = "unhealthy"
+        except Exception as exc:
+            health["checks"]["clickhouse"] = f"error: {str(exc)}"
+            health["status"] = "unhealthy"
+        
+        if health["status"] != "healthy":
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=health)
+        
+        return health
 
     return app
