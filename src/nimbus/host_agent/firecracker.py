@@ -16,6 +16,7 @@ import structlog
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
 from ..common.security import verify_cache_token
+from .reaper import teardown_job_resources
 
 LOGGER = structlog.get_logger("nimbus.host_agent.firecracker")
 
@@ -140,9 +141,12 @@ class FirecrackerLauncher:
                     )
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
-                if tap_created:
-                    await self._teardown_network(network)
-                    await self._teardown_tap_device(tap_name)
+                # Idempotent teardown - safe to call even if setup partially failed
+                await teardown_job_resources(
+                    assignment.job_id,
+                    self._settings.tap_device_prefix,
+                    vm_process=process,
+                )
 
     def _allocate_tap_name(self, job_id: int) -> str:
         suffix = job_id % 10000

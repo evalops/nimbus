@@ -19,6 +19,7 @@ from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from ..optional.ssh_dns import SSHSessionConfig
+from .reaper import reap_stale_resources
 
 LOGGER = structlog.get_logger("nimbus.host_agent")
 TRACER = trace.get_tracer("nimbus.host_agent")
@@ -61,6 +62,14 @@ class HostAgent:
     async def run(self) -> None:
         self._running = True
         await self._ensure_metrics_server()
+        
+        # Run reaper on startup to clean up stale resources from previous crashes
+        try:
+            stats = await reap_stale_resources(tap_prefix=self._settings.tap_device_prefix)
+            LOGGER.info("Startup reaper completed", stats=stats)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Startup reaper failed", error=str(exc))
+        
         while self._running:
             await self._sync_ssh_sessions()
             try:
