@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from smith.common.security import mint_cache_token, verify_cache_token
+import time
+
+from smith.common.security import (
+    decode_agent_token,
+    mint_agent_token,
+    mint_cache_token,
+    verify_cache_token,
+)
 
 
 def test_mint_and_verify_cache_token_roundtrip() -> None:
@@ -25,3 +32,22 @@ def test_verify_cache_token_expired() -> None:
 def test_verify_cache_token_wrong_secret() -> None:
     token = mint_cache_token(secret="first", organization_id=1, ttl_seconds=60)
     assert verify_cache_token("second", token.token) is None
+
+
+def test_agent_token_roundtrip() -> None:
+    secret = "agent-secret"
+    token = mint_agent_token(agent_id="agent-1", secret=secret, ttl_seconds=60)
+    subject = decode_agent_token(secret, token)
+    assert subject == "agent-1"
+
+
+def test_agent_token_invalid_secret() -> None:
+    token = mint_agent_token(agent_id="agent-2", secret="alpha", ttl_seconds=60)
+    assert decode_agent_token("beta", token) is None
+
+
+def test_agent_token_expired() -> None:
+    secret = "expiring"
+    token = mint_agent_token(agent_id="agent-3", secret=secret, ttl_seconds=1)
+    time.sleep(2)
+    assert decode_agent_token(secret, token) is None

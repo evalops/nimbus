@@ -19,7 +19,8 @@ dependencies = [
   "sqlalchemy>=2.0,<2.1",
   "asyncpg>=0.29,<0.30",
   "python-dotenv>=1.0,<1.1",
-  "PyJWT[crypto]>=2.8,<2.9"
+  "PyJWT[crypto]>=2.8,<2.9",
+  "boto3>=1.35,<1.36"
 ]
 
 [project.optional-dependencies]

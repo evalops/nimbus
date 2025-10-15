@@ -6,7 +6,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
 - **Host Agent:** Polls the control plane for work, manages Firecracker microVMs, and forwards Firecracker logs to the logging pipeline when configured.
 - Ensure host agents have permissions to create tap devices and bridges (requires `ip`/`iproute2`).
-- **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem with HMAC-signed tokens; drop-in replacement for a future MinIO/Ceph proxy.
+- **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem or an S3-compatible endpoint (MinIO/Ceph) with HMAC-signed tokens.
 - **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
 
@@ -15,7 +15,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    pip install -e .
    ```
-2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `SMITH_GITHUB_WEBHOOK_SECRET` and `SMITH_CACHE_SHARED_SECRET`).
+2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `SMITH_GITHUB_WEBHOOK_SECRET`, `SMITH_AGENT_TOKEN_SECRET`, and `SMITH_CACHE_SHARED_SECRET`).
 3. Launch services with UVicorn (example):
    ```bash
    uvicorn smith.control_plane.main:app --reload
@@ -40,6 +40,15 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    python -m smith.cli.cache --secret $SMITH_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
    ```
+9. Mint an agent token for a host:
+   ```bash
+   python -m smith.cli.auth --agent-id agent-001 --secret $SMITH_AGENT_TOKEN_SECRET --ttl 3600
+   ```
+
+### Cache proxy backends
+
+- Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
+- S3-compatible storage: configure `SMITH_CACHE_S3_ENDPOINT`, `SMITH_CACHE_S3_BUCKET`, optionally `SMITH_CACHE_S3_REGION`, and provide credentials via standard AWS environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:
@@ -48,9 +57,9 @@ python scripts/setup_firecracker_assets.py ./artifacts
 ```
 
 ## Roadmap
-- Replace the simulator with real Firecracker lifecycle management.
-- Integrate cache tokens and MinIO/Ceph backends.
-- Harden authentication (JWT scoped per agent, webhook signature validation).
-- Build a UI/CLI for monitoring jobs and searching logs.
+- Implement multi-tenant cache usage metrics and eviction policies.
+- Support configurable Firecracker rootfs build pipelines and image updates.
+- Expose Prometheus metrics for control plane, cache proxy, and host agents.
+- Add automated integration tests that exercise cache, logging, and Firecracker workflows end-to-end.
 
 Smith is a work in progress; contributions and suggestions are welcome.

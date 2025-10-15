@@ -8,6 +8,9 @@ import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import time
+
+import jwt
 
 from .schemas import CacheToken
 
@@ -72,6 +75,27 @@ def verify_cache_token(secret: str, token: str) -> Optional[CacheToken]:
         expires_at=expires_at,
         scope=payload.get("scope", "read_write"),
     )
+
+
+def mint_agent_token(*, agent_id: str, secret: str, ttl_seconds: int = 3600) -> str:
+    now = int(time.time())
+    payload = {
+        "sub": agent_id,
+        "iat": now,
+        "exp": now + ttl_seconds,
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def decode_agent_token(secret: str, token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        return None
+    return subject
 
 
 def _encode(payload: bytes, signature: str) -> str:

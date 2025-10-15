@@ -22,6 +22,7 @@ from ..common.schemas import (
     WebhookWorkflowJobEvent,
 )
 from ..common.settings import ControlPlaneSettings
+from ..common.security import decode_agent_token
 from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job
@@ -72,13 +73,15 @@ async def get_session(state: AppState = Depends(_get_state)) -> AsyncSession:
 
 def verify_agent_token(
     request: Request, settings: ControlPlaneSettings = Depends(get_settings)
-) -> None:
+) -> str:
     auth_header = request.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    if token != settings.jwt_secret:
+    agent_id = decode_agent_token(settings.agent_token_secret, token)
+    if not agent_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+    return agent_id
 
 
 @asynccontextmanager
@@ -166,10 +169,12 @@ def create_app() -> FastAPI:
     @app.post("/api/jobs/lease", response_model=JobLeaseResponse)
     async def lease_job_endpoint(
         request_body: JobLeaseRequest,
-        _: None = Depends(verify_agent_token),
+        token_agent_id: str = Depends(verify_agent_token),
         redis_client: Redis = Depends(get_redis),
         session: AsyncSession = Depends(get_session),
     ) -> JobLeaseResponse:
+        if token_agent_id != request_body.agent_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
         assignment = await lease_job(redis_client)
         if assignment is None:
             return JobLeaseResponse(job=None, backoff_seconds=5)
@@ -188,9 +193,11 @@ def create_app() -> FastAPI:
     @app.post("/api/jobs/status", status_code=status.HTTP_202_ACCEPTED)
     async def job_status(
         status_update: JobStatusUpdate,
-        _: None = Depends(verify_agent_token),
+        token_agent_id: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> None:
+        if token_agent_id != status_update.agent_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
         LOGGER.info(
             "Job status update",
             extra={
@@ -205,7 +212,7 @@ def create_app() -> FastAPI:
     @app.get("/api/jobs/recent", response_model=list[JobRecord])
     async def recent_jobs(
         limit: int = 50,
-        _: None = Depends(verify_agent_token),
+        _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> list[JobRecord]:
         limit = max(1, min(limit, 200))
@@ -214,7 +221,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(
-        _: None = Depends(verify_agent_token),
+        _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
         redis_client: Redis = Depends(get_redis),
     ) -> dict[str, object]:

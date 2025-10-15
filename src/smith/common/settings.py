@@ -21,6 +21,7 @@ class ControlPlaneSettings(BaseSettings):
     public_base_url: HttpUrl = Field(..., env="SMITH_PUBLIC_BASE_URL")
     cache_token_ttl_seconds: int = Field(3600, env="SMITH_CACHE_TOKEN_TTL")
     cache_shared_secret: str = Field(..., env="SMITH_CACHE_SHARED_SECRET")
+    agent_token_secret: str = Field(..., env="SMITH_AGENT_TOKEN_SECRET")
 
     class Config:
         env_file = ".env"
@@ -54,8 +55,11 @@ class HostAgentSettings(BaseSettings):
 class CacheProxySettings(BaseSettings):
     """Configuration for the cache proxy service."""
 
-    storage_path: Path = Field(..., env="SMITH_CACHE_STORAGE_PATH")
+    storage_path: Path = Field(Path("./cache"), env="SMITH_CACHE_STORAGE_PATH")
     shared_secret: str = Field(..., env="SMITH_CACHE_SHARED_SECRET")
+    s3_endpoint_url: Optional[str] = Field(None, env="SMITH_CACHE_S3_ENDPOINT")
+    s3_bucket: Optional[str] = Field(None, env="SMITH_CACHE_S3_BUCKET")
+    s3_region: Optional[str] = Field(None, env="SMITH_CACHE_S3_REGION")
 
     class Config:
         env_file = ".env"
