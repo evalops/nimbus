@@ -132,11 +132,16 @@ All services honor the following optional environment variables:
 | `SMITH_OTEL_EXPORTER_HEADERS` | Comma-separated OTLP headers (`key=value`). | none |
 | `SMITH_OTEL_SAMPLER_RATIO` | Sampling ratio (0.0–1.0) for tracing. | `0.1` |
 
+### Bootstrap Utilities
+
+- **Environment generation** – run `uv run python scripts/bootstrap_compose.py --output .env` to create a secrets-filled `.env`. Append `--control-plane-url http://localhost:8000 --admin-token <jwt>` to mint an initial host-agent token, and `--secrets-output bootstrap-tokens.json` to capture minted tokens in a separate JSON file for secure distribution.
+- **Manual setup** – alternatively copy `compose.env.sample` and populate the required secrets by hand using the `smith.cli.admin` commands described below.
+
 ### Docker Compose Stack
 
-1. Generate a `.env` file by running `uv run python scripts/bootstrap_compose.py` (or copy `compose.env.sample` manually). Mint an agent token with `python -m smith.cli.admin tokens rotate ...` after the stack is up and set `SMITH_CONTROL_PLANE_TOKEN`.
+1. Ensure `.env` is prepared via the bootstrap script. If you minted an agent token into `bootstrap-tokens.json`, copy `agent_token` into `SMITH_CONTROL_PLANE_TOKEN` before starting services.
 2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
-3. Launch the stack: `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
+3. Launch the stack with `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
 
 ### Cache proxy backends
 
