@@ -57,6 +57,38 @@ services:
     depends_on:
       - control-plane
 
+  docker-cache:
+    build: .
+    command: ["uvicorn", "nimbus.docker_cache.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "5001"]
+    environment:
+      NIMBUS_CACHE_SHARED_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
+      NIMBUS_DOCKER_CACHE_STORAGE_PATH: /data/docker-cache/blobs
+      NIMBUS_DOCKER_CACHE_UPLOAD_PATH: /data/docker-cache/uploads
+      NIMBUS_DOCKER_CACHE_DB_PATH: /data/docker-cache/metadata.db
+      NIMBUS_DOCKER_CACHE_MAX_BYTES: ${NIMBUS_DOCKER_CACHE_MAX_BYTES:-0}
+      NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
+    volumes:
+      - docker-cache-data:/data/docker-cache
+    ports:
+      - "5001:5001"
+    depends_on:
+      - control-plane
+      - cache-proxy
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    entrypoint: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    volumes:
+      - ./web:/app
+    environment:
+      VITE_DEFAULT_CONTROL_PLANE_URL: http://control-plane:8000
+      VITE_DEFAULT_LOGGING_URL: http://logging-pipeline:8090
+    ports:
+      - "5173:5173"
+    depends_on:
+      - control-plane
+
   logging-pipeline:
     build: .
     command: ["uvicorn", "nimbus.logging_pipeline.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
@@ -103,3 +135,4 @@ volumes:
   clickhouse-data:
   control-data:
   cache-data:
+  docker-cache-data:

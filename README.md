@@ -11,6 +11,8 @@ Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](h
 - **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem or an S3-compatible endpoint (MinIO/Ceph) with HMAC-signed tokens.
 - **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
+- **Docker Layer Cache Registry:** Implements a minimal OCI-compatible blob/manifest store to accelerate container builds.
+- **Web Dashboard:** React + Vite single-page app for monitoring jobs, agents, logs, and configuration status.
 
 ## Using Nimbus with GitHub Actions
 
@@ -142,6 +144,27 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
 | `NIMBUS_CACHE_MAX_BYTES` | Optional storage cap that triggers eviction of cold entries. | unset |
 | `NIMBUS_CACHE_EVICTION_BATCH` | Number of cold entries inspected per eviction pass. | `100` |
 
+### Docker Layer Cache Registry (`nimbus.docker_cache`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NIMBUS_CACHE_SHARED_SECRET` | Shared secret reused for validating cache tokens. | required |
+| `NIMBUS_DOCKER_CACHE_STORAGE_PATH` | Root directory for blob content. | `./docker-cache/blobs` |
+| `NIMBUS_DOCKER_CACHE_UPLOAD_PATH` | Temporary upload staging directory. | `./docker-cache/uploads` |
+| `NIMBUS_DOCKER_CACHE_DB_PATH` | SQLite metadata database path. | `./docker-cache/metadata.db` |
+| `NIMBUS_DOCKER_CACHE_MAX_BYTES` | Optional byte limit for on-disk blobs (0 disables). | `0` |
+
+### Web Dashboard (`web/`)
+
+Vite environment variables are prefixed with `VITE_` and can be provided via `.env` in the `web/` directory or compose environment overrides.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `VITE_DEFAULT_CONTROL_PLANE_URL` | Base URL used when settings are blank. | unset (use compose default) |
+| `VITE_DEFAULT_LOGGING_URL` | Optional logging endpoint default. | unset |
+
+Dashboard settings are persisted in-memory; tokens are cleared after a browser refresh for safety.
+
 ### Logging Pipeline (`nimbus.logging_pipeline`)
 
 | Variable | Description | Default |
@@ -171,7 +194,7 @@ All services honor the following optional environment variables:
 
 ### Developer Shortcuts
 
-- **Makefile targets** – `make bootstrap`, `make compose-up`, `make compose-down`, and `make test` wrap common commands.
+- **Makefile targets** – `make bootstrap`, `make compose-up`, `make compose-down`, `make test`, `make build-web`, `make lint-web`, and `make build-docker-cache` wrap common commands (including the frontend and registry).
 - **uv scripts** – the same workflows are exposed via `uv run bootstrap`, `uv run compose-up`, and `uv run test` for consistent cross-platform invocation.
 - **Compose helper** – call `python scripts/compose_manager.py <command>` (e.g. `up`, `down`, `logs --follow`) for consistent env-file handling and profile selection.
 
@@ -179,7 +202,7 @@ All services honor the following optional environment variables:
 
 1. Ensure `.env` is prepared via the bootstrap script. If you minted an agent token into `bootstrap-tokens.json`, copy `agent_token` into `NIMBUS_CONTROL_PLANE_TOKEN` before starting services.
 2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
-3. Launch the stack with `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
+3. Launch the stack with `docker compose up --build control-plane cache-proxy logging-pipeline docker-cache web`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`). The web dashboard is available on <http://localhost:5173> and proxies API calls to the compose services.
 
 > **Optional smoke test:** run `NIMBUS_RUN_COMPOSE_TESTS=1 uv run pytest tests/system/test_compose_stack.py` to validate the compose configuration (requires Docker).
 

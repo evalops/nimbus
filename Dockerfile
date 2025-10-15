@@ -1,3 +1,13 @@
+FROM node:20-alpine AS web-build
+
+WORKDIR /app
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,5 +23,6 @@ RUN pip install --upgrade pip \
     && pip install --no-cache-dir .
 
 COPY README.md ./
+COPY --from=web-build /app/dist ./web/dist
 
 CMD ["uvicorn", "nimbus.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

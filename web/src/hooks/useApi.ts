@@ -3,6 +3,9 @@ import { useCallback } from "react";
 import type { AgentTokenResponse } from "../types";
 import { useSettings } from "../context/SettingsContext";
 
+const DEFAULT_CONTROL_PLANE_BASE = import.meta.env.VITE_DEFAULT_CONTROL_PLANE_URL ?? "";
+const DEFAULT_LOGGING_BASE = import.meta.env.VITE_DEFAULT_LOGGING_URL ?? DEFAULT_CONTROL_PLANE_BASE;
+
 function buildUrl(base: string, path: string): string {
   const normalizedBase = base.endsWith("/") ? base : `${base}/`;
   if (path.startsWith("http")) {
@@ -23,7 +26,7 @@ export function useApi() {
 
   const controlRequest = useCallback(
     async (path: string, init: RequestInit = {}, expectJson: boolean = true) => {
-      const base = ensureBase(settings.controlPlaneBase, "Control plane base URL");
+      const base = ensureBase(settings.controlPlaneBase || DEFAULT_CONTROL_PLANE_BASE, "Control plane base URL");
       if (!settings.agentToken) {
         throw new Error("Dashboard agent token is not available. Mint one from Settings.");
       }
@@ -55,7 +58,7 @@ export function useApi() {
 
   const adminRequest = useCallback(
     async (path: string, init: RequestInit = {}) => {
-      const base = ensureBase(settings.controlPlaneBase, "Control plane base URL");
+      const base = ensureBase(settings.controlPlaneBase || DEFAULT_CONTROL_PLANE_BASE, "Control plane base URL");
       if (!settings.adminToken) {
         throw new Error("Admin token is required for this action.");
       }
@@ -80,7 +83,7 @@ export function useApi() {
 
   const loggingGet = useCallback(
     async (path: string) => {
-      const base = settings.loggingBase || settings.controlPlaneBase;
+      const base = settings.loggingBase || settings.controlPlaneBase || DEFAULT_LOGGING_BASE;
       const loggingBase = ensureBase(base, "Logging service base URL");
       const url = buildUrl(loggingBase, path);
       const response = await fetch(url);
@@ -95,7 +98,7 @@ export function useApi() {
 
   const fetchMetricsText = useCallback(
     async (path: string = "/metrics") => {
-      const base = ensureBase(settings.controlPlaneBase, "Control plane base URL");
+      const base = ensureBase(settings.controlPlaneBase || DEFAULT_CONTROL_PLANE_BASE, "Control plane base URL");
       const url = buildUrl(base, path);
       const response = await fetch(url);
       if (!response.ok) {
