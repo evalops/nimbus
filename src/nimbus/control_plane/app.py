@@ -603,24 +603,46 @@ def create_app() -> FastAPI:
             agent_id = job.get("agent_id")
             if not agent_id:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not currently leased to an agent")
-            port = await db.allocate_ssh_port(
-                session,
-                port_start=settings.ssh_port_range_start,
-                port_end=settings.ssh_port_range_end,
-            )
-            if port is None:
-                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No SSH ports available")
-            session_id = uuid4().hex
-            record = await db.create_ssh_session(
-                session,
-                session_id=session_id,
-                job_id=request_body.job_id,
-                agent_id=agent_id,
-                host_port=port,
-                authorized_user=request_body.authorized_user,
-                ttl_seconds=ttl_seconds,
-            )
-            await session.commit()
+            # Retry port allocation up to 3 times in case of conflicts
+            from sqlalchemy.exc import IntegrityError
+            
+            port = None
+            record = None
+            for attempt in range(3):
+                port = await db.allocate_ssh_port(
+                    session,
+                    agent_id=agent_id,
+                    port_start=settings.ssh_port_range_start,
+                    port_end=settings.ssh_port_range_end,
+                )
+                if port is None:
+                    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No SSH ports available")
+                
+                session_id = uuid4().hex
+                try:
+                    record = await db.create_ssh_session(
+                        session,
+                        session_id=session_id,
+                        job_id=request_body.job_id,
+                        agent_id=agent_id,
+                        host_port=port,
+                        authorized_user=request_body.authorized_user,
+                        ttl_seconds=ttl_seconds,
+                    )
+                    await session.commit()
+                    break
+                except IntegrityError:
+                    # Port conflict, retry with different port
+                    await session.rollback()
+                    if attempt == 2:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Failed to allocate unique SSH port after retries",
+                        )
+                    continue
+            
+            if record is None:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="SSH session creation failed")
         ssh_session = _row_to_ssh_session(record)
         LOGGER.info(
             "SSH session created",

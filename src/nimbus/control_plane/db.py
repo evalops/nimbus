@@ -72,6 +72,8 @@ agent_token_audit_table = Table(
 )
 
 
+from sqlalchemy import Index, UniqueConstraint
+
 ssh_sessions_table = Table(
     "ssh_sessions",
     metadata,
@@ -86,6 +88,8 @@ ssh_sessions_table = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("agent_id", "host_port", name="uq_ssh_agent_port"),
+    Index("ix_ssh_agent_status_expires", "agent_id", "status", "expires_at"),
 )
 
 
@@ -298,12 +302,20 @@ async def list_agent_token_audit(session: AsyncSession, limit: int = 50) -> list
 async def allocate_ssh_port(
     session: AsyncSession,
     *,
+    agent_id: str,
     port_start: int,
     port_end: int,
 ) -> Optional[int]:
+    """
+    Allocate a port for SSH session. Scoped per agent to avoid global conflicts.
+    Excludes ports from active/pending sessions that haven't expired.
+    """
+    now = datetime.now(timezone.utc)
     stmt = select(ssh_sessions_table.c.host_port).where(
-        ssh_sessions_table.c.status.in_(
-            ["pending", "active"]
+        and_(
+            ssh_sessions_table.c.agent_id == agent_id,
+            ssh_sessions_table.c.status.in_(["pending", "active"]),
+            ssh_sessions_table.c.expires_at > now,
         )
     )
     result = await session.execute(stmt)
@@ -408,6 +420,30 @@ async def list_ssh_sessions(session: AsyncSession, *, limit: int = 100) -> list[
     )
     result = await session.execute(stmt)
     return [dict(row) for row in result.mappings()]
+
+
+async def expire_stale_ssh_sessions(session: AsyncSession) -> int:
+    """
+    Mark expired SSH sessions as closed and return count.
+    Should be run periodically (e.g., every minute).
+    """
+    now = datetime.now(timezone.utc)
+    stmt = (
+        update(ssh_sessions_table)
+        .where(
+            and_(
+                ssh_sessions_table.c.status.in_(["pending", "active"]),
+                ssh_sessions_table.c.expires_at <= now,
+            )
+        )
+        .values(
+            status="expired",
+            reason="TTL exceeded",
+            updated_at=now,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.rowcount
 
 
 async def try_acquire_job_lease(
