@@ -1,0 +1,105 @@
+.logs__container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.logs__header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.logs__form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  padding: 1.5rem;
+  background: rgba(17, 24, 39, 0.7);
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.logs__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+.logs__form input {
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.85);
+  color: #e5efff;
+}
+
+.logs__form button {
+  align-self: end;
+}
+
+.logs__error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+}
+
+.logs__results {
+  background: rgba(17, 24, 39, 0.7);
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  padding: 1.5rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.logs__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.logs__item {
+  display: grid;
+  grid-template-columns: 200px 100px 1fr;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.85rem;
+}
+
+.logs__item--error {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.logs__item--warning {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.logs__timestamp {
+  color: rgba(224, 231, 255, 0.7);
+}
+
+.logs__level {
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.logs__message {
+  white-space: pre-wrap;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.logs__empty {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.65);
+}

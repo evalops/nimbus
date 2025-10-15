@@ -1,0 +1,116 @@
+.settings__container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 960px;
+}
+
+.settings__form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.75rem;
+  background: rgba(17, 24, 39, 0.72);
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.settings__form label,
+.settings__token-form label {
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings__form input,
+.settings__form textarea,
+.settings__token-form input {
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.85);
+  color: #e5efff;
+  font-size: 0.95rem;
+}
+
+.settings__form textarea {
+  resize: vertical;
+}
+
+.settings__actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.settings__clear {
+  background: transparent;
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.settings__section {
+  padding: 1.75rem;
+  background: rgba(17, 24, 39, 0.72);
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.settings__token-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.settings__token-details {
+  background: rgba(30, 41, 59, 0.85);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  overflow-x: auto;
+}
+
+.settings__token-details code {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.settings__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.settings__summary dt {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(226, 232, 240, 0.55);
+}
+
+.settings__summary dd {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+}
+
+.settings__success {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(110, 231, 183, 0.45);
+  color: #bbf7d0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+}
+
+.settings__error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+}

@@ -16,3 +16,7 @@ venv/
 
 # Logs
 *.log
+
+# Frontend artifacts
+web/node_modules/
+web/dist/
