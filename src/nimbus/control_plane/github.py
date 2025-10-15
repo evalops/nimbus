@@ -31,7 +31,7 @@ def build_app_jwt(settings: ControlPlaneSettings) -> str:
         "exp": now + 540,
         "iss": settings.github_app_id,
     }
-    return jwt.encode(payload, settings.github_app_private_key, algorithm="RS256")
+    return jwt.encode(payload, settings.github_app_private_key.get_secret_value(), algorithm="RS256")
 
 
 @dataclass

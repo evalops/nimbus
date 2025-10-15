@@ -323,7 +323,7 @@ async def require_cache_token(
             headers={"WWW-Authenticate": 'Bearer realm="nimbus-docker-cache"'},
         )
     token_value = authorization.split(" ", 1)[1]
-    token = verify_cache_token(state.settings.shared_secret, token_value)
+    token = verify_cache_token(state.settings.shared_secret.get_secret_value(), token_value)
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -154,7 +154,7 @@ async def verify_agent_token(
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    decoded = decode_agent_token_payload(settings.agent_token_secret, token)
+    decoded = decode_agent_token_payload(settings.agent_token_secret.get_secret_value(), token)
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
     agent_id, version = decoded
@@ -176,7 +176,7 @@ def verify_admin_token(
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    decoded = decode_agent_token_payload(settings.jwt_secret, token)
+    decoded = decode_agent_token_payload(settings.jwt_secret.get_secret_value(), token)
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
     subject, _ = decoded
@@ -281,7 +281,7 @@ def create_app() -> FastAPI:
         with TRACER.start_as_current_span("control_plane.github_webhook") as span:
             raw_body = await request.body()
             signature = request.headers.get("x-hub-signature-256")
-            if not _verify_github_signature(settings.github_webhook_secret, raw_body, signature):
+            if not _verify_github_signature(settings.github_webhook_secret.get_secret_value(), raw_body, signature):
                 LOGGER.warning("Webhook signature verification failed")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
 
@@ -316,7 +316,7 @@ def create_app() -> FastAPI:
 
             runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
             cache_token = mint_cache_token(
-                secret=settings.cache_shared_secret,
+                secret=settings.cache_shared_secret.get_secret_value(),
                 organization_id=repo.id,
                 ttl_seconds=settings.cache_token_ttl_seconds,
             )
@@ -377,7 +377,7 @@ def create_app() -> FastAPI:
             cache_token = None
             if state.settings.cache_shared_secret:
                 cache_token = mint_cache_token(
-                    secret=state.settings.cache_shared_secret,
+                    secret=state.settings.cache_shared_secret.get_secret_value(),
                     organization_id=assignment.repository.id,
                     ttl_seconds=state.settings.cache_token_ttl_seconds,
                 )
@@ -515,7 +515,7 @@ def create_app() -> FastAPI:
 
             token = mint_agent_token(
                 agent_id=request_body.agent_id,
-                secret=settings.agent_token_secret,
+                secret=settings.agent_token_secret.get_secret_value(),
                 ttl_seconds=request_body.ttl_seconds,
                 version=version,
             )

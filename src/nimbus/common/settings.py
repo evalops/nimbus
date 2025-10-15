@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, HttpUrl, RedisDsn, field_validator
+from pydantic import Field, HttpUrl, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,16 +19,16 @@ class ControlPlaneSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     github_app_id: int = env_field(..., "NIMBUS_GITHUB_APP_ID")
-    github_app_private_key: str = env_field(..., "NIMBUS_GITHUB_APP_PRIVATE_KEY")
+    github_app_private_key: SecretStr = env_field(..., "NIMBUS_GITHUB_APP_PRIVATE_KEY")
     github_app_installation_id: int = env_field(..., "NIMBUS_GITHUB_APP_INSTALLATION_ID")
-    github_webhook_secret: str = env_field(..., "NIMBUS_GITHUB_WEBHOOK_SECRET")
+    github_webhook_secret: SecretStr = env_field(..., "NIMBUS_GITHUB_WEBHOOK_SECRET")
     redis_url: RedisDsn = env_field(..., "NIMBUS_REDIS_URL")
     database_url: str = env_field(..., "NIMBUS_DATABASE_URL")
-    jwt_secret: str = env_field(..., "NIMBUS_JWT_SECRET")
+    jwt_secret: SecretStr = env_field(..., "NIMBUS_JWT_SECRET")
     public_base_url: HttpUrl = env_field(..., "NIMBUS_PUBLIC_BASE_URL")
     cache_token_ttl_seconds: int = env_field(3600, "NIMBUS_CACHE_TOKEN_TTL")
-    cache_shared_secret: str = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
-    agent_token_secret: str = env_field(..., "NIMBUS_AGENT_TOKEN_SECRET")
+    cache_shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    agent_token_secret: SecretStr = env_field(..., "NIMBUS_AGENT_TOKEN_SECRET")
     agent_token_rate_limit: int = env_field(15, "NIMBUS_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "NIMBUS_AGENT_TOKEN_RATE_INTERVAL")
     admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_SUBJECTS")
@@ -65,11 +65,11 @@ class HostAgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     agent_id: str = env_field(..., "NIMBUS_AGENT_ID")
     control_plane_base_url: HttpUrl = env_field(..., "NIMBUS_CONTROL_PLANE_URL")
-    control_plane_token: str = env_field(..., "NIMBUS_CONTROL_PLANE_TOKEN")
+    control_plane_token: SecretStr = env_field(..., "NIMBUS_CONTROL_PLANE_TOKEN")
     redis_url: Optional[RedisDsn] = env_field(None, "NIMBUS_AGENT_REDIS_URL")
     cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
-    cache_token_secret: Optional[str] = env_field(None, "NIMBUS_CACHE_TOKEN_SECRET")
-    cache_token_value: Optional[str] = env_field(None, "NIMBUS_CACHE_TOKEN_VALUE")
+    cache_token_secret: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_SECRET")
+    cache_token_value: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_VALUE")
     log_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_LOG_SINK_URL")
     metrics_host: str = env_field("0.0.0.0", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
@@ -97,7 +97,7 @@ class CacheProxySettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", populate_by_name=True)
     storage_path: Path = env_field(Path("./cache"), "NIMBUS_CACHE_STORAGE_PATH")
-    shared_secret: str = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
     s3_endpoint_url: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_REGION")
@@ -138,7 +138,7 @@ class DockerCacheSettings(BaseSettings):
     storage_path: Path = env_field(Path("./docker-cache"), "NIMBUS_DOCKER_CACHE_STORAGE_PATH")
     uploads_path: Path = env_field(Path("./docker-cache/uploads"), "NIMBUS_DOCKER_CACHE_UPLOAD_PATH")
     metadata_path: Path = env_field(Path("./docker-cache/metadata.db"), "NIMBUS_DOCKER_CACHE_DB_PATH")
-    shared_secret: str = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_CACHE_MAX_BYTES")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")

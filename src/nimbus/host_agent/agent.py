@@ -167,8 +167,8 @@ class HostAgent:
                 and self._settings.cache_token_value
             ):
                 fallback = verify_cache_token(
-                    self._settings.cache_token_secret,
-                    self._settings.cache_token_value,
+                    self._settings.cache_token_secret.get_secret_value(),
+                    self._settings.cache_token_value.get_secret_value(),
                 )
                 if fallback:
                     assignment.cache_token = fallback
@@ -278,7 +278,7 @@ class HostAgent:
                 LOGGER.debug("Lease renewal error", job_id=job_id, error=str(exc))
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._settings.control_plane_token}"}
+        return {"Authorization": f"Bearer {self._settings.control_plane_token.get_secret_value()}"}
 
     async def _emit_logs(
         self,

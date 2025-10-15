@@ -214,8 +214,8 @@ class FirecrackerLauncher:
             cache_section = assignment.cache_token.model_dump()
         elif self._settings.cache_token_secret and self._settings.cache_token_value:
             fallback = verify_cache_token(
-                self._settings.cache_token_secret,
-                self._settings.cache_token_value,
+                self._settings.cache_token_secret.get_secret_value(),
+                self._settings.cache_token_value.get_secret_value(),
             )
             if fallback:
                 cache_section = fallback.model_dump()

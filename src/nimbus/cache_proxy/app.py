@@ -401,7 +401,7 @@ def require_cache_token(
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing cache token")
     token = authorization.split(" ", 1)[1]
-    cache_token = verify_cache_token(state.settings.shared_secret, token)
+    cache_token = verify_cache_token(state.settings.shared_secret.get_secret_value(), token)
     if cache_token is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid cache token")
     return cache_token
