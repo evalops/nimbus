@@ -16,6 +16,7 @@ async def test_run_tokens_list_outputs_summary(monkeypatch, capsys):
         json=True,
         command="tokens",
         tokens_cmd="list",
+        history_limit=0,
     )
 
     async def fake_fetch(base_url: str, token: str):
@@ -30,11 +31,51 @@ async def test_run_tokens_list_outputs_summary(monkeypatch, capsys):
 
     monkeypatch.setattr(admin, "fetch_token_inventory", fake_fetch)
 
+    async def fake_audit(base_url: str, token: str, limit: int):
+        return []
+
+    monkeypatch.setattr(admin, "fetch_token_audit", fake_audit)
+
     await admin.run_tokens_list(args)
     output = capsys.readouterr().out
     payload = json.loads(output)
     assert payload["inventory"][0]["agent_id"] == "agent-1"
     assert payload["summary"]["total_agents"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_tokens_list_includes_history(monkeypatch, capsys):
+    args = argparse.Namespace(
+        base_url="http://localhost:8000",
+        admin_token="secret",
+        json=False,
+        command="tokens",
+        tokens_cmd="list",
+        history_limit=2,
+    )
+
+    async def fake_fetch(base_url: str, token: str):
+        return []
+
+    async def fake_audit(base_url: str, token: str, limit: int):
+        return [
+            {
+                "agent_id": "agent-1",
+                "token_version": 3,
+                "rotated_by": "admin",
+                "rotated_at": "2024-01-01T00:00:00+00:00",
+                "ttl_seconds": 3600,
+                "id": 1,
+            }
+        ]
+
+    monkeypatch.setattr(admin, "fetch_token_inventory", fake_fetch)
+    monkeypatch.setattr(admin, "fetch_token_audit", fake_audit)
+
+    await admin.run_tokens_list(args)
+    output = capsys.readouterr().out
+    assert "Recent rotations" in output
+    assert "agent=agent-1" in output
 
 
 @pytest.mark.asyncio
@@ -47,6 +88,7 @@ async def test_run_tokens_rotate_prints_result(monkeypatch, capsys):
         json=False,
         command="tokens",
         tokens_cmd="rotate",
+        history_limit=0,
     )
 
     async def fake_rotate(base_url: str, token: str, agent_id: str, ttl: int):

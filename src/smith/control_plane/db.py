@@ -59,6 +59,18 @@ agent_credentials_table = Table(
 )
 
 
+agent_token_audit_table = Table(
+    "agent_token_audit",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("agent_id", String(length=128), nullable=False),
+    Column("rotated_by", String(length=128), nullable=False),
+    Column("token_version", Integer, nullable=False),
+    Column("rotated_at", DateTime(timezone=True), nullable=False),
+    Column("ttl_seconds", Integer, nullable=False),
+)
+
+
 def create_engine(database_url: str) -> AsyncEngine:
     return create_async_engine(database_url, future=True, echo=False)
 
@@ -190,3 +202,32 @@ async def list_agent_credentials(session: AsyncSession) -> list[dict]:
     for row in result.mappings():
         rows.append(dict(row))
     return rows
+
+
+async def record_agent_token_audit(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    rotated_by: str,
+    token_version: int,
+    ttl_seconds: int,
+) -> None:
+    now = datetime.now(timezone.utc)
+    stmt = insert(agent_token_audit_table).values(
+        agent_id=agent_id,
+        rotated_by=rotated_by,
+        token_version=token_version,
+        rotated_at=now,
+        ttl_seconds=ttl_seconds,
+    )
+    await session.execute(stmt)
+
+
+async def list_agent_token_audit(session: AsyncSession, limit: int = 50) -> list[dict]:
+    stmt = (
+        select(agent_token_audit_table)
+        .order_by(agent_token_audit_table.c.rotated_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [dict(row) for row in result.mappings()]

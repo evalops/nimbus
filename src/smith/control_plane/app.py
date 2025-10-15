@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +20,7 @@ import structlog
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.schemas import (
     AgentTokenMintRequest,
+    AgentTokenAuditRecord,
     AgentTokenRecord,
     AgentTokenResponse,
     JobAssignment,
@@ -41,6 +44,26 @@ QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_control_plane_queue_l
 LOGGER = structlog.get_logger("smith.control_plane")
 
 
+class RateLimiter:
+    def __init__(self, limit: int, interval: float) -> None:
+        self.limit = limit
+        self.interval = interval
+        self._events: dict[str, deque[float]] = defaultdict(deque)
+
+    def allow(self, key: str) -> bool:
+        if self.limit <= 0:
+            return True
+        now = time.time()
+        window = now - self.interval
+        bucket = self._events[key]
+        while bucket and bucket[0] <= window:
+            bucket.popleft()
+        if len(bucket) >= self.limit:
+            return False
+        bucket.append(now)
+        return True
+
+
 class AppState:
     """Container for application-level shared resources."""
 
@@ -51,12 +74,14 @@ class AppState:
         http_client: httpx.AsyncClient,
         github_client: GitHubAppClient,
         session_factory,
+        token_rate_limiter: RateLimiter,
     ) -> None:
         self.settings = settings
         self.redis = redis
         self.http_client = http_client
         self.github_client = github_client
         self.session_factory = session_factory
+        self.token_rate_limiter = token_rate_limiter
 
 
 def _get_state(request: Request) -> AppState:
@@ -136,12 +161,17 @@ async def lifespan(app: FastAPI):
     engine = db.create_engine(settings.database_url)
     await db.ensure_schema(engine)
     session_factory = db.session_factory(engine)
+    rate_limiter = RateLimiter(
+        limit=settings.agent_token_rate_limit,
+        interval=float(settings.agent_token_rate_interval_seconds),
+    )
     container = AppState(
         settings=settings,
         redis=redis,
         http_client=http_client,
         github_client=github_client,
         session_factory=session_factory,
+        token_rate_limiter=rate_limiter,
     )
     app.state.container = container
     try:
@@ -285,13 +315,22 @@ def create_app() -> FastAPI:
     @app.post("/api/agents/token", response_model=AgentTokenResponse)
     async def mint_agent_token_endpoint(
         request_body: AgentTokenMintRequest,
-        _: str = Depends(verify_admin_token),
+        admin_subject: str = Depends(verify_admin_token),
         state: AppState = Depends(_get_state),
         settings: ControlPlaneSettings = Depends(get_settings),
     ) -> AgentTokenResponse:
         REQUEST_COUNTER.inc()
+        if not state.token_rate_limiter.allow(admin_subject):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Agent token rotation rate limited")
         async with state.session_factory() as session:  # type: ignore[call-arg]
             version = await db.rotate_agent_token(session, request_body.agent_id, request_body.ttl_seconds)
+            await db.record_agent_token_audit(
+                session,
+                agent_id=request_body.agent_id,
+                rotated_by=admin_subject,
+                token_version=version,
+                ttl_seconds=request_body.ttl_seconds,
+            )
             await session.commit()
 
         token = mint_agent_token(
@@ -306,6 +345,7 @@ def create_app() -> FastAPI:
             agent_id=request_body.agent_id,
             version=version,
             ttl=request_body.ttl_seconds,
+            rotated_by=admin_subject,
         )
         return AgentTokenResponse(
             agent_id=request_body.agent_id,
@@ -336,6 +376,18 @@ def create_app() -> FastAPI:
             )
             for row in records
         ]
+
+    @app.get("/api/agents/audit", response_model=list[AgentTokenAuditRecord])
+    async def list_agent_token_audit_endpoint(
+        limit: int = 50,
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[AgentTokenAuditRecord]:
+        REQUEST_COUNTER.inc()
+        limit = max(1, min(limit, 500))
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            records = await db.list_agent_token_audit(session, limit=limit)
+        return [AgentTokenAuditRecord(**row) for row in records]
 
     return app
 

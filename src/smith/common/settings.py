@@ -29,6 +29,8 @@ class ControlPlaneSettings(BaseSettings):
     cache_token_ttl_seconds: int = env_field(3600, "SMITH_CACHE_TOKEN_TTL")
     cache_shared_secret: str = env_field(..., "SMITH_CACHE_SHARED_SECRET")
     agent_token_secret: str = env_field(..., "SMITH_AGENT_TOKEN_SECRET")
+    agent_token_rate_limit: int = env_field(15, "SMITH_AGENT_TOKEN_RATE_LIMIT")
+    agent_token_rate_interval_seconds: int = env_field(60, "SMITH_AGENT_TOKEN_RATE_INTERVAL")
     log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")

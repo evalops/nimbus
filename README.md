@@ -67,6 +67,8 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 | `SMITH_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
 | `SMITH_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
 | `SMITH_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
+| `SMITH_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
+| `SMITH_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
 
 ### Host Agent (`smith.host_agent`)
 

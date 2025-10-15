@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     list_parser.add_argument("--base-url", required=True, help="Control plane base URL")
     list_parser.add_argument("--admin-token", required=True, help="Admin bearer token")
     list_parser.add_argument("--json", action="store_true", help="Output JSON")
+    list_parser.add_argument("--history-limit", type=int, default=0, help="Include recent rotation audit records")
 
     rotate_parser = action_parsers.add_parser("rotate", help="Rotate an agent token")
     rotate_parser.add_argument("--base-url", required=True, help="Control plane base URL")
@@ -42,6 +43,15 @@ async def fetch_token_inventory(base_url: str, admin_token: str) -> list[dict[st
         return response.json()
 
 
+async def fetch_token_audit(base_url: str, admin_token: str, limit: int) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    params = {"limit": limit}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{base_url.rstrip('/')}/api/agents/audit", headers=headers, params=params)
+        response.raise_for_status()
+        return response.json()
+
+
 async def rotate_agent_token(base_url: str, admin_token: str, agent_id: str, ttl: int) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {admin_token}"}
     payload = {"agent_id": agent_id, "ttl_seconds": ttl}
@@ -54,10 +64,20 @@ async def rotate_agent_token(base_url: str, admin_token: str, agent_id: str, ttl
 async def run_tokens_list(args: argparse.Namespace) -> None:
     records = await fetch_token_inventory(args.base_url, args.admin_token)
     summary = summarize_agent_tokens(records)
+    audit_records: list[dict[str, Any]] = []
+    if args.history_limit > 0:
+        audit_records = await fetch_token_audit(args.base_url, args.admin_token, args.history_limit)
     if args.json:
-        print(json.dumps({"inventory": records, "summary": summary}, indent=2))
+        print(json.dumps({"inventory": records, "summary": summary, "audit": audit_records}, indent=2))
     else:
         print_token_summary(summary)
+        if audit_records:
+            print("\nRecent rotations:")
+            for entry in audit_records:
+                print(
+                    f"  {entry.get('rotated_at')}: agent={entry.get('agent_id')}"
+                    f" version={entry.get('token_version')} by={entry.get('rotated_by')}"
+                )
 
 
 async def run_tokens_rotate(args: argparse.Namespace) -> None:

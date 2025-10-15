@@ -148,3 +148,12 @@ class AgentTokenRecord(BaseModel):
     token_version: int
     rotated_at: datetime
     ttl_seconds: int
+
+
+class AgentTokenAuditRecord(BaseModel):
+    id: int
+    agent_id: str
+    rotated_by: str
+    token_version: int
+    rotated_at: datetime
+    ttl_seconds: int

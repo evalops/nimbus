@@ -130,6 +130,8 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         "SMITH_CACHE_TOKEN_TTL": "3600",
         "SMITH_CACHE_SHARED_SECRET": cache_secret,
         "SMITH_AGENT_TOKEN_SECRET": agent_secret,
+        "SMITH_AGENT_TOKEN_RATE_LIMIT": "2",
+        "SMITH_AGENT_TOKEN_RATE_INTERVAL": "60",
         "SMITH_CACHE_STORAGE_PATH": str(storage_path),
         "SMITH_CLICKHOUSE_URL": "http://clickhouse",
         "SMITH_CLICKHOUSE_DATABASE": "smith",
@@ -286,6 +288,13 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         token_inventory = inventory_response.json()
         agent_record = next(item for item in token_inventory if item["agent_id"] == "agent-1")
         assert agent_record["token_version"] == rotated_payload["version"]
+
+        rate_limited = await control_client.post(
+            "/api/agents/token",
+            json={"agent_id": "agent-1", "ttl_seconds": 900},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert rate_limited.status_code == 429
 
         head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
         assert head_response.status_code == 200
