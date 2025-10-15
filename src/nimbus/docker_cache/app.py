@@ -21,12 +21,37 @@ from opentelemetry import trace
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 from ..common.schemas import CacheToken
-from ..common.security import verify_cache_token
+from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.settings import DockerCacheSettings
 
 
 LOGGER = structlog.get_logger("nimbus.docker_cache")
 TRACER = trace.get_tracer("nimbus.docker_cache")
+
+
+def validate_repository_access(repository: str, token: CacheToken, operation: str) -> None:
+    """
+    Validate that a cache token can access the given repository.
+    
+    Repository names should be prefixed with org ID: org-{id}/repo/image
+    Enforces org boundaries to prevent cross-org access.
+    """
+    org_id = token.organization_id
+    
+    # Validate scope
+    if not validate_cache_scope(token, operation, org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Token lacks {operation} scope for org {org_id}",
+        )
+    
+    # Enforce org prefix in repository name
+    expected_prefix = f"org-{org_id}/"
+    if not repository.startswith(expected_prefix):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Repository must be under {expected_prefix}",
+        )
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(
@@ -81,11 +106,17 @@ class DockerCacheMetrics:
                 """
                 CREATE TABLE IF NOT EXISTS blobs (
                     digest TEXT PRIMARY KEY,
+                    org_id INTEGER,
                     size INTEGER NOT NULL,
                     last_access REAL NOT NULL
                 )
                 """
             )
+            # Migrate existing blobs table if needed
+            try:
+                conn.execute("SELECT org_id FROM blobs LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE blobs ADD COLUMN org_id INTEGER")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS manifests (
@@ -109,18 +140,19 @@ class DockerCacheMetrics:
         finally:
             conn.close()
 
-    def record_blob(self, digest: str, size: int) -> None:
+    def record_blob(self, digest: str, size: int, org_id: Optional[int] = None) -> None:
         now = time.time()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO blobs (digest, size, last_access)
-                VALUES (?, ?, ?)
+                INSERT INTO blobs (digest, org_id, size, last_access)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(digest) DO UPDATE SET
+                    org_id=excluded.org_id,
                     size=excluded.size,
                     last_access=excluded.last_access
                 """,
-                (digest, size, now),
+                (digest, org_id, size, now),
             )
 
     def touch_blob(self, digest: str) -> None:
@@ -401,10 +433,11 @@ def create_app() -> FastAPI:
     @app.post("/v2/{name:path}/blobs/uploads/")
     async def start_blob_upload(
         name: str,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "push")
         upload_id = await state.register_upload(repository)
         location = f"/v2/{repository}/blobs/uploads/{upload_id}"
         headers = {
