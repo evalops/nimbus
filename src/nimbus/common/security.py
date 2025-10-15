@@ -1,4 +1,4 @@
-"""Security utilities shared across Smith services."""
+"""Security utilities shared across Nimbus services."""
 
 from __future__ import annotations
 

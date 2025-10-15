@@ -220,7 +220,7 @@ class CacheProxyState:
         self.settings = settings
         self.backend = backend
         self.metrics = metrics
-        self.logger = structlog.get_logger("smith.cache_proxy").bind(backend=backend.status().get("backend"))
+        self.logger = structlog.get_logger("nimbus.cache_proxy").bind(backend=backend.status().get("backend"))
 
     def enforce_storage_limit(self) -> None:
         max_bytes = self.settings.max_storage_bytes
@@ -254,16 +254,16 @@ class CacheProxyState:
         self.logger.info("cache_eviction_completed", total_bytes=directory_size(storage_path))
 
 
-REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_requests_total", "Total cache proxy requests"))
-HIT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_hits_total", "Cache hits"))
-MISS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_misses_total", "Cache misses"))
-BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_read_total", "Bytes served from cache"))
-BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_written_total", "Bytes written to cache"))
-TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_cache_entries", "Number of cache entries"))
-CACHE_EVICTIONS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_evictions_total", "Cache entries evicted to enforce limits"))
+REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_requests_total", "Total cache proxy requests"))
+HIT_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_hits_total", "Cache hits"))
+MISS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_misses_total", "Cache misses"))
+BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_bytes_read_total", "Bytes served from cache"))
+BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_bytes_written_total", "Bytes written to cache"))
+TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_cache_entries", "Number of cache entries"))
+CACHE_EVICTIONS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_evictions_total", "Cache entries evicted to enforce limits"))
 CACHE_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
-        "smith_cache_proxy_request_latency_seconds",
+        "nimbus_cache_proxy_request_latency_seconds",
         buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0],
         description="Cache proxy request latency",
     )
@@ -407,9 +407,9 @@ def require_cache_token(
 
 def create_app() -> FastAPI:
     settings = CacheProxySettings()
-    configure_logging("smith.cache_proxy", settings.log_level)
+    configure_logging("nimbus.cache_proxy", settings.log_level)
     configure_tracing(
-        service_name="smith.cache_proxy",
+        service_name="nimbus.cache_proxy",
         endpoint=settings.otel_exporter_endpoint,
         headers=settings.otel_exporter_headers,
         sampler_ratio=settings.otel_sampler_ratio,

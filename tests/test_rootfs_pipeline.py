@@ -5,9 +5,9 @@ from pathlib import Path
 
 import yaml
 
-from smith.rootfs.cli import main as rootfs_cli_main
-from smith.rootfs.config import RootfsPipelineConfig, RootfsVersionConfig
-from smith.rootfs.pipeline import RootfsPipeline
+from nimbus.rootfs.cli import main as rootfs_cli_main
+from nimbus.rootfs.config import RootfsPipelineConfig, RootfsVersionConfig
+from nimbus.rootfs.pipeline import RootfsPipeline
 
 
 def _write_dummy_rootfs(path: Path, content: str) -> None:

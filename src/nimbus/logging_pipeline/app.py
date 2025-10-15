@@ -1,4 +1,4 @@
-"""Logging ingestion API for Smith."""
+"""Logging ingestion API for Nimbus."""
 
 from __future__ import annotations
 
@@ -16,23 +16,23 @@ from ..common.schemas import LogIngestRequest
 from ..common.settings import LoggingIngestSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
-INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_ingest_requests_total", "Total log ingest requests"))
-INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
-DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_dropped_total", "Log rows dropped due to size limits"))
-BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_batches_total", "Batches flushed to ClickHouse"))
-BATCH_BYTES_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_batch_bytes_total", "Bytes sent to ClickHouse"))
-CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_clickhouse_errors_total", "ClickHouse request errors"))
-QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_requests_total", "Log query requests"))
-QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_errors_total", "Log query failures"))
+INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_ingest_requests_total", "Total log ingest requests"))
+INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
+DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_rows_dropped_total", "Log rows dropped due to size limits"))
+BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_batches_total", "Batches flushed to ClickHouse"))
+BATCH_BYTES_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_batch_bytes_total", "Bytes sent to ClickHouse"))
+CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_clickhouse_errors_total", "ClickHouse request errors"))
+QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_query_requests_total", "Log query requests"))
+QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_query_errors_total", "Log query failures"))
 BATCH_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
-        "smith_logging_batch_latency_seconds",
+        "nimbus_logging_batch_latency_seconds",
         buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
         description="Latency of ClickHouse batch writes",
     )
 )
 
-LOGGER = structlog.get_logger("smith.logging_pipeline")
+LOGGER = structlog.get_logger("nimbus.logging_pipeline")
 
 MAX_ROWS_PER_BATCH = 500
 MAX_BYTES_PER_BATCH = 4 * 1024 * 1024  # 4 MiB
@@ -142,9 +142,9 @@ class PipelineState:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = LoggingIngestSettings()
-    configure_logging("smith.logging_pipeline", settings.log_level)
+    configure_logging("nimbus.logging_pipeline", settings.log_level)
     configure_tracing(
-        service_name="smith.logging_pipeline",
+        service_name="nimbus.logging_pipeline",
         endpoint=settings.otel_exporter_endpoint,
         headers=settings.otel_exporter_headers,
         sampler_ratio=settings.otel_sampler_ratio,

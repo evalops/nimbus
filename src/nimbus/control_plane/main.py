@@ -1,4 +1,4 @@
-"""Uvicorn entrypoint for the Smith control plane."""
+"""Uvicorn entrypoint for the Nimbus control plane."""
 
 from __future__ import annotations
 

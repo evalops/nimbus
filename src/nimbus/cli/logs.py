@@ -1,4 +1,4 @@
-"""CLI helper for querying Smith log entries."""
+"""CLI helper for querying Nimbus log entries."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import httpx
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Query Smith logs")
+    parser = argparse.ArgumentParser(description="Query Nimbus logs")
     parser.add_argument("--logs-url", required=True, help="Logging pipeline base URL")
     parser.add_argument("--job-id", type=int, help="Filter logs by job ID")
     parser.add_argument("--contains", help="Substring to search within log messages")

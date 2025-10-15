@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from smith.common.settings import LoggingIngestSettings
-from smith.logging_pipeline.app import BATCH_LATENCY_HISTOGRAM, PipelineState
+from nimbus.common.settings import LoggingIngestSettings
+from nimbus.logging_pipeline.app import BATCH_LATENCY_HISTOGRAM, PipelineState
 
 
 class DummyResponse:
@@ -23,7 +23,7 @@ class DummyClient:
 
 @pytest.mark.asyncio
 async def test_write_batch_records_latency(monkeypatch):
-    monkeypatch.setenv("SMITH_CLICKHOUSE_URL", "http://localhost:8123")
+    monkeypatch.setenv("NIMBUS_CLICKHOUSE_URL", "http://localhost:8123")
 
     settings = LoggingIngestSettings()
     client = DummyClient()

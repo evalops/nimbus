@@ -1,4 +1,4 @@
-"""Async database helpers for the Smith control plane."""
+"""Async database helpers for the Nimbus control plane."""
 
 from __future__ import annotations
 

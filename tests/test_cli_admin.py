@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from smith.cli import admin
+from nimbus.cli import admin
 
 
 @pytest.mark.asyncio

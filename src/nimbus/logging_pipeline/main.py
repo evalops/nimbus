@@ -1,4 +1,4 @@
-"""Uvicorn entrypoint for the Smith logging pipeline."""
+"""Uvicorn entrypoint for the Nimbus logging pipeline."""
 
 from __future__ import annotations
 

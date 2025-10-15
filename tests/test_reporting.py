@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from smith.cli.report import (
+from nimbus.cli.report import (
     summarize_agent_tokens,
     summarize_cache,
     summarize_jobs,

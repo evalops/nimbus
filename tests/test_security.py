@@ -1,10 +1,10 @@
-"""Tests for Smith security helpers."""
+"""Tests for Nimbus security helpers."""
 
 from __future__ import annotations
 
 import time
 
-from smith.common.security import (
+from nimbus.common.security import (
     decode_agent_token,
     decode_agent_token_payload,
     mint_agent_token,

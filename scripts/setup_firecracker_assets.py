@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download kernel and rootfs artifacts for Smith Firecracker hosts."""
+"""Download kernel and rootfs artifacts for Nimbus Firecracker hosts."""
 
 from __future__ import annotations
 

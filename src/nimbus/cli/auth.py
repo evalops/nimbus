@@ -1,4 +1,4 @@
-"""CLI for minting Smith agent tokens."""
+"""CLI for minting Nimbus agent tokens."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from ..common.security import mint_agent_token
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mint Smith agent authentication tokens")
+    parser = argparse.ArgumentParser(description="Mint Nimbus agent authentication tokens")
     parser.add_argument("--agent-id", required=True, help="Agent identifier (sub)")
     parser.add_argument("--secret", help="Shared signing secret (omit when using --base-url)")
     parser.add_argument("--ttl", type=int, default=3600, help="Token TTL in seconds")

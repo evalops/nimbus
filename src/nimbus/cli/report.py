@@ -1,4 +1,4 @@
-"""Consolidated reporting CLI for Smith services."""
+"""Consolidated reporting CLI for Nimbus services."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .jobs import fetch_recent_jobs, fetch_status, format_timestamp
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Smith operational reports")
+    parser = argparse.ArgumentParser(description="Generate Nimbus operational reports")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     jobs_parser = subparsers.add_parser("jobs", help="Summarize control plane job activity")

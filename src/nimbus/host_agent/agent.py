@@ -1,4 +1,4 @@
-"""Async host agent that polls the Smith control plane for jobs."""
+"""Async host agent that polls the Nimbus control plane for jobs."""
 
 from __future__ import annotations
 
@@ -18,24 +18,24 @@ from ..common.security import verify_cache_token
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
 
-LOGGER = structlog.get_logger("smith.host_agent")
-TRACER = trace.get_tracer("smith.host_agent")
+LOGGER = structlog.get_logger("nimbus.host_agent")
+TRACER = trace.get_tracer("nimbus.host_agent")
 
-LEASE_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_requests_total", "Lease requests issued to control plane"))
-LEASE_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_errors_total", "Lease request errors"))
-LEASE_EMPTY_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_empty_leases_total", "Lease responses with no work"))
-JOB_STARTED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_started_total", "Jobs started"))
-JOB_SUCCEEDED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_succeeded_total", "Jobs succeeded"))
-JOB_FAILED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_failed_total", "Jobs failed"))
-LOG_BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_batches_total", "Log batches emitted"))
-LOG_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_rows_total", "Log rows emitted"))
-LOG_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_errors_total", "Log emission errors"))
-JOB_TIMEOUT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_job_timeouts_total", "Jobs terminated by watchdog"))
-JOB_TIMEOUT_LAST_TS = GLOBAL_REGISTRY.register(Gauge("smith_host_agent_last_timeout_timestamp", "Unix timestamp of last job timeout"))
+LEASE_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_lease_requests_total", "Lease requests issued to control plane"))
+LEASE_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_lease_errors_total", "Lease request errors"))
+LEASE_EMPTY_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_empty_leases_total", "Lease responses with no work"))
+JOB_STARTED_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_jobs_started_total", "Jobs started"))
+JOB_SUCCEEDED_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_jobs_succeeded_total", "Jobs succeeded"))
+JOB_FAILED_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_jobs_failed_total", "Jobs failed"))
+LOG_BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_log_batches_total", "Log batches emitted"))
+LOG_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_log_rows_total", "Log rows emitted"))
+LOG_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_log_errors_total", "Log emission errors"))
+JOB_TIMEOUT_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_host_agent_job_timeouts_total", "Jobs terminated by watchdog"))
+JOB_TIMEOUT_LAST_TS = GLOBAL_REGISTRY.register(Gauge("nimbus_host_agent_last_timeout_timestamp", "Unix timestamp of last job timeout"))
 
 
 class HostAgent:
-    """Prototype host agent orchestrating Smith microVM jobs."""
+    """Prototype host agent orchestrating Nimbus microVM jobs."""
 
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
@@ -49,7 +49,7 @@ class HostAgent:
         self._metrics_server: Optional[asyncio.AbstractServer] = None
         self._active_jobs = 0
         self._active_jobs_gauge = GLOBAL_REGISTRY.register(
-            Gauge("smith_host_agent_active_jobs", "Jobs currently being processed", supplier=lambda: float(self._active_jobs))
+            Gauge("nimbus_host_agent_active_jobs", "Jobs currently being processed", supplier=lambda: float(self._active_jobs))
         )
 
     async def run(self) -> None:
@@ -134,7 +134,7 @@ class HostAgent:
     async def _process_job(self, assignment: JobAssignment) -> None:
         with TRACER.start_as_current_span(
             "host_agent.process_job",
-            attributes={"smith.job_id": assignment.job_id, "smith.repo": assignment.repository.full_name},
+            attributes={"nimbus.job_id": assignment.job_id, "nimbus.repo": assignment.repository.full_name},
         ):
             LOGGER.info("Starting job", job_id=assignment.job_id)
             JOB_STARTED_COUNTER.inc()

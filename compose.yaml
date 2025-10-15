@@ -9,7 +9,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:23.8
     environment:
-      CLICKHOUSE_DB: smith
+      CLICKHOUSE_DB: nimbus
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     ports:
@@ -18,22 +18,22 @@ services:
 
   control-plane:
     build: .
-    command: ["uvicorn", "smith.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "nimbus.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     environment:
-      SMITH_GITHUB_APP_ID: ${SMITH_GITHUB_APP_ID:-1}
-      SMITH_GITHUB_APP_PRIVATE_KEY: ${SMITH_GITHUB_APP_PRIVATE_KEY:-stub}
-      SMITH_GITHUB_APP_INSTALLATION_ID: ${SMITH_GITHUB_APP_INSTALLATION_ID:-1}
-      SMITH_GITHUB_WEBHOOK_SECRET: ${SMITH_GITHUB_WEBHOOK_SECRET:-secret}
-      SMITH_REDIS_URL: redis://redis:6379/0
-      SMITH_DATABASE_URL: sqlite+aiosqlite:///data/control.db
-      SMITH_JWT_SECRET: ${SMITH_JWT_SECRET:-jwt-secret}
-      SMITH_AGENT_TOKEN_SECRET: ${SMITH_AGENT_TOKEN_SECRET:-agent-secret}
-      SMITH_CACHE_SHARED_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
-      SMITH_CACHE_TOKEN_TTL: ${SMITH_CACHE_TOKEN_TTL:-3600}
-      SMITH_PUBLIC_BASE_URL: http://control-plane:8000
-      SMITH_AGENT_TOKEN_RATE_LIMIT: ${SMITH_AGENT_TOKEN_RATE_LIMIT:-15}
-      SMITH_AGENT_TOKEN_RATE_INTERVAL: ${SMITH_AGENT_TOKEN_RATE_INTERVAL:-60}
-      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+      NIMBUS_GITHUB_APP_ID: ${NIMBUS_GITHUB_APP_ID:-1}
+      NIMBUS_GITHUB_APP_PRIVATE_KEY: ${NIMBUS_GITHUB_APP_PRIVATE_KEY:-stub}
+      NIMBUS_GITHUB_APP_INSTALLATION_ID: ${NIMBUS_GITHUB_APP_INSTALLATION_ID:-1}
+      NIMBUS_GITHUB_WEBHOOK_SECRET: ${NIMBUS_GITHUB_WEBHOOK_SECRET:-secret}
+      NIMBUS_REDIS_URL: redis://redis:6379/0
+      NIMBUS_DATABASE_URL: sqlite+aiosqlite:///data/control.db
+      NIMBUS_JWT_SECRET: ${NIMBUS_JWT_SECRET:-jwt-secret}
+      NIMBUS_AGENT_TOKEN_SECRET: ${NIMBUS_AGENT_TOKEN_SECRET:-agent-secret}
+      NIMBUS_CACHE_SHARED_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
+      NIMBUS_CACHE_TOKEN_TTL: ${NIMBUS_CACHE_TOKEN_TTL:-3600}
+      NIMBUS_PUBLIC_BASE_URL: http://control-plane:8000
+      NIMBUS_AGENT_TOKEN_RATE_LIMIT: ${NIMBUS_AGENT_TOKEN_RATE_LIMIT:-15}
+      NIMBUS_AGENT_TOKEN_RATE_INTERVAL: ${NIMBUS_AGENT_TOKEN_RATE_INTERVAL:-60}
+      NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
     depends_on:
       - redis
       - clickhouse
@@ -44,12 +44,12 @@ services:
 
   cache-proxy:
     build: .
-    command: ["uvicorn", "smith.cache_proxy.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uvicorn", "nimbus.cache_proxy.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
     environment:
-      SMITH_CACHE_SHARED_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
-      SMITH_CACHE_STORAGE_PATH: /data/cache
-      SMITH_CACHE_METRICS_DB: /data/cache/cache_metrics.db
-      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+      NIMBUS_CACHE_SHARED_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
+      NIMBUS_CACHE_STORAGE_PATH: /data/cache
+      NIMBUS_CACHE_METRICS_DB: /data/cache/cache_metrics.db
+      NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
     volumes:
       - cache-data:/data/cache
     ports:
@@ -59,12 +59,12 @@ services:
 
   logging-pipeline:
     build: .
-    command: ["uvicorn", "smith.logging_pipeline.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
+    command: ["uvicorn", "nimbus.logging_pipeline.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
     environment:
-      SMITH_CLICKHOUSE_URL: http://clickhouse:8123
-      SMITH_CLICKHOUSE_DATABASE: smith
-      SMITH_CLICKHOUSE_TABLE: ci_logs
-      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+      NIMBUS_CLICKHOUSE_URL: http://clickhouse:8123
+      NIMBUS_CLICKHOUSE_DATABASE: nimbus
+      NIMBUS_CLICKHOUSE_TABLE: ci_logs
+      NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
     depends_on:
       - clickhouse
     ports:
@@ -72,23 +72,23 @@ services:
 
   host-agent:
     build: .
-    command: ["python", "-m", "smith.host_agent.main"]
+    command: ["python", "-m", "nimbus.host_agent.main"]
     environment:
-      SMITH_AGENT_ID: ${SMITH_AGENT_ID:-agent-1}
-      SMITH_CONTROL_PLANE_URL: http://control-plane:8000
-      SMITH_CONTROL_PLANE_TOKEN: ${SMITH_CONTROL_PLANE_TOKEN:-set-agent-token}
-      SMITH_KERNEL_IMAGE: /artifacts/vmlinux
-      SMITH_ROOTFS_IMAGE: /artifacts/rootfs.ext4
-      SMITH_FC_BIN: /artifacts/firecracker
-      SMITH_CACHE_PROXY_URL: http://cache-proxy:8080
-      SMITH_LOG_SINK_URL: http://logging-pipeline:8090
-      SMITH_CACHE_TOKEN_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
-      SMITH_CACHE_TOKEN_VALUE: ${SMITH_CACHE_TOKEN_VALUE:-}
-      SMITH_JOB_TIMEOUT: ${SMITH_JOB_TIMEOUT:-3600}
-      SMITH_AGENT_LEASE_RETRIES: ${SMITH_AGENT_LEASE_RETRIES:-5}
-      SMITH_AGENT_LEASE_RETRY_BASE: ${SMITH_AGENT_LEASE_RETRY_BASE:-1.0}
-      SMITH_AGENT_LEASE_RETRY_MAX: ${SMITH_AGENT_LEASE_RETRY_MAX:-10.0}
-      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+      NIMBUS_AGENT_ID: ${NIMBUS_AGENT_ID:-agent-1}
+      NIMBUS_CONTROL_PLANE_URL: http://control-plane:8000
+      NIMBUS_CONTROL_PLANE_TOKEN: ${NIMBUS_CONTROL_PLANE_TOKEN:-set-agent-token}
+      NIMBUS_KERNEL_IMAGE: /artifacts/vmlinux
+      NIMBUS_ROOTFS_IMAGE: /artifacts/rootfs.ext4
+      NIMBUS_FC_BIN: /artifacts/firecracker
+      NIMBUS_CACHE_PROXY_URL: http://cache-proxy:8080
+      NIMBUS_LOG_SINK_URL: http://logging-pipeline:8090
+      NIMBUS_CACHE_TOKEN_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
+      NIMBUS_CACHE_TOKEN_VALUE: ${NIMBUS_CACHE_TOKEN_VALUE:-}
+      NIMBUS_JOB_TIMEOUT: ${NIMBUS_JOB_TIMEOUT:-3600}
+      NIMBUS_AGENT_LEASE_RETRIES: ${NIMBUS_AGENT_LEASE_RETRIES:-5}
+      NIMBUS_AGENT_LEASE_RETRY_BASE: ${NIMBUS_AGENT_LEASE_RETRY_BASE:-1.0}
+      NIMBUS_AGENT_LEASE_RETRY_MAX: ${NIMBUS_AGENT_LEASE_RETRY_MAX:-10.0}
+      NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
     volumes:
       - ./artifacts:/artifacts:ro
       - /dev/kvm:/dev/kvm

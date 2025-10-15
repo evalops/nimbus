@@ -1,4 +1,4 @@
-"""Shared observability utilities for Smith services."""
+"""Shared observability utilities for Nimbus services."""
 
 from __future__ import annotations
 

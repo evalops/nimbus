@@ -33,7 +33,7 @@ def test_build_args_logs_follow():
 
 def test_main_runs_compose(tmp_path: Path):
     env_file = tmp_path / ".env"
-    env_file.write_text("SMITH=1\n")
+    env_file.write_text("NIMBUS=1\n")
     compose_file = tmp_path / "compose.yaml"
     compose_file.write_text("version: '3'\n")
 

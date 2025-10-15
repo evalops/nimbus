@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from smith.common.schemas import GitHubRepository, JobAssignment, RunnerRegistrationToken
-from smith.common.settings import HostAgentSettings
-from smith.host_agent.agent import HostAgent, JOB_TIMEOUT_COUNTER, JOB_TIMEOUT_LAST_TS
-from smith.host_agent.firecracker import FirecrackerError, FirecrackerResult
+from nimbus.common.schemas import GitHubRepository, JobAssignment, RunnerRegistrationToken
+from nimbus.common.settings import HostAgentSettings
+from nimbus.host_agent.agent import HostAgent, JOB_TIMEOUT_COUNTER, JOB_TIMEOUT_LAST_TS
+from nimbus.host_agent.firecracker import FirecrackerError, FirecrackerResult
 
 
 class TimeoutLauncher:
@@ -32,12 +32,12 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     kernel.write_text("kernel")
     rootfs.write_text("rootfs")
 
-    monkeypatch.setenv("SMITH_AGENT_ID", "agent-1")
-    monkeypatch.setenv("SMITH_CONTROL_PLANE_URL", "http://localhost:8000")
-    monkeypatch.setenv("SMITH_CONTROL_PLANE_TOKEN", "token")
-    monkeypatch.setenv("SMITH_KERNEL_IMAGE", str(kernel))
-    monkeypatch.setenv("SMITH_ROOTFS_IMAGE", str(rootfs))
-    monkeypatch.setenv("SMITH_JOB_TIMEOUT", "1")
+    monkeypatch.setenv("NIMBUS_AGENT_ID", "agent-1")
+    monkeypatch.setenv("NIMBUS_CONTROL_PLANE_URL", "http://localhost:8000")
+    monkeypatch.setenv("NIMBUS_CONTROL_PLANE_TOKEN", "token")
+    monkeypatch.setenv("NIMBUS_KERNEL_IMAGE", str(kernel))
+    monkeypatch.setenv("NIMBUS_ROOTFS_IMAGE", str(rootfs))
+    monkeypatch.setenv("NIMBUS_JOB_TIMEOUT", "1")
 
     settings = HostAgentSettings()
 

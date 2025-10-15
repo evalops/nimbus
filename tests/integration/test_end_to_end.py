@@ -13,11 +13,11 @@ import httpx
 import jwt
 import pytest
 
-from smith.cache_proxy.app import create_app as create_cache_app
-from smith.common.schemas import RunnerRegistrationToken
-from smith.common.security import mint_cache_token
-from smith.control_plane.app import create_app as create_control_app
-from smith.logging_pipeline.app import create_app as create_logging_app
+from nimbus.cache_proxy.app import create_app as create_cache_app
+from nimbus.common.schemas import RunnerRegistrationToken
+from nimbus.common.security import mint_cache_token
+from nimbus.control_plane.app import create_app as create_control_app
+from nimbus.logging_pipeline.app import create_app as create_logging_app
 
 
 class FakeRedis:
@@ -114,28 +114,28 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
     storage_path = tmp_path / "cache"
     storage_path.mkdir()
 
-    monkeypatch.setattr("smith.control_plane.app.redis_from_url", lambda url, decode_responses=False: FakeRedis())
-    monkeypatch.setattr("smith.control_plane.app.GitHubAppClient", FakeGitHubAppClient)
-    monkeypatch.setattr("smith.logging_pipeline.app.PipelineState", FakePipelineState)
+    monkeypatch.setattr("nimbus.control_plane.app.redis_from_url", lambda url, decode_responses=False: FakeRedis())
+    monkeypatch.setattr("nimbus.control_plane.app.GitHubAppClient", FakeGitHubAppClient)
+    monkeypatch.setattr("nimbus.logging_pipeline.app.PipelineState", FakePipelineState)
 
     env = {
-        "SMITH_GITHUB_APP_ID": "1",
-        "SMITH_GITHUB_APP_PRIVATE_KEY": "test",
-        "SMITH_GITHUB_APP_INSTALLATION_ID": "1",
-        "SMITH_GITHUB_WEBHOOK_SECRET": webhook_secret,
-        "SMITH_REDIS_URL": "redis://test",
-        "SMITH_DATABASE_URL": database_url,
-        "SMITH_JWT_SECRET": "jwt-secret",
-        "SMITH_PUBLIC_BASE_URL": "http://localhost",
-        "SMITH_CACHE_TOKEN_TTL": "3600",
-        "SMITH_CACHE_SHARED_SECRET": cache_secret,
-        "SMITH_AGENT_TOKEN_SECRET": agent_secret,
-        "SMITH_AGENT_TOKEN_RATE_LIMIT": "2",
-        "SMITH_AGENT_TOKEN_RATE_INTERVAL": "60",
-        "SMITH_CACHE_STORAGE_PATH": str(storage_path),
-        "SMITH_CLICKHOUSE_URL": "http://clickhouse",
-        "SMITH_CLICKHOUSE_DATABASE": "smith",
-        "SMITH_CLICKHOUSE_TABLE": "ci_logs",
+        "NIMBUS_GITHUB_APP_ID": "1",
+        "NIMBUS_GITHUB_APP_PRIVATE_KEY": "test",
+        "NIMBUS_GITHUB_APP_INSTALLATION_ID": "1",
+        "NIMBUS_GITHUB_WEBHOOK_SECRET": webhook_secret,
+        "NIMBUS_REDIS_URL": "redis://test",
+        "NIMBUS_DATABASE_URL": database_url,
+        "NIMBUS_JWT_SECRET": "jwt-secret",
+        "NIMBUS_PUBLIC_BASE_URL": "http://localhost",
+        "NIMBUS_CACHE_TOKEN_TTL": "3600",
+        "NIMBUS_CACHE_SHARED_SECRET": cache_secret,
+        "NIMBUS_AGENT_TOKEN_SECRET": agent_secret,
+        "NIMBUS_AGENT_TOKEN_RATE_LIMIT": "2",
+        "NIMBUS_AGENT_TOKEN_RATE_INTERVAL": "60",
+        "NIMBUS_CACHE_STORAGE_PATH": str(storage_path),
+        "NIMBUS_CLICKHOUSE_URL": "http://clickhouse",
+        "NIMBUS_CLICKHOUSE_DATABASE": "nimbus",
+        "NIMBUS_CLICKHOUSE_TABLE": "ci_logs",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -185,7 +185,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
                 "iat": int(datetime.now(timezone.utc).timestamp()),
                 "exp": int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp()),
             },
-            env["SMITH_JWT_SECRET"],
+            env["NIMBUS_JWT_SECRET"],
             algorithm="HS256",
         )
         mint_response = await control_client.post(
@@ -291,7 +291,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
 
         metrics_response = await control_client.get("/metrics")
         assert metrics_response.status_code == 200
-        assert "smith_control_plane_request_latency_seconds_count" in metrics_response.text
+        assert "nimbus_control_plane_request_latency_seconds_count" in metrics_response.text
 
         rate_limited = await control_client.post(
             "/api/agents/token",
@@ -302,20 +302,20 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
 
         cache_metrics = await cache_client.get("/metrics")
         assert cache_metrics.status_code == 200
-        assert "smith_cache_proxy_request_latency_seconds_count" in cache_metrics.text
+        assert "nimbus_cache_proxy_request_latency_seconds_count" in cache_metrics.text
 
         head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
         assert head_response.status_code == 200
         assert head_response.headers["content-length"] == "5"
 
         metrics_control = await control_client.get("/metrics")
-        assert "smith_control_plane_requests_total" in metrics_control.text
+        assert "nimbus_control_plane_requests_total" in metrics_control.text
 
         metrics_logging = await logging_client.get("/metrics")
-        assert "smith_logging_rows_ingested_total" in metrics_logging.text
+        assert "nimbus_logging_rows_ingested_total" in metrics_logging.text
 
         metrics_cache = await cache_client.get("/metrics", headers=cache_headers)
-        assert "smith_cache_hits_total" in metrics_cache.text
+        assert "nimbus_cache_hits_total" in metrics_cache.text
     finally:
         if control_client is not None:
             await control_client.aclose()

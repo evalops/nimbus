@@ -19,7 +19,7 @@ def ensure_env_file(path: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Manage Smith docker compose workflows")
+    parser = argparse.ArgumentParser(description="Manage Nimbus docker compose workflows")
     parser.add_argument("command", choices=["up", "down", "logs", "config", "ps"], help="Compose action to perform")
     parser.add_argument("--env-file", default=".env", help="Path to compose env file")
     parser.add_argument("--compose-file", default="compose.yaml", help="Path to compose file")

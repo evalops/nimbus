@@ -1,6 +1,6 @@
-# Smith
+# Nimbus
 
-Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation.
+Nimbus is an experimental platform that mirrors key ideas from Blacknimbus.sh: an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation.
 
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
@@ -16,34 +16,34 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    uv venv .venv
    uv pip install -e .
    ```
-2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `SMITH_GITHUB_WEBHOOK_SECRET`, `SMITH_AGENT_TOKEN_SECRET`, and `SMITH_CACHE_SHARED_SECRET`).
+2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `NIMBUS_GITHUB_WEBHOOK_SECRET`, `NIMBUS_AGENT_TOKEN_SECRET`, and `NIMBUS_CACHE_SHARED_SECRET`).
 3. Launch services with uvicorn (example):
    ```bash
-   uvicorn smith.control_plane.main:app --reload
-   uvicorn smith.cache_proxy.main:app --reload --port 8001
-   uvicorn smith.logging_pipeline.main:app --reload --port 8002
-   python -m smith.host_agent.main
+   uvicorn nimbus.control_plane.main:app --reload
+   uvicorn nimbus.cache_proxy.main:app --reload --port 8001
+   uvicorn nimbus.logging_pipeline.main:app --reload --port 8002
+   python -m nimbus.host_agent.main
    ```
-4. Optionally provide a fallback cache token to hosts via `SMITH_CACHE_TOKEN_SECRET` and `SMITH_CACHE_TOKEN_VALUE` when experimenting without live control-plane minted tokens.
+4. Optionally provide a fallback cache token to hosts via `NIMBUS_CACHE_TOKEN_SECRET` and `NIMBUS_CACHE_TOKEN_VALUE` when experimenting without live control-plane minted tokens.
 5. Inspect recent jobs from the command line (example):
    ```bash
-   python -m smith.cli.jobs recent --base-url http://localhost:8000 --token $SMITH_JWT_SECRET --limit 10
+   python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --limit 10
    ```
 6. Check overall queue health:
    ```bash
-   python -m smith.cli.jobs status --base-url http://localhost:8000 --token $SMITH_JWT_SECRET
+   python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET
    ```
 7. Query logs for a job:
    ```bash
-   python -m smith.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
+   python -m nimbus.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
    ```
 8. Mint a cache token for testing:
    ```bash
-   python -m smith.cli.cache --secret $SMITH_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
+   python -m nimbus.cli.cache --secret $NIMBUS_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
    ```
 9. Mint an agent token for a host:
    ```bash
-   python -m smith.cli.auth --agent-id agent-001 --secret $SMITH_AGENT_TOKEN_SECRET --ttl 3600
+   python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
    ```
 10. Run the unit and integration test suite:
     ```bash
@@ -52,77 +52,77 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 
 ## Environment Variables
 
-### Control Plane (`smith.control_plane`)
+### Control Plane (`nimbus.control_plane`)
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `SMITH_GITHUB_APP_ID` | GitHub App numeric identifier. | required |
-| `SMITH_GITHUB_APP_PRIVATE_KEY` | PEM-encoded private key for the GitHub App. | required |
-| `SMITH_GITHUB_APP_INSTALLATION_ID` | Installation ID for the GitHub App. | required |
-| `SMITH_GITHUB_WEBHOOK_SECRET` | Shared secret for validating webhook signatures. | required |
-| `SMITH_REDIS_URL` | Redis connection string (e.g. `redis://localhost:6379/0`). | required |
-| `SMITH_DATABASE_URL` | SQLAlchemy async database URL (e.g. `sqlite+aiosqlite:///./smith.db`). | required |
-| `SMITH_JWT_SECRET` | Secret used to mint control-plane JWTs for CLI access. | required |
-| `SMITH_PUBLIC_BASE_URL` | Public URL base returned to GitHub for runner callbacks. | required |
-| `SMITH_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
-| `SMITH_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
-| `SMITH_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
-| `SMITH_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
-| `SMITH_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
-| `SMITH_ADMIN_ALLOWED_SUBJECTS` | Comma-separated list of allowed admin JWT subjects. | empty (all subjects) |
+| `NIMBUS_GITHUB_APP_ID` | GitHub App numeric identifier. | required |
+| `NIMBUS_GITHUB_APP_PRIVATE_KEY` | PEM-encoded private key for the GitHub App. | required |
+| `NIMBUS_GITHUB_APP_INSTALLATION_ID` | Installation ID for the GitHub App. | required |
+| `NIMBUS_GITHUB_WEBHOOK_SECRET` | Shared secret for validating webhook signatures. | required |
+| `NIMBUS_REDIS_URL` | Redis connection string (e.g. `redis://localhost:6379/0`). | required |
+| `NIMBUS_DATABASE_URL` | SQLAlchemy async database URL (e.g. `sqlite+aiosqlite:///./nimbus.db`). | required |
+| `NIMBUS_JWT_SECRET` | Secret used to mint control-plane JWTs for CLI access. | required |
+| `NIMBUS_PUBLIC_BASE_URL` | Public URL base returned to GitHub for runner callbacks. | required |
+| `NIMBUS_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
+| `NIMBUS_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
+| `NIMBUS_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
+| `NIMBUS_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
+| `NIMBUS_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
+| `NIMBUS_ADMIN_ALLOWED_SUBJECTS` | Comma-separated list of allowed admin JWT subjects. | empty (all subjects) |
 
-### Host Agent (`smith.host_agent`)
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `SMITH_AGENT_ID` | Unique identifier for the host agent instance. | required |
-| `SMITH_CONTROL_PLANE_URL` | Base URL of the control plane API. | required |
-| `SMITH_CONTROL_PLANE_TOKEN` | Bearer token issued by the control plane. | required |
-| `SMITH_AGENT_REDIS_URL` | Optional Redis URL for local coordination/caching. | optional |
-| `SMITH_CACHE_PROXY_URL` | Cache proxy base URL for artifact downloads. | optional |
-| `SMITH_CACHE_TOKEN_SECRET` | Fallback cache token verification secret (lab/dev). | optional |
-| `SMITH_CACHE_TOKEN_VALUE` | Pre-minted cache token when bypassing control plane. | optional |
-| `SMITH_LOG_SINK_URL` | Logging pipeline ingest endpoint. | optional |
-| `SMITH_AGENT_METRICS_HOST` | Prometheus metrics listener host. | `0.0.0.0` |
-| `SMITH_AGENT_METRICS_PORT` | Prometheus metrics listener port. | `9460` |
-| `SMITH_FC_BIN` | Path to the Firecracker binary. | `/usr/local/bin/firecracker` |
-| `SMITH_KERNEL_IMAGE` | Path to kernel image used for VMs. | required |
-| `SMITH_ROOTFS_IMAGE` | Root filesystem image path. | required |
-| `SMITH_TAP_PREFIX` | Prefix for tap interfaces created per VM. | `smith` |
-| `SMITH_JOB_TIMEOUT` | Maximum job runtime in seconds. | `3600` |
-| `SMITH_VM_SHUTDOWN_GRACE` | Graceful shutdown wait in seconds. | `30` |
-| `SMITH_AGENT_LEASE_RETRIES` | Number of retries for lease requests. | `3` |
-| `SMITH_AGENT_LEASE_RETRY_BASE` | Base backoff delay (seconds). | `1.0` |
-| `SMITH_AGENT_LEASE_RETRY_MAX` | Maximum backoff delay (seconds). | `15.0` |
-
-### Cache Proxy (`smith.cache_proxy`)
+### Host Agent (`nimbus.host_agent`)
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `SMITH_CACHE_STORAGE_PATH` | Filesystem directory for cached artifacts. | `./cache` |
-| `SMITH_CACHE_SHARED_SECRET` | HMAC secret for API token validation. | required |
-| `SMITH_CACHE_S3_ENDPOINT` | S3-compatible endpoint URL (enable remote backend). | optional |
-| `SMITH_CACHE_S3_BUCKET` | S3 bucket/key prefix for remote storage. | optional |
-| `SMITH_CACHE_S3_REGION` | AWS region for the S3 endpoint. | optional |
-| `SMITH_CACHE_METRICS_DB` | SQLite database used for cache metrics. | `./cache/cache_metrics.db` |
-| `SMITH_CACHE_S3_MAX_RETRIES` | Retry attempts for S3 operations. | `3` |
-| `SMITH_CACHE_S3_RETRY_BASE` | Base backoff (seconds) for retries. | `0.2` |
-| `SMITH_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
-| `SMITH_CACHE_S3_CIRCUIT_FAILURES` | Failures before circuit opens. | `5` |
-| `SMITH_CACHE_S3_CIRCUIT_RESET` | Seconds before retrying after circuit opens. | `30` |
-| `SMITH_CACHE_MAX_BYTES` | Optional storage cap that triggers eviction of cold entries. | unset |
-| `SMITH_CACHE_EVICTION_BATCH` | Number of cold entries inspected per eviction pass. | `100` |
+| `NIMBUS_AGENT_ID` | Unique identifier for the host agent instance. | required |
+| `NIMBUS_CONTROL_PLANE_URL` | Base URL of the control plane API. | required |
+| `NIMBUS_CONTROL_PLANE_TOKEN` | Bearer token issued by the control plane. | required |
+| `NIMBUS_AGENT_REDIS_URL` | Optional Redis URL for local coordination/caching. | optional |
+| `NIMBUS_CACHE_PROXY_URL` | Cache proxy base URL for artifact downloads. | optional |
+| `NIMBUS_CACHE_TOKEN_SECRET` | Fallback cache token verification secret (lab/dev). | optional |
+| `NIMBUS_CACHE_TOKEN_VALUE` | Pre-minted cache token when bypassing control plane. | optional |
+| `NIMBUS_LOG_SINK_URL` | Logging pipeline ingest endpoint. | optional |
+| `NIMBUS_AGENT_METRICS_HOST` | Prometheus metrics listener host. | `0.0.0.0` |
+| `NIMBUS_AGENT_METRICS_PORT` | Prometheus metrics listener port. | `9460` |
+| `NIMBUS_FC_BIN` | Path to the Firecracker binary. | `/usr/local/bin/firecracker` |
+| `NIMBUS_KERNEL_IMAGE` | Path to kernel image used for VMs. | required |
+| `NIMBUS_ROOTFS_IMAGE` | Root filesystem image path. | required |
+| `NIMBUS_TAP_PREFIX` | Prefix for tap interfaces created per VM. | `nimbus` |
+| `NIMBUS_JOB_TIMEOUT` | Maximum job runtime in seconds. | `3600` |
+| `NIMBUS_VM_SHUTDOWN_GRACE` | Graceful shutdown wait in seconds. | `30` |
+| `NIMBUS_AGENT_LEASE_RETRIES` | Number of retries for lease requests. | `3` |
+| `NIMBUS_AGENT_LEASE_RETRY_BASE` | Base backoff delay (seconds). | `1.0` |
+| `NIMBUS_AGENT_LEASE_RETRY_MAX` | Maximum backoff delay (seconds). | `15.0` |
 
-### Logging Pipeline (`smith.logging_pipeline`)
+### Cache Proxy (`nimbus.cache_proxy`)
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `SMITH_CLICKHOUSE_URL` | ClickHouse HTTP endpoint (e.g. `http://localhost:8123`). | required |
-| `SMITH_CLICKHOUSE_DATABASE` | Target database name. | `smith` |
-| `SMITH_CLICKHOUSE_TABLE` | Target table for log ingestion. | `ci_logs` |
-| `SMITH_CLICKHOUSE_USERNAME` | Basic auth username for ClickHouse. | optional |
-| `SMITH_CLICKHOUSE_PASSWORD` | Basic auth password for ClickHouse. | optional |
-| `SMITH_CLICKHOUSE_TIMEOUT` | HTTP timeout in seconds for ClickHouse operations. | `10` |
+| `NIMBUS_CACHE_STORAGE_PATH` | Filesystem directory for cached artifacts. | `./cache` |
+| `NIMBUS_CACHE_SHARED_SECRET` | HMAC secret for API token validation. | required |
+| `NIMBUS_CACHE_S3_ENDPOINT` | S3-compatible endpoint URL (enable remote backend). | optional |
+| `NIMBUS_CACHE_S3_BUCKET` | S3 bucket/key prefix for remote storage. | optional |
+| `NIMBUS_CACHE_S3_REGION` | AWS region for the S3 endpoint. | optional |
+| `NIMBUS_CACHE_METRICS_DB` | SQLite database used for cache metrics. | `./cache/cache_metrics.db` |
+| `NIMBUS_CACHE_S3_MAX_RETRIES` | Retry attempts for S3 operations. | `3` |
+| `NIMBUS_CACHE_S3_RETRY_BASE` | Base backoff (seconds) for retries. | `0.2` |
+| `NIMBUS_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
+| `NIMBUS_CACHE_S3_CIRCUIT_FAILURES` | Failures before circuit opens. | `5` |
+| `NIMBUS_CACHE_S3_CIRCUIT_RESET` | Seconds before retrying after circuit opens. | `30` |
+| `NIMBUS_CACHE_MAX_BYTES` | Optional storage cap that triggers eviction of cold entries. | unset |
+| `NIMBUS_CACHE_EVICTION_BATCH` | Number of cold entries inspected per eviction pass. | `100` |
+
+### Logging Pipeline (`nimbus.logging_pipeline`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NIMBUS_CLICKHOUSE_URL` | ClickHouse HTTP endpoint (e.g. `http://localhost:8123`). | required |
+| `NIMBUS_CLICKHOUSE_DATABASE` | Target database name. | `nimbus` |
+| `NIMBUS_CLICKHOUSE_TABLE` | Target table for log ingestion. | `ci_logs` |
+| `NIMBUS_CLICKHOUSE_USERNAME` | Basic auth username for ClickHouse. | optional |
+| `NIMBUS_CLICKHOUSE_PASSWORD` | Basic auth password for ClickHouse. | optional |
+| `NIMBUS_CLICKHOUSE_TIMEOUT` | HTTP timeout in seconds for ClickHouse operations. | `10` |
 
 ### Shared observability variables
 
@@ -130,15 +130,15 @@ All services honor the following optional environment variables:
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `SMITH_LOG_LEVEL` | Structured logging level (`DEBUG`, `INFO`, etc.). | `INFO` |
-| `SMITH_OTEL_EXPORTER_ENDPOINT` | OTLP collector endpoint (HTTP or gRPC). | console exporter |
-| `SMITH_OTEL_EXPORTER_HEADERS` | Comma-separated OTLP headers (`key=value`). | none |
-| `SMITH_OTEL_SAMPLER_RATIO` | Sampling ratio (0.0–1.0) for tracing. | `0.1` |
+| `NIMBUS_LOG_LEVEL` | Structured logging level (`DEBUG`, `INFO`, etc.). | `INFO` |
+| `NIMBUS_OTEL_EXPORTER_ENDPOINT` | OTLP collector endpoint (HTTP or gRPC). | console exporter |
+| `NIMBUS_OTEL_EXPORTER_HEADERS` | Comma-separated OTLP headers (`key=value`). | none |
+| `NIMBUS_OTEL_SAMPLER_RATIO` | Sampling ratio (0.0–1.0) for tracing. | `0.1` |
 
 ### Bootstrap Utilities
 
 - **Environment generation** – run `uv run python scripts/bootstrap_compose.py --output .env` to create a secrets-filled `.env`. Append `--control-plane-url http://localhost:8000 --admin-token <jwt>` to mint an initial host-agent token, and `--secrets-output bootstrap-tokens.json` to capture minted tokens in a separate JSON file for secure distribution.
-- **Manual setup** – alternatively copy `compose.env.sample` and populate the required secrets by hand using the `smith.cli.admin` commands described below.
+- **Manual setup** – alternatively copy `compose.env.sample` and populate the required secrets by hand using the `nimbus.cli.admin` commands described below.
 
 ### Developer Shortcuts
 
@@ -148,17 +148,17 @@ All services honor the following optional environment variables:
 
 ### Docker Compose Stack
 
-1. Ensure `.env` is prepared via the bootstrap script. If you minted an agent token into `bootstrap-tokens.json`, copy `agent_token` into `SMITH_CONTROL_PLANE_TOKEN` before starting services.
+1. Ensure `.env` is prepared via the bootstrap script. If you minted an agent token into `bootstrap-tokens.json`, copy `agent_token` into `NIMBUS_CONTROL_PLANE_TOKEN` before starting services.
 2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
 3. Launch the stack with `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
 
-> **Optional smoke test:** run `SMITH_RUN_COMPOSE_TESTS=1 uv run pytest tests/system/test_compose_stack.py` to validate the compose configuration (requires Docker).
+> **Optional smoke test:** run `NIMBUS_RUN_COMPOSE_TESTS=1 uv run pytest tests/system/test_compose_stack.py` to validate the compose configuration (requires Docker).
 
 ### Cache proxy backends
 
-- Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
-- S3-compatible storage: configure `SMITH_CACHE_S3_ENDPOINT`, `SMITH_CACHE_S3_BUCKET`, optionally `SMITH_CACHE_S3_REGION`, and provide credentials via standard AWS environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
-- Resilience tuning: adjust `SMITH_CACHE_S3_MAX_RETRIES`, `SMITH_CACHE_S3_RETRY_BASE`, `SMITH_CACHE_S3_RETRY_MAX`, `SMITH_CACHE_S3_CIRCUIT_FAILURES`, and `SMITH_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions. Pair `SMITH_CACHE_MAX_BYTES` with `SMITH_CACHE_EVICTION_BATCH` to cap disk usage and control eviction sweep size.
+- Local filesystem (default): set `NIMBUS_CACHE_STORAGE_PATH` to a writable directory.
+- S3-compatible storage: configure `NIMBUS_CACHE_S3_ENDPOINT`, `NIMBUS_CACHE_S3_BUCKET`, optionally `NIMBUS_CACHE_S3_REGION`, and provide credentials via standard AWS environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+- Resilience tuning: adjust `NIMBUS_CACHE_S3_MAX_RETRIES`, `NIMBUS_CACHE_S3_RETRY_BASE`, `NIMBUS_CACHE_S3_RETRY_MAX`, `NIMBUS_CACHE_S3_CIRCUIT_FAILURES`, and `NIMBUS_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions. Pair `NIMBUS_CACHE_MAX_BYTES` with `NIMBUS_CACHE_EVICTION_BATCH` to cap disk usage and control eviction sweep size.
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:
@@ -183,11 +183,11 @@ python scripts/setup_firecracker_assets.py ./artifacts
    ```
 2. Build all configured versions (downloads, verifies, and stages overlays):
    ```bash
-   uv run python -m smith.rootfs.cli build --config rootfs.yaml
+   uv run python -m nimbus.rootfs.cli build --config rootfs.yaml
    ```
 3. Switch the active rootfs version when rolling out updates:
    ```bash
-   uv run python -m smith.rootfs.cli activate --config rootfs.yaml ci
+   uv run python -m nimbus.rootfs.cli activate --config rootfs.yaml ci
    ```
 
 ## Reporting CLI
@@ -196,28 +196,28 @@ Use the reporting CLI to generate quick snapshots across services:
 
 - Jobs summary:
   ```bash
-  python -m smith.cli.report jobs --base-url http://localhost:8000 --token $SMITH_JWT_SECRET
+  python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET
   ```
 - Cache usage overview:
   ```bash
-  python -m smith.cli.report cache --cache-url http://localhost:8001
+  python -m nimbus.cli.report cache --cache-url http://localhost:8001
   ```
 - Log ingestion summary for a specific job:
   ```bash
-  python -m smith.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
+  python -m nimbus.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
   ```
 - Full overview combining jobs, cache, and logs:
   ```bash
-  python -m smith.cli.report overview \
-    --base-url http://localhost:8000 --token $SMITH_JWT_SECRET \
+  python -m nimbus.cli.report overview \
+    --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET \
     --cache-url http://localhost:8001 \
     --logs-url http://localhost:8002
   ```
 
 ## Observability
 
-- Structured logging is enabled across services via `structlog`; adjust verbosity with `SMITH_LOG_LEVEL` (e.g. `DEBUG`, `INFO`).
-- Enable OpenTelemetry tracing by setting `SMITH_OTEL_EXPORTER_ENDPOINT` (OTLP HTTP/GRPC), optional `SMITH_OTEL_EXPORTER_HEADERS` (`key=value` pairs), and `SMITH_OTEL_SAMPLER_RATIO` (0.0–1.0) to control sampling.
+- Structured logging is enabled across services via `structlog`; adjust verbosity with `NIMBUS_LOG_LEVEL` (e.g. `DEBUG`, `INFO`).
+- Enable OpenTelemetry tracing by setting `NIMBUS_OTEL_EXPORTER_ENDPOINT` (OTLP HTTP/GRPC), optional `NIMBUS_OTEL_EXPORTER_HEADERS` (`key=value` pairs), and `NIMBUS_OTEL_SAMPLER_RATIO` (0.0–1.0) to control sampling.
 
 ## Deployment Recipes
 
@@ -226,27 +226,27 @@ Use the reporting CLI to generate quick snapshots across services:
 1. Export the required environment variables for each service (see [Environment Variables](#environment-variables)).
 2. Start the core APIs with uv:
    ```bash
-   uv run uvicorn smith.control_plane.main:app --host 0.0.0.0 --port 8000 --reload
-   uv run uvicorn smith.cache_proxy.main:app --host 0.0.0.0 --port 8001 --reload
-   uv run uvicorn smith.logging_pipeline.main:app --host 0.0.0.0 --port 8002 --reload
+   uv run uvicorn nimbus.control_plane.main:app --host 0.0.0.0 --port 8000 --reload
+   uv run uvicorn nimbus.cache_proxy.main:app --host 0.0.0.0 --port 8001 --reload
+   uv run uvicorn nimbus.logging_pipeline.main:app --host 0.0.0.0 --port 8002 --reload
    ```
 3. Launch a host agent once kernel/rootfs assets are in place:
    ```bash
-   uv run python -m smith.host_agent.main
+   uv run python -m nimbus.host_agent.main
    ```
 
 ### Remote host agent
 
 - Install the same wheel (`uv pip install .`) or copy the project to the host.
 - Provision kernel/rootfs images with `scripts/setup_firecracker_assets.py`.
-- Export `SMITH_CONTROL_PLANE_URL`, `SMITH_CONTROL_PLANE_TOKEN`, and networking variables appropriate for the host.
-- Run `python -m smith.host_agent.main` under a process manager (e.g. `systemd` or `supervisord`).
+- Export `NIMBUS_CONTROL_PLANE_URL`, `NIMBUS_CONTROL_PLANE_TOKEN`, and networking variables appropriate for the host.
+- Run `python -m nimbus.host_agent.main` under a process manager (e.g. `systemd` or `supervisord`).
 
 ### Minimal cache proxy deployment
 
 ```bash
-export SMITH_CACHE_SHARED_SECRET="super-secret"
-uv run uvicorn smith.cache_proxy.main:app --host 0.0.0.0 --port 8001
+export NIMBUS_CACHE_SHARED_SECRET="super-secret"
+uv run uvicorn nimbus.cache_proxy.main:app --host 0.0.0.0 --port 8001
 ```
 
 Configure S3-specific variables when delegating storage to a remote backend.
@@ -257,4 +257,4 @@ Configure S3-specific variables when delegating storage to a remote backend.
 - Expose Prometheus metrics for control plane, cache proxy, and host agents.
 - Add automated integration tests that exercise cache, logging, and Firecracker workflows end-to-end.
 
-Smith is a work in progress; contributions and suggestions are welcome.
+Nimbus is a work in progress; contributions and suggestions are welcome.

@@ -1,4 +1,4 @@
-"""Administrative tooling for Smith control plane operations."""
+"""Administrative tooling for Nimbus control plane operations."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .report import print_token_summary, summarize_agent_tokens
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Smith administrative utilities")
+    parser = argparse.ArgumentParser(description="Nimbus administrative utilities")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     inventory = subparsers.add_parser("tokens", help="Inspect or rotate agent tokens")

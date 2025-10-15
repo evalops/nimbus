@@ -7,9 +7,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from smith.cache_proxy.app import create_app as create_cache_app
-from smith.common.security import mint_cache_token
-from smith.logging_pipeline.app import create_app as create_logging_app
+from nimbus.cache_proxy.app import create_app as create_cache_app
+from nimbus.common.security import mint_cache_token
+from nimbus.logging_pipeline.app import create_app as create_logging_app
 
 
 @pytest.fixture
@@ -36,9 +36,9 @@ async def test_cache_status_reports_cold_entries(monkeypatch, tmp_path: Path):
     storage.mkdir()
 
     env = {
-        "SMITH_CACHE_STORAGE_PATH": str(storage),
-        "SMITH_CACHE_SHARED_SECRET": "local-cache-secret",
-        "SMITH_CACHE_METRICS_DB": str(metrics_db),
+        "NIMBUS_CACHE_STORAGE_PATH": str(storage),
+        "NIMBUS_CACHE_SHARED_SECRET": "local-cache-secret",
+        "NIMBUS_CACHE_METRICS_DB": str(metrics_db),
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -75,9 +75,9 @@ async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
     storage.mkdir()
 
     env = {
-        "SMITH_CACHE_STORAGE_PATH": str(storage),
-        "SMITH_CACHE_SHARED_SECRET": "local-cache-secret",
-        "SMITH_CACHE_METRICS_DB": str(metrics_db),
+        "NIMBUS_CACHE_STORAGE_PATH": str(storage),
+        "NIMBUS_CACHE_SHARED_SECRET": "local-cache-secret",
+        "NIMBUS_CACHE_METRICS_DB": str(metrics_db),
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -95,8 +95,8 @@ async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
         metrics_response = await client.get("/metrics")
         assert metrics_response.status_code == 200
         metrics_text = metrics_response.text
-        assert "smith_cache_proxy_request_latency_seconds_count" in metrics_text
-        match = re.search(r"smith_cache_proxy_request_latency_seconds_count (\d+)", metrics_text)
+        assert "nimbus_cache_proxy_request_latency_seconds_count" in metrics_text
+        match = re.search(r"nimbus_cache_proxy_request_latency_seconds_count (\d+)", metrics_text)
         assert match and int(match.group(1)) >= 40
 
 
@@ -107,10 +107,10 @@ async def test_cache_eviction_respects_limit(monkeypatch, tmp_path: Path):
     storage.mkdir()
 
     env = {
-        "SMITH_CACHE_STORAGE_PATH": str(storage),
-        "SMITH_CACHE_SHARED_SECRET": "local-cache-secret",
-        "SMITH_CACHE_METRICS_DB": str(metrics_db),
-        "SMITH_CACHE_MAX_BYTES": "40",
+        "NIMBUS_CACHE_STORAGE_PATH": str(storage),
+        "NIMBUS_CACHE_SHARED_SECRET": "local-cache-secret",
+        "NIMBUS_CACHE_METRICS_DB": str(metrics_db),
+        "NIMBUS_CACHE_MAX_BYTES": "40",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -170,10 +170,10 @@ class FailingAsyncClient:
 @pytest.mark.anyio("asyncio")
 async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path: Path):
     env = {
-        "SMITH_CLICKHOUSE_URL": "http://clickhouse:8123",
-        "SMITH_CLICKHOUSE_DATABASE": "smith",
-        "SMITH_CLICKHOUSE_TABLE": "ci_logs",
-        "SMITH_LOG_LEVEL": "INFO",
+        "NIMBUS_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "NIMBUS_CLICKHOUSE_DATABASE": "nimbus",
+        "NIMBUS_CLICKHOUSE_TABLE": "ci_logs",
+        "NIMBUS_LOG_LEVEL": "INFO",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -186,7 +186,7 @@ async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path:
             return original_async_client(*args, **kwargs)
         return failing_client
 
-    monkeypatch.setattr("smith.logging_pipeline.app.httpx.AsyncClient", async_client_factory)
+    monkeypatch.setattr("nimbus.logging_pipeline.app.httpx.AsyncClient", async_client_factory)
 
     app = create_logging_app()
     async with app_client(app) as client:
@@ -208,8 +208,8 @@ async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path:
         assert metrics_response.status_code == 200
         metrics_text = metrics_response.text
 
-        error_match = re.search(r"smith_logging_clickhouse_errors_total (\d+)", metrics_text)
+        error_match = re.search(r"nimbus_logging_clickhouse_errors_total (\d+)", metrics_text)
         assert error_match and int(error_match.group(1)) >= 1
 
-        latency_match = re.search(r"smith_logging_batch_latency_seconds_count (\d+)", metrics_text)
+        latency_match = re.search(r"nimbus_logging_batch_latency_seconds_count (\d+)", metrics_text)
         assert latency_match and int(latency_match.group(1)) >= 1

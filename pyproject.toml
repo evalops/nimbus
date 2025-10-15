@@ -3,9 +3,9 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "smith"
+name = "nimbus"
 version = "0.1.0"
-description = "Smith: control plane and host agent prototype for accelerated GitHub Actions"
+description = "Nimbus: control plane and host agent prototype for accelerated GitHub Actions"
 authors = [
   { name = "EvalOps" }
 ]
@@ -36,11 +36,8 @@ host = [
   "aiodocker>=0.21,<0.22"
 ]
 
-[tool.uv]
-scripts = { bootstrap = "python scripts/bootstrap_compose.py --output .env --secrets-output bootstrap-tokens.json", compose-up = "python scripts/compose_manager.py up", compose-down = "python scripts/compose_manager.py down", compose-logs = "python scripts/compose_manager.py logs --follow", test = "pytest", test-integration = "pytest tests/integration" }
-
 [tool.hatch.build.targets.wheel]
-packages = ["src/smith"]
+packages = ["src/nimbus"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

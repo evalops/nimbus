@@ -8,30 +8,30 @@ from typing import Optional
 
 import httpx
 
-from smith.common.security import mint_agent_token
+from nimbus.common.security import mint_agent_token
 
 
 DEFAULTS = {
-    "SMITH_GITHUB_APP_ID": "1",
-    "SMITH_GITHUB_APP_INSTALLATION_ID": "1",
-    "SMITH_GITHUB_WEBHOOK_SECRET": None,
-    "SMITH_GITHUB_APP_PRIVATE_KEY": "replace-with-github-app-private-key",
-    "SMITH_AGENT_TOKEN_RATE_LIMIT": "15",
-    "SMITH_AGENT_TOKEN_RATE_INTERVAL": "60",
-    "SMITH_CACHE_TOKEN_TTL": "3600",
+    "NIMBUS_GITHUB_APP_ID": "1",
+    "NIMBUS_GITHUB_APP_INSTALLATION_ID": "1",
+    "NIMBUS_GITHUB_WEBHOOK_SECRET": None,
+    "NIMBUS_GITHUB_APP_PRIVATE_KEY": "replace-with-github-app-private-key",
+    "NIMBUS_AGENT_TOKEN_RATE_LIMIT": "15",
+    "NIMBUS_AGENT_TOKEN_RATE_INTERVAL": "60",
+    "NIMBUS_CACHE_TOKEN_TTL": "3600",
 }
 
 
 SECRET_KEYS = [
-    "SMITH_JWT_SECRET",
-    "SMITH_AGENT_TOKEN_SECRET",
-    "SMITH_CACHE_SHARED_SECRET",
+    "NIMBUS_JWT_SECRET",
+    "NIMBUS_AGENT_TOKEN_SECRET",
+    "NIMBUS_CACHE_SHARED_SECRET",
 ]
 
 
 OPTIONAL_KEYS = [
-    "SMITH_CONTROL_PLANE_TOKEN",
-    "SMITH_CACHE_TOKEN_VALUE",
+    "NIMBUS_CONTROL_PLANE_TOKEN",
+    "NIMBUS_CACHE_TOKEN_VALUE",
 ]
 
 
@@ -72,7 +72,7 @@ def bootstrap_env(
     if print_admin_token:
         minted_admin_token = mint_agent_token(
             agent_id=admin_subject,
-            secret=values["SMITH_JWT_SECRET"],
+            secret=values["NIMBUS_JWT_SECRET"],
             ttl_seconds=admin_ttl,
             version=0,
         )
@@ -85,7 +85,7 @@ def bootstrap_env(
             agent_id=agent_id,
             ttl_seconds=agent_ttl,
         )
-        values["SMITH_CONTROL_PLANE_TOKEN"] = agent_token_value
+        values["NIMBUS_CONTROL_PLANE_TOKEN"] = agent_token_value
 
     if agent_token_value:
         print(f"Minted agent token for {agent_id}:")
@@ -126,7 +126,7 @@ def _mint_agent_token_remote(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Bootstrap docker compose environment for Smith")
+    parser = argparse.ArgumentParser(description="Bootstrap docker compose environment for Nimbus")
     parser.add_argument("--output", default=".env", help="Output .env file path")
     parser.add_argument("--force", action="store_true", help="Overwrite existing output file")
     parser.add_argument("--admin-subject", default="admin", help="Subject claim for minted admin JWT")

@@ -1,4 +1,4 @@
-"""Command-line entrypoint for running the Smith host agent."""
+"""Command-line entrypoint for running the Nimbus host agent."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from .agent import HostAgent
 
 async def main() -> None:
     settings = HostAgentSettings()
-    configure_logging("smith.host_agent", settings.log_level)
+    configure_logging("nimbus.host_agent", settings.log_level)
     configure_tracing(
-        service_name="smith.host_agent",
+        service_name="nimbus.host_agent",
         endpoint=settings.otel_exporter_endpoint,
         headers=settings.otel_exporter_headers,
         sampler_ratio=settings.otel_sampler_ratio,

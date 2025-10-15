@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, status
 
-from smith.cache_proxy.app import S3CacheBackend
-from smith.common.settings import CacheProxySettings
+from nimbus.cache_proxy.app import S3CacheBackend
+from nimbus.common.settings import CacheProxySettings
 
 
 class FakeClient:
@@ -60,7 +60,7 @@ def fake_session(monkeypatch):
         def client(self, *_args, **_kwargs):  # noqa: D401 - mimic boto3 session
             return client
 
-    monkeypatch.setattr("smith.cache_proxy.app.boto3.session.Session", lambda: DummySession())
+    monkeypatch.setattr("nimbus.cache_proxy.app.boto3.session.Session", lambda: DummySession())
     return client
 
 
@@ -91,7 +91,7 @@ async def test_s3_circuit_breaker_blocks_after_failures(monkeypatch, fake_sessio
     def fake_monotonic():
         return current_time[0]
 
-    monkeypatch.setattr("smith.cache_proxy.app.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("nimbus.cache_proxy.app.time.monotonic", fake_monotonic)
 
     settings = CacheProxySettings(
         shared_secret="secret",

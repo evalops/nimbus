@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from smith.common.security import decode_agent_token_payload
+from nimbus.common.security import decode_agent_token_payload
 
 
 def _load_module():
@@ -28,18 +28,18 @@ def test_bootstrap_writes_env_and_generates_token(tmp_path: Path):
     contents = output.read_text().splitlines()
     env = dict(line.split("=", 1) for line in contents[1:])
 
-    assert env["SMITH_JWT_SECRET"]
-    assert env["SMITH_AGENT_TOKEN_SECRET"]
-    assert env["SMITH_CACHE_SHARED_SECRET"]
+    assert env["NIMBUS_JWT_SECRET"]
+    assert env["NIMBUS_AGENT_TOKEN_SECRET"]
+    assert env["NIMBUS_CACHE_SHARED_SECRET"]
 
-    subject, version = decode_agent_token_payload(env["SMITH_JWT_SECRET"], token)
+    subject, version = decode_agent_token_payload(env["NIMBUS_JWT_SECRET"], token)
     assert subject == "admin"
     assert version == 0
 
 
 def test_bootstrap_respects_existing_file(tmp_path: Path):
     output = tmp_path / ".env"
-    output.write_text("SMITH_JWT_SECRET=existing\n")
+    output.write_text("NIMBUS_JWT_SECRET=existing\n")
 
     module = _load_module()
     with pytest.raises(FileExistsError):
@@ -73,7 +73,7 @@ def test_bootstrap_mints_agent_token_when_requested(tmp_path: Path):
 
     contents = output.read_text().splitlines()
     env = dict(line.split("=", 1) for line in contents[1:])
-    assert env["SMITH_CONTROL_PLANE_TOKEN"] == fake_token
+    assert env["NIMBUS_CONTROL_PLANE_TOKEN"] == fake_token
 
     secrets_payload = json.loads(secrets_file.read_text())
     assert secrets_payload["agent_token"] == fake_token

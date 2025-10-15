@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 
 from ..common.schemas import JobAssignment
 
-QUEUE_KEY = "smith:jobs:queued"
+QUEUE_KEY = "nimbus:jobs:queued"
 
 
 async def enqueue_job(redis: Redis, assignment: JobAssignment) -> None:

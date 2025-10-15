@@ -1,4 +1,4 @@
-"""FastAPI application providing Smith control plane APIs."""
+"""FastAPI application providing Nimbus control plane APIs."""
 
 from __future__ import annotations
 
@@ -37,18 +37,18 @@ from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job
 from ..common.security import mint_cache_token
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
-REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_requests_total", "Total control plane requests"))
-JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_job_leases_total", "Total leased jobs"))
-QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_control_plane_queue_length", "Current queue length"))
+REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_requests_total", "Total control plane requests"))
+JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_job_leases_total", "Total leased jobs"))
+QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_control_plane_queue_length", "Current queue length"))
 REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
-        "smith_control_plane_request_latency_seconds",
+        "nimbus_control_plane_request_latency_seconds",
         buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
         description="Control plane request latency",
     )
 )
 
-LOGGER = structlog.get_logger("smith.control_plane")
+LOGGER = structlog.get_logger("nimbus.control_plane")
 
 
 class RateLimiter:
@@ -157,9 +157,9 @@ def verify_admin_token(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = ControlPlaneSettings()
-    configure_logging("smith.control_plane", settings.log_level)
+    configure_logging("nimbus.control_plane", settings.log_level)
     configure_tracing(
-        service_name="smith.control_plane",
+        service_name="nimbus.control_plane",
         endpoint=settings.otel_exporter_endpoint,
         headers=settings.otel_exporter_headers,
         sampler_ratio=settings.otel_sampler_ratio,

@@ -1,4 +1,4 @@
-"""Firecracker lifecycle helpers for the Smith host agent."""
+"""Firecracker lifecycle helpers for the Nimbus host agent."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
 from ..common.security import verify_cache_token
 
-LOGGER = structlog.get_logger("smith.host_agent.firecracker")
+LOGGER = structlog.get_logger("nimbus.host_agent.firecracker")
 
 
 @dataclass
@@ -59,7 +59,7 @@ class FirecrackerLauncher:
         """Launch a microVM for the given job and wait for completion."""
 
         LOGGER.info("Launching microVM", job_id=assignment.job_id)
-        with tempfile.TemporaryDirectory(prefix=f"smith-job-{assignment.job_id}-") as workdir:
+        with tempfile.TemporaryDirectory(prefix=f"nimbus-job-{assignment.job_id}-") as workdir:
             workdir_path = Path(workdir)
             api_socket = workdir_path / "firecracker.sock"
             log_path = workdir_path / "firecracker.log"

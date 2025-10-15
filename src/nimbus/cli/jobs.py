@@ -1,4 +1,4 @@
-"""Command-line utilities for inspecting Smith jobs."""
+"""Command-line utilities for inspecting Nimbus jobs."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import httpx
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inspect Smith job records")
-    parser.add_argument("--base-url", required=True, help="Smith control plane base URL")
+    parser = argparse.ArgumentParser(description="Inspect Nimbus job records")
+    parser.add_argument("--base-url", required=True, help="Nimbus control plane base URL")
     parser.add_argument("--token", required=True, help="Bearer token for authentication")
 
     subparsers = parser.add_subparsers(dest="command", required=True)

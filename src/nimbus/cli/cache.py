@@ -1,4 +1,4 @@
-"""CLI to mint Smith cache tokens."""
+"""CLI to mint Nimbus cache tokens."""
 
 from __future__ import annotations
 
