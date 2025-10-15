@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Iterable
+from typing import Iterable, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -50,6 +50,66 @@ class PipelineState:
                 },
             )
             raise HTTPException(status_code=502, detail="ClickHouse insert failed")
+
+    async def query_logs(
+        self,
+        *,
+        job_id: Optional[int] = None,
+        contains: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        limit = max(1, min(limit, 500))
+        query_parts = [
+            "SELECT job_id, ts, level, message",
+            f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_table}",
+            "WHERE 1",
+        ]
+        params: dict[str, object] = {"limit": limit}
+
+        if job_id is not None:
+            query_parts.append("AND job_id = {job_id:UInt64}")
+            params["job_id"] = job_id
+
+        if contains:
+            contains = contains.strip()
+            if contains:
+                query_parts.append("AND message ILIKE {contains:String}")
+                params["contains"] = f"%{contains}%"
+
+        query_parts.append("ORDER BY ts DESC")
+        query_parts.append("LIMIT {limit:UInt32}")
+        query_parts.append("FORMAT JSON")
+        query = " \n".join(query_parts)
+
+        query_params = {"query": query}
+        for key, value in params.items():
+            query_params[f"param_{key}"] = value
+
+        response = await self.http.get(
+            self.settings.clickhouse_url,
+            params=query_params,
+            auth=self._auth,
+        )
+        if response.is_error:
+            LOGGER.error(
+                "ClickHouse query failed",
+                extra={"status": response.status_code, "body": response.text[:2000]},
+            )
+            raise HTTPException(status_code=502, detail="ClickHouse query failed")
+
+        payload = response.json()
+        rows = payload.get("data", [])
+        result: list[dict[str, object]] = []
+        for row in rows:
+            result.append(
+                {
+                    "job_id": row.get("job_id"),
+                    "timestamp": row.get("ts"),
+                    "level": row.get("level"),
+                    "message": row.get("message"),
+                }
+            )
+        return result
 
 
 @asynccontextmanager
@@ -105,5 +165,14 @@ def create_app() -> FastAPI:
             "clickhouse_url": str(state.settings.clickhouse_url),
             "table": f"{state.settings.clickhouse_database}.{state.settings.clickhouse_table}",
         }
+
+    @app.get("/logs/query", status_code=status.HTTP_200_OK)
+    async def query_logs_endpoint(
+        job_id: Optional[int] = None,
+        contains: Optional[str] = None,
+        limit: int = 100,
+        state: PipelineState = Depends(get_state),
+    ) -> list[dict[str, object]]:
+        return await state.query_logs(job_id=job_id, contains=contains, limit=limit)
 
     return app
