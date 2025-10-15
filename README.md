@@ -134,7 +134,7 @@ All services honor the following optional environment variables:
 
 ### Docker Compose Stack
 
-1. Copy `compose.env.sample` to `.env` and populate the required secrets. Mint an agent token with `python -m smith.cli.admin tokens rotate ...` and set `SMITH_CONTROL_PLANE_TOKEN`.
+1. Generate a `.env` file by running `uv run python scripts/bootstrap_compose.py` (or copy `compose.env.sample` manually). Mint an agent token with `python -m smith.cli.admin tokens rotate ...` after the stack is up and set `SMITH_CONTROL_PLANE_TOKEN`.
 2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
 3. Launch the stack: `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
 

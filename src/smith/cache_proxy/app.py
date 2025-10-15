@@ -18,7 +18,7 @@ import structlog
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
 from ..common.security import verify_cache_token
-from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 
 
@@ -219,6 +219,13 @@ MISS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_misses_total", "Cac
 BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_read_total", "Bytes served from cache"))
 BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_written_total", "Bytes written to cache"))
 TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_cache_entries", "Number of cache entries"))
+CACHE_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
+    Histogram(
+        "smith_cache_proxy_request_latency_seconds",
+        buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0],
+        description="Cache proxy request latency",
+    )
+)
 
 
 class CacheMetrics:
@@ -344,6 +351,15 @@ def create_app() -> FastAPI:
     app = FastAPI()
     instrument_fastapi_app(app)
     app.state.cache_state = state
+
+    @app.middleware("http")
+    async def record_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            CACHE_LATENCY_HISTOGRAM.observe(time.perf_counter() - start)
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(

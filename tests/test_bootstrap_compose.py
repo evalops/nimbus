@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from smith.common.security import decode_agent_token_payload
+
+
+def _load_module():
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_compose.py"
+    spec = importlib.util.spec_from_file_location("bootstrap_compose", script_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bootstrap_writes_env_and_generates_token(tmp_path: Path):
+    output = tmp_path / ".env"
+    module = _load_module()
+    token = module.bootstrap_env(output, force=True)
+
+    assert output.exists()
+    contents = output.read_text().splitlines()
+    env = dict(line.split("=", 1) for line in contents[1:])
+
+    assert env["SMITH_JWT_SECRET"]
+    assert env["SMITH_AGENT_TOKEN_SECRET"]
+    assert env["SMITH_CACHE_SHARED_SECRET"]
+
+    subject, version = decode_agent_token_payload(env["SMITH_JWT_SECRET"], token)
+    assert subject == "admin"
+    assert version == 0
+
+
+def test_bootstrap_respects_existing_file(tmp_path: Path):
+    output = tmp_path / ".env"
+    output.write_text("SMITH_JWT_SECRET=existing\n")
+
+    module = _load_module()
+    with pytest.raises(FileExistsError):
+        module.bootstrap_env(output)

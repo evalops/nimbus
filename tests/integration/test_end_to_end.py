@@ -289,12 +289,20 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         agent_record = next(item for item in token_inventory if item["agent_id"] == "agent-1")
         assert agent_record["token_version"] == rotated_payload["version"]
 
+        metrics_response = await control_client.get("/metrics")
+        assert metrics_response.status_code == 200
+        assert "smith_control_plane_request_latency_seconds_count" in metrics_response.text
+
         rate_limited = await control_client.post(
             "/api/agents/token",
             json={"agent_id": "agent-1", "ttl_seconds": 900},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert rate_limited.status_code == 429
+
+        cache_metrics = await cache_client.get("/metrics")
+        assert cache_metrics.status_code == 200
+        assert "smith_cache_proxy_request_latency_seconds_count" in cache_metrics.text
 
         head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
         assert head_response.status_code == 200

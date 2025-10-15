@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
 import structlog
 
-from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.schemas import (
     AgentTokenMintRequest,
     AgentTokenAuditRecord,
@@ -40,6 +40,13 @@ from ..common.observability import configure_logging, configure_tracing, instrum
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_requests_total", "Total control plane requests"))
 JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_job_leases_total", "Total leased jobs"))
 QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_control_plane_queue_length", "Current queue length"))
+REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
+    Histogram(
+        "smith_control_plane_request_latency_seconds",
+        buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+        description="Control plane request latency",
+    )
+)
 
 LOGGER = structlog.get_logger("smith.control_plane")
 
@@ -184,6 +191,15 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+
+    @app.middleware("http")
+    async def record_request_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            REQUEST_LATENCY_HISTOGRAM.observe(time.perf_counter() - start)
 
     @app.post("/webhooks/github")
     async def github_webhook(
