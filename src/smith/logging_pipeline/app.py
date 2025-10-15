@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
-import logging
 from contextlib import asynccontextmanager
 from typing import Iterable, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
+import structlog
 
 from ..common.schemas import LogIngestRequest
 from ..common.settings import LoggingIngestSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter
+from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_ingest_requests_total", "Total log ingest requests"))
 INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
 DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_dropped_total", "Log rows dropped due to size limits"))
@@ -23,7 +24,7 @@ CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_clic
 QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_requests_total", "Log query requests"))
 QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_errors_total", "Log query failures"))
 
-LOGGER = logging.getLogger("smith.logging_pipeline")
+LOGGER = structlog.get_logger("smith.logging_pipeline")
 
 MAX_ROWS_PER_BATCH = 500
 MAX_BYTES_PER_BATCH = 4 * 1024 * 1024  # 4 MiB
@@ -55,10 +56,8 @@ class PipelineState:
             CLICKHOUSE_ERRORS_COUNTER.inc()
             LOGGER.error(
                 "ClickHouse insert failed",
-                extra={
-                    "status": response.status_code,
-                    "body": response.text[:2000],
-                },
+                status=response.status_code,
+                body=response.text[:2000],
             )
             raise HTTPException(status_code=502, detail="ClickHouse insert failed")
         BATCH_COUNTER.inc()
@@ -108,7 +107,8 @@ class PipelineState:
             QUERY_ERRORS_COUNTER.inc()
             LOGGER.error(
                 "ClickHouse query failed",
-                extra={"status": response.status_code, "body": response.text[:2000]},
+                status=response.status_code,
+                body=response.text[:2000],
             )
             raise HTTPException(status_code=502, detail="ClickHouse query failed")
 
@@ -130,9 +130,17 @@ class PipelineState:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = LoggingIngestSettings()
+    configure_logging("smith.logging_pipeline", settings.log_level)
+    configure_tracing(
+        service_name="smith.logging_pipeline",
+        endpoint=settings.otel_exporter_endpoint,
+        headers=settings.otel_exporter_headers,
+        sampler_ratio=settings.otel_sampler_ratio,
+    )
     timeout = httpx.Timeout(settings.clickhouse_timeout_seconds)
     http_client = httpx.AsyncClient(timeout=timeout)
     app.state.pipeline = PipelineState(settings=settings, http_client=http_client)
+    instrument_fastapi_app(app)
     try:
         yield
     finally:
@@ -161,7 +169,7 @@ def create_app() -> FastAPI:
             encoded = serialized.encode("utf-8")
             if len(encoded) > MAX_BYTES_PER_BATCH:
                 DROPPED_ROWS_COUNTER.inc()
-                LOGGER.warning("Dropping oversize log entry", extra={"bytes": len(encoded)})
+                LOGGER.warning("Dropping oversize log entry", bytes=len(encoded))
                 continue
 
             projected_size = batch_len + len(encoded) + (1 if batch else 0)

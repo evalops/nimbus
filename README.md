@@ -110,6 +110,11 @@ Use the reporting CLI to generate quick snapshots across services:
     --logs-url http://localhost:8002
   ```
 
+## Observability
+
+- Structured logging is enabled across services via `structlog`; adjust verbosity with `SMITH_LOG_LEVEL` (e.g. `DEBUG`, `INFO`).
+- Enable OpenTelemetry tracing by setting `SMITH_OTEL_EXPORTER_ENDPOINT` (OTLP HTTP/GRPC), optional `SMITH_OTEL_EXPORTER_HEADERS` (`key=value` pairs), and `SMITH_OTEL_SAMPLER_RATIO` (0.0–1.0) to control sampling.
+
 ## Roadmap
 - Implement multi-tenant cache usage metrics and eviction policies.
 - Support configurable Firecracker rootfs build pipelines and image updates.

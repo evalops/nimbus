@@ -29,6 +29,10 @@ class ControlPlaneSettings(BaseSettings):
     cache_token_ttl_seconds: int = env_field(3600, "SMITH_CACHE_TOKEN_TTL")
     cache_shared_secret: str = env_field(..., "SMITH_CACHE_SHARED_SECRET")
     agent_token_secret: str = env_field(..., "SMITH_AGENT_TOKEN_SECRET")
+    log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
+    otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
+    otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")
+    otel_sampler_ratio: float = env_field(0.1, "SMITH_OTEL_SAMPLER_RATIO")
 
 
 class HostAgentSettings(BaseSettings):
@@ -52,6 +56,10 @@ class HostAgentSettings(BaseSettings):
     tap_device_prefix: str = env_field("smith", "SMITH_TAP_PREFIX")
     job_timeout_seconds: int = env_field(3600, "SMITH_JOB_TIMEOUT")
     vm_shutdown_grace_seconds: int = env_field(30, "SMITH_VM_SHUTDOWN_GRACE")
+    log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
+    otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
+    otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")
+    otel_sampler_ratio: float = env_field(0.1, "SMITH_OTEL_SAMPLER_RATIO")
 
 
 class CacheProxySettings(BaseSettings):
@@ -69,6 +77,10 @@ class CacheProxySettings(BaseSettings):
     s3_retry_max_seconds: float = env_field(2.0, "SMITH_CACHE_S3_RETRY_MAX")
     s3_circuit_breaker_failures: int = env_field(5, "SMITH_CACHE_S3_CIRCUIT_FAILURES")
     s3_circuit_breaker_reset_seconds: float = env_field(30.0, "SMITH_CACHE_S3_CIRCUIT_RESET")
+    log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
+    otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
+    otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")
+    otel_sampler_ratio: float = env_field(0.1, "SMITH_OTEL_SAMPLER_RATIO")
 
 
 class LoggingIngestSettings(BaseSettings):
@@ -81,4 +93,8 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_username: Optional[str] = env_field(None, "SMITH_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "SMITH_CLICKHOUSE_PASSWORD")
     clickhouse_timeout_seconds: int = env_field(10, "SMITH_CLICKHOUSE_TIMEOUT")
+    log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
+    otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
+    otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")
+    otel_sampler_ratio: float = env_field(0.1, "SMITH_OTEL_SAMPLER_RATIO")
 

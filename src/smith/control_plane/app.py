@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import logging
 from contextlib import asynccontextmanager
 
 import httpx
@@ -13,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
+import structlog
 
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.schemas import (
@@ -29,11 +29,12 @@ from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job
 from ..common.security import mint_cache_token
+from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_requests_total", "Total control plane requests"))
 JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_control_plane_job_leases_total", "Total leased jobs"))
 QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_control_plane_queue_length", "Current queue length"))
 
-LOGGER = logging.getLogger("smith.control_plane")
+LOGGER = structlog.get_logger("smith.control_plane")
 
 
 class AppState:
@@ -92,6 +93,14 @@ def verify_agent_token(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = ControlPlaneSettings()
+    configure_logging("smith.control_plane", settings.log_level)
+    configure_tracing(
+        service_name="smith.control_plane",
+        endpoint=settings.otel_exporter_endpoint,
+        headers=settings.otel_exporter_headers,
+        sampler_ratio=settings.otel_sampler_ratio,
+    )
+    instrument_fastapi_app(app)
     redis = redis_from_url(str(settings.redis_url), decode_responses=False)
     http_client = httpx.AsyncClient(timeout=20)
     github_client = GitHubAppClient(settings=settings, http_client=http_client)
@@ -134,7 +143,7 @@ def create_app() -> FastAPI:
         try:
             payload_dict = json.loads(raw_body.decode("utf-8"))
         except json.JSONDecodeError as exc:  # pragma: no cover - payload dependent
-            LOGGER.error("Invalid webhook payload", extra={"error": str(exc)})
+            LOGGER.error("Invalid webhook payload", error=str(exc))
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload") from exc
 
         payload = WebhookWorkflowJobEvent.model_validate(payload_dict)
@@ -145,11 +154,9 @@ def create_app() -> FastAPI:
         repo = payload.repository
         LOGGER.info(
             "Enqueuing job",
-            extra={
-                "job_id": payload.workflow_job.id,
-                "repo": repo.full_name,
-                "labels": payload.workflow_job.labels,
-            },
+            job_id=payload.workflow_job.id,
+            repo=repo.full_name,
+            labels=payload.workflow_job.labels,
         )
 
         runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
@@ -189,7 +196,8 @@ def create_app() -> FastAPI:
             return JobLeaseResponse(job=None, backoff_seconds=5)
         LOGGER.info(
             "Leased job",
-            extra={"job_id": assignment.job_id, "agent_id": request_body.agent_id},
+            job_id=assignment.job_id,
+            agent_id=request_body.agent_id,
         )
         JOB_LEASE_COUNTER.inc()
         queue_length = await redis_client.llen(QUEUE_KEY)
@@ -213,11 +221,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
         LOGGER.info(
             "Job status update",
-            extra={
-                "job_id": status_update.job_id,
-                "agent_id": status_update.agent_id,
-                "status": status_update.status,
-            },
+            job_id=status_update.job_id,
+            agent_id=status_update.agent_id,
+            status=status_update.status,
         )
         await db.record_status_update(session, status_update)
         await session.commit()

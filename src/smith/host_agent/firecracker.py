@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import shutil
 import tempfile
@@ -12,12 +11,13 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import structlog
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
 from ..common.security import verify_cache_token
 
-LOGGER = logging.getLogger("smith.host_agent.firecracker")
+LOGGER = structlog.get_logger("smith.host_agent.firecracker")
 
 
 @dataclass
@@ -58,7 +58,7 @@ class FirecrackerLauncher:
     async def execute_job(self, assignment: JobAssignment) -> FirecrackerResult:
         """Launch a microVM for the given job and wait for completion."""
 
-        LOGGER.info("Launching microVM", extra={"job_id": assignment.job_id})
+        LOGGER.info("Launching microVM", job_id=assignment.job_id)
         with tempfile.TemporaryDirectory(prefix=f"smith-job-{assignment.job_id}-") as workdir:
             workdir_path = Path(workdir)
             api_socket = workdir_path / "firecracker.sock"
@@ -96,7 +96,7 @@ class FirecrackerLauncher:
                 if process and process.returncode is None:
                     process.kill()
                     await process.wait()
-                LOGGER.exception("MicroVM execution failed", extra={"job_id": assignment.job_id})
+                LOGGER.exception("MicroVM execution failed", job_id=assignment.job_id)
                 if not collected:
                     collected = self._collect_artifacts(
                         job_id=assignment.job_id,
@@ -117,7 +117,7 @@ class FirecrackerLauncher:
     def _prepare_rootfs(self, workdir: Path) -> Path:
         source = Path(self._settings.rootfs_image_path)
         destination = workdir / source.name
-        LOGGER.debug("Preparing rootfs", extra={"source": str(source), "dest": str(destination)})
+        LOGGER.debug("Preparing rootfs", source=str(source), dest=str(destination))
         if not source.exists():
             raise FirecrackerError(f"Rootfs image not found: {source}")
         try:
@@ -188,7 +188,7 @@ class FirecrackerLauncher:
     async def _ensure_tap_device(self, tap_name: str) -> None:
         if hasattr(os, "geteuid") and os.geteuid() != 0:  # pragma: no cover - platform specific
             raise FirecrackerError("Host agent requires root privileges to create tap devices")
-        LOGGER.debug("Creating tap device", extra={"tap": tap_name})
+        LOGGER.debug("Creating tap device", tap=tap_name)
         try:
             process = await asyncio.create_subprocess_exec(
                 "ip",
@@ -209,7 +209,7 @@ class FirecrackerLauncher:
             )
 
     async def _teardown_tap_device(self, tap_name: str) -> None:
-        LOGGER.debug("Deleting tap device", extra={"tap": tap_name})
+        LOGGER.debug("Deleting tap device", tap=tap_name)
         try:
             process = await asyncio.create_subprocess_exec(
                 "ip",
@@ -226,7 +226,7 @@ class FirecrackerLauncher:
         await process.communicate()
 
     async def _configure_network(self, tap_name: str) -> None:
-        LOGGER.debug("Configuring network for tap", extra={"tap": tap_name})
+        LOGGER.debug("Configuring network for tap", tap=tap_name)
         bridge = f"{tap_name}-br"
         await self._run_command("ip", "link", "del", bridge, skip_fail=True)
         await self._run_command("ip", "link", "add", bridge, "type", "bridge")
@@ -236,7 +236,7 @@ class FirecrackerLauncher:
 
     async def _teardown_network(self, tap_name: str) -> None:
         bridge = f"{tap_name}-br"
-        LOGGER.debug("Tearing down network", extra={"tap": tap_name, "bridge": bridge})
+        LOGGER.debug("Tearing down network", tap=tap_name, bridge=bridge)
         await self._run_command("ip", "link", "set", tap_name, "nomaster", skip_fail=True)
         await self._run_command("ip", "link", "set", tap_name, "down", skip_fail=True)
         await self._run_command("ip", "link", "del", bridge, skip_fail=True)
@@ -331,14 +331,14 @@ class FirecrackerLauncher:
                 with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                     log_lines = [line.rstrip("\n") for line in handle]
             except OSError:
-                LOGGER.warning("Failed to read Firecracker log", extra={"path": str(log_path)})
+                LOGGER.warning("Failed to read Firecracker log", path=str(log_path))
 
         metrics_data: Optional[str] = None
         if metrics_path.exists():
             try:
                 metrics_data = metrics_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
-                LOGGER.warning("Failed to read Firecracker metrics", extra={"path": str(metrics_path)})
+                LOGGER.warning("Failed to read Firecracker metrics", path=str(metrics_path))
 
         return FirecrackerResult(
             job_id=job_id,
@@ -352,7 +352,7 @@ class FirecrackerLauncher:
         *args: str,
         skip_fail: bool = False,
     ) -> None:
-        LOGGER.debug("Executing command", extra={"args": args})
+        LOGGER.debug("Executing command", args=args)
         try:
             process = await asyncio.create_subprocess_exec(
                 *args,

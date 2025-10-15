@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 import httpx
+import structlog
+from opentelemetry import trace
 
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
@@ -16,7 +17,8 @@ from ..common.security import verify_cache_token
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
 
-LOGGER = logging.getLogger("smith.host_agent")
+LOGGER = structlog.get_logger("smith.host_agent")
+TRACER = trace.get_tracer("smith.host_agent")
 
 LEASE_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_requests_total", "Lease requests issued to control plane"))
 LEASE_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_errors_total", "Lease request errors"))
@@ -54,7 +56,7 @@ class HostAgent:
             try:
                 response = await self._lease_job()
             except httpx.HTTPError as exc:
-                LOGGER.error("Lease request failed", exc_info=exc)
+                LOGGER.exception("Lease request failed", error=str(exc))
                 LEASE_ERROR_COUNTER.inc()
                 await asyncio.sleep(5)
                 continue
@@ -84,53 +86,58 @@ class HostAgent:
             capabilities=["firecracker"],
         )
         LEASE_REQUEST_COUNTER.inc()
-        resp = await self._http.post(
-            f"{self._settings.control_plane_base_url}/api/jobs/lease",
-            headers=self._auth_headers(),
-            json=request.model_dump(),
-        )
+        with TRACER.start_as_current_span("host_agent.lease_job"):
+            resp = await self._http.post(
+                f"{self._settings.control_plane_base_url}/api/jobs/lease",
+                headers=self._auth_headers(),
+                json=request.model_dump(),
+            )
         resp.raise_for_status()
         return JobLeaseResponse.model_validate(resp.json())
 
     async def _process_job(self, assignment: JobAssignment) -> None:
-        LOGGER.info("Starting job", extra={"job_id": assignment.job_id})
-        JOB_STARTED_COUNTER.inc()
-        self._active_jobs += 1
-        await self._submit_status(assignment, "starting")
-
-        if (
-            not assignment.cache_token
-            and self._settings.cache_token_secret
-            and self._settings.cache_token_value
+        with TRACER.start_as_current_span(
+            "host_agent.process_job",
+            attributes={"smith.job_id": assignment.job_id, "smith.repo": assignment.repository.full_name},
         ):
-            fallback = verify_cache_token(
-                self._settings.cache_token_secret,
-                self._settings.cache_token_value,
-            )
-            if fallback:
-                assignment.cache_token = fallback
+            LOGGER.info("Starting job", job_id=assignment.job_id)
+            JOB_STARTED_COUNTER.inc()
+            self._active_jobs += 1
+            await self._submit_status(assignment, "starting")
 
-        try:
-            result = await self._launcher.execute_job(assignment)
-        except FirecrackerError as exc:
-            await self._emit_logs(assignment, exc.result)
-            LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
-            await self._submit_status(assignment, "failed", message=str(exc))
-            JOB_FAILED_COUNTER.inc()
-            return
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
-            await self._emit_logs(assignment, None)
-            await self._submit_status(assignment, "failed", message=str(exc))
-            JOB_FAILED_COUNTER.inc()
-            return
-        else:
-            await self._emit_logs(assignment, result)
-            LOGGER.info("Job succeeded", extra={"job_id": assignment.job_id})
-            await self._submit_status(assignment, "succeeded")
-            JOB_SUCCEEDED_COUNTER.inc()
-        finally:
-            self._active_jobs = max(0, self._active_jobs - 1)
+            if (
+                not assignment.cache_token
+                and self._settings.cache_token_secret
+                and self._settings.cache_token_value
+            ):
+                fallback = verify_cache_token(
+                    self._settings.cache_token_secret,
+                    self._settings.cache_token_value,
+                )
+                if fallback:
+                    assignment.cache_token = fallback
+
+            try:
+                result = await self._launcher.execute_job(assignment)
+            except FirecrackerError as exc:
+                await self._emit_logs(assignment, exc.result)
+                LOGGER.exception("Job failed", job_id=assignment.job_id)
+                await self._submit_status(assignment, "failed", message=str(exc))
+                JOB_FAILED_COUNTER.inc()
+                return
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Job failed", job_id=assignment.job_id)
+                await self._emit_logs(assignment, None)
+                await self._submit_status(assignment, "failed", message=str(exc))
+                JOB_FAILED_COUNTER.inc()
+                return
+            else:
+                await self._emit_logs(assignment, result)
+                LOGGER.info("Job succeeded", job_id=assignment.job_id)
+                await self._submit_status(assignment, "succeeded")
+                JOB_SUCCEEDED_COUNTER.inc()
+            finally:
+                self._active_jobs = max(0, self._active_jobs - 1)
 
     async def _submit_status(
         self, assignment: JobAssignment, status: str, *, message: Optional[str] = None
@@ -141,11 +148,12 @@ class HostAgent:
             status=status,  # type: ignore[arg-type]
             message=message,
         )
-        resp = await self._http.post(
-            f"{self._settings.control_plane_base_url}/api/jobs/status",
-            headers=self._auth_headers(),
-            json=payload.model_dump(),
-        )
+        with TRACER.start_as_current_span("host_agent.job_status"):
+            resp = await self._http.post(
+                f"{self._settings.control_plane_base_url}/api/jobs/status",
+                headers=self._auth_headers(),
+                json=payload.model_dump(),
+            )
         resp.raise_for_status()
 
     def _auth_headers(self) -> dict[str, str]:
@@ -202,7 +210,8 @@ class HostAgent:
             except httpx.HTTPError as exc:  # pragma: no cover - network dependent
                 LOGGER.warning(
                     "Failed to emit logs",
-                    extra={"job_id": assignment.job_id, "error": str(exc)},
+                    job_id=assignment.job_id,
+                    error=str(exc),
                 )
                 LOG_ERROR_COUNTER.inc()
                 break
@@ -239,13 +248,16 @@ class HostAgent:
         except OSError as exc:  # pragma: no cover - depends on environment
             LOGGER.warning(
                 "Failed to start metrics server",
-                extra={"host": self._settings.metrics_host, "port": self._settings.metrics_port, "error": str(exc)},
+                host=self._settings.metrics_host,
+                port=self._settings.metrics_port,
+                error=str(exc),
             )
             self._metrics_server = None
             return
         LOGGER.info(
             "Host agent metrics server listening",
-            extra={"host": self._settings.metrics_host, "port": self._settings.metrics_port},
+            host=self._settings.metrics_host,
+            port=self._settings.metrics_port,
         )
 
 

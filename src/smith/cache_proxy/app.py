@@ -13,11 +13,13 @@ from typing import AsyncIterator, Callable, Optional
 import boto3
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+import structlog
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
 from ..common.security import verify_cache_token
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
+from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 
 
 def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
@@ -208,6 +210,7 @@ class CacheProxyState:
         self.settings = settings
         self.backend = backend
         self.metrics = metrics
+        self.logger = structlog.get_logger("smith.cache_proxy").bind(backend=backend.status().get("backend"))
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_requests_total", "Total cache proxy requests"))
@@ -328,10 +331,18 @@ def require_cache_token(
 
 def create_app() -> FastAPI:
     settings = CacheProxySettings()
+    configure_logging("smith.cache_proxy", settings.log_level)
+    configure_tracing(
+        service_name="smith.cache_proxy",
+        endpoint=settings.otel_exporter_endpoint,
+        headers=settings.otel_exporter_headers,
+        sampler_ratio=settings.otel_sampler_ratio,
+    )
     backend = build_backend(settings)
     metrics = CacheMetrics(settings.metrics_database_path)
     state = CacheProxyState(settings, backend, metrics)
     app = FastAPI()
+    instrument_fastapi_app(app)
     app.state.cache_state = state
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
@@ -350,6 +361,7 @@ def create_app() -> FastAPI:
         BYTES_WRITTEN_COUNTER.inc(bytes_written)
         HIT_COUNTER.inc()
         TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
+        state.logger.info("cache_write", cache_key=cache_key, bytes=bytes_written)
         return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key:path}")
@@ -369,7 +381,9 @@ def create_app() -> FastAPI:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 state.metrics.record_miss(cache_key)
                 MISS_COUNTER.inc()
+                state.logger.info("cache_miss", cache_key=cache_key)
             raise
+        state.logger.info("cache_head", cache_key=cache_key, bytes=size)
         response = Response(status_code=status.HTTP_200_OK)
         response.headers["Content-Length"] = str(size)
         return response
@@ -392,7 +406,9 @@ def create_app() -> FastAPI:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 state.metrics.record_miss(cache_key)
                 MISS_COUNTER.inc()
+                state.logger.info("cache_miss", cache_key=cache_key)
             raise
+        state.logger.info("cache_hit", cache_key=cache_key, bytes=len(data))
         return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
     @app.get("/status")
