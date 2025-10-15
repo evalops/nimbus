@@ -1,0 +1,18 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment files
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
