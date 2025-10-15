@@ -290,12 +290,17 @@ class HostAgent:
 
         entries = []
         timestamp = datetime.utcnow().isoformat() + "Z"
+        org_id = assignment.repository.id
+        repo_id = assignment.repository.id
+        
         if result and result.log_lines:
             for line in result.log_lines[:1000]:
                 entries.append(
                     {
                         "job_id": assignment.job_id,
                         "agent_id": self._settings.agent_id,
+                        "org_id": org_id,
+                        "repo_id": repo_id,
                         "level": "info",
                         "message": line,
                         "timestamp": timestamp,
@@ -310,6 +315,8 @@ class HostAgent:
                 {
                     "job_id": assignment.job_id,
                     "agent_id": self._settings.agent_id,
+                    "org_id": org_id,
+                    "repo_id": repo_id,
                     "level": "debug",
                     "message": f"metrics={metrics_msg}",
                     "timestamp": timestamp,

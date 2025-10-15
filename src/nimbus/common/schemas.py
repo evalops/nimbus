@@ -122,6 +122,8 @@ class LogEntry(BaseModel):
 
     job_id: int
     agent_id: str
+    org_id: Optional[int] = None
+    repo_id: Optional[int] = None
     level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     message: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)

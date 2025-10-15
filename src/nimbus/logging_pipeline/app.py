@@ -86,6 +86,8 @@ class PipelineState:
         self,
         *,
         job_id: Optional[int] = None,
+        org_id: Optional[int] = None,
+        repo_id: Optional[int] = None,
         contains: Optional[str] = None,
         limit: int = 100,
     ) -> list[dict[str, object]]:
@@ -93,7 +95,7 @@ class PipelineState:
         with TRACER.start_as_current_span("logging_pipeline.query") as span:
             span.set_attribute("nimbus.query.limit", limit)
             query_parts = [
-                "SELECT job_id, ts, level, message",
+                "SELECT job_id, org_id, repo_id, ts, level, message",
                 f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_table}",
                 "WHERE 1",
             ]
@@ -103,6 +105,16 @@ class PipelineState:
                 query_parts.append("AND job_id = {job_id:UInt64}")
                 params["job_id"] = job_id
                 span.set_attribute("nimbus.query.job_id", job_id)
+            
+            if org_id is not None:
+                query_parts.append("AND org_id = {org_id:UInt64}")
+                params["org_id"] = org_id
+                span.set_attribute("nimbus.query.org_id", org_id)
+            
+            if repo_id is not None:
+                query_parts.append("AND repo_id = {repo_id:UInt64}")
+                params["repo_id"] = repo_id
+                span.set_attribute("nimbus.query.repo_id", repo_id)
 
             if contains:
                 contains = contains.strip()
@@ -141,6 +153,8 @@ class PipelineState:
             return [
                 {
                     "job_id": row.get("job_id"),
+                    "org_id": row.get("org_id"),
+                    "repo_id": row.get("repo_id"),
                     "timestamp": row.get("ts"),
                     "level": row.get("level"),
                     "message": row.get("message"),
@@ -223,12 +237,16 @@ def create_app() -> FastAPI:
     @app.get("/logs/query", status_code=status.HTTP_200_OK)
     async def query_logs_endpoint(
         job_id: Optional[int] = None,
+        org_id: Optional[int] = None,
+        repo_id: Optional[int] = None,
         contains: Optional[str] = None,
         limit: int = 100,
         state: PipelineState = Depends(get_state),
     ) -> list[dict[str, object]]:
         QUERY_REQUEST_COUNTER.inc()
-        return await state.query_logs(job_id=job_id, contains=contains, limit=limit)
+        return await state.query_logs(
+            job_id=job_id, org_id=org_id, repo_id=repo_id, contains=contains, limit=limit
+        )
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:
