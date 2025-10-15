@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -52,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     overview_parser.add_argument("--log-limit", type=int, default=100, help="Recent logs to inspect")
     overview_parser.add_argument("--json", action="store_true", help="Output JSON")
 
+    tokens_parser = subparsers.add_parser("tokens", help="Enumerate agent token inventory")
+    tokens_parser.add_argument("--base-url", required=True, help="Control plane base URL")
+    tokens_parser.add_argument("--token", required=True, help="Admin bearer token")
+    tokens_parser.add_argument("--json", action="store_true", help="Output JSON")
+
     return parser.parse_args()
 
 
@@ -85,11 +91,37 @@ def summarize_jobs(status_payload: dict[str, Any], recent_jobs: list[dict[str, A
     }
 
 
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def summarize_cache(status_payload: dict[str, Any], top: int = 5) -> dict[str, Any]:
-    entries = status_payload.get("top_entries", [])[:top]
+    all_entries = status_payload.get("top_entries", [])
+    entries = all_entries[:top]
     total_hits = sum(entry.get("total_hits", 0) for entry in entries)
     total_misses = sum(entry.get("total_misses", 0) for entry in entries)
     total_bytes = sum(entry.get("total_bytes", 0) for entry in entries)
+    total_requests = total_hits + total_misses
+    hit_ratio = (total_hits / total_requests) if total_requests else None
+
+    cold_entries = [
+        {
+            "cache_key": entry.get("cache_key"),
+            "last_access": entry.get("last_access"),
+            "total_hits": entry.get("total_hits", 0),
+            "total_bytes": entry.get("total_bytes", 0),
+        }
+        for entry in sorted(all_entries, key=lambda e: e.get("last_access") or "")
+        if entry.get("total_hits", 0) == 0
+    ]
+    eviction_candidates = cold_entries[: min(top, len(cold_entries))]
 
     return {
         "backend": status_payload.get("backend"),
@@ -100,6 +132,10 @@ def summarize_cache(status_payload: dict[str, Any], top: int = 5) -> dict[str, A
         "top_hits": total_hits,
         "top_misses": total_misses,
         "top_bytes": total_bytes,
+        "total_requests": total_requests,
+        "hit_ratio": hit_ratio,
+        "eviction_candidates": eviction_candidates,
+        "stale_entry_count": len(cold_entries),
     }
 
 
@@ -129,6 +165,59 @@ def summarize_logs(log_entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def summarize_agent_tokens(records: list[dict[str, Any]]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    parsed = []
+    latest_dt: datetime | None = None
+    for record in records:
+        rotated_iso = record.get("rotated_at")
+        rotated_dt = _parse_timestamp(rotated_iso)
+        ttl = int(record.get("ttl_seconds") or 0)
+        age_seconds: int | None = None
+        if rotated_dt:
+            delta = now - rotated_dt
+            age_seconds = int(delta.total_seconds())
+            if latest_dt is None or rotated_dt > latest_dt:
+                latest_dt = rotated_dt
+        parsed.append(
+            {
+                "agent_id": record.get("agent_id"),
+                "token_version": int(record.get("token_version") or 0),
+                "rotated_at": rotated_iso,
+                "ttl_seconds": ttl,
+                "age_seconds": age_seconds,
+            }
+        )
+
+    parsed.sort(key=lambda entry: entry.get("rotated_at") or "", reverse=True)
+
+    expired_agents = [
+        entry["agent_id"]
+        for entry in parsed
+        if entry.get("age_seconds") is not None
+        and entry.get("ttl_seconds")
+        and entry["age_seconds"] > entry["ttl_seconds"]
+    ]
+    expiring_agents = [
+        entry["agent_id"]
+        for entry in parsed
+        if entry.get("age_seconds") is not None
+        and entry.get("ttl_seconds")
+        and entry["agent_id"] not in expired_agents
+        and entry["age_seconds"] >= 0.8 * entry["ttl_seconds"]
+    ]
+
+    latest_rotation = latest_dt.isoformat() if latest_dt else None
+
+    return {
+        "total_agents": len(parsed),
+        "latest_rotation_at": latest_rotation,
+        "expired_agents": expired_agents,
+        "expiring_agents": expiring_agents,
+        "entries": parsed,
+    }
+
+
 async def fetch_cache_status(cache_url: str, token: str | None = None) -> dict[str, Any]:
     headers = {}
     if token:
@@ -148,6 +237,14 @@ async def fetch_logs(logs_url: str, job_id: int | None, contains: str | None, li
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(f"{logs_url.rstrip('/')}/logs/query", params=params)
+        response.raise_for_status()
+        return response.json()
+
+
+async def fetch_agent_tokens(base_url: str, token: str) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{base_url.rstrip('/')}/api/agents", headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -184,15 +281,28 @@ def print_cache_summary(summary: dict[str, Any]) -> None:
     print(f"Total entries (tracked): {summary.get('total_entries', 'n/a')}")
     print("Top cache keys:")
     entries = summary.get("top_entries", [])
-    if not entries:
+    if entries:
+        for entry in entries:
+            key = entry.get("cache_key")
+            hits = entry.get("total_hits")
+            misses = entry.get("total_misses")
+            bytes_served = entry.get("total_bytes")
+            print(f"  {key}: hits={hits}, misses={misses}, bytes={bytes_served}")
+    else:
         print("  (none)")
-        return
-    for entry in entries:
-        key = entry.get("cache_key")
-        hits = entry.get("total_hits")
-        misses = entry.get("total_misses")
-        bytes_served = entry.get("total_bytes")
-        print(f"  {key}: hits={hits}, misses={misses}, bytes={bytes_served}")
+    ratio = summary.get("hit_ratio")
+    if ratio is not None:
+        print(f"Hit ratio (top entries): {ratio:.1%}")
+    stale_count = summary.get("stale_entry_count", 0)
+    print(f"Stale keys (hits=0): {stale_count}")
+    print("Eviction candidates:")
+    candidates = summary.get("eviction_candidates", [])
+    if candidates:
+        for entry in candidates:
+            last_access = entry.get("last_access") or "unknown"
+            print(f"  {entry.get('cache_key')}: last_access={last_access}, size_bytes={entry.get('total_bytes')}")
+    else:
+        print("  (none)")
 
 
 def print_log_summary(summary: dict[str, Any]) -> None:
@@ -207,6 +317,35 @@ def print_log_summary(summary: dict[str, Any]) -> None:
             print(f"  {job_id}: {count}")
     else:
         print("  (none)")
+
+
+def print_token_summary(summary: dict[str, Any]) -> None:
+    print(f"Total agents: {summary['total_agents']}")
+    latest = summary.get("latest_rotation_at")
+    if latest:
+        print(f"Latest rotation: {latest}")
+    expired = summary.get("expired_agents", [])
+    expiring = summary.get("expiring_agents", [])
+    print(
+        "Expired agents: "
+        + (", ".join(expired) if expired else "none")
+    )
+    if expiring:
+        print("Expiring soon: " + ", ".join(expiring))
+    print("Agent inventory:")
+    entries = summary.get("entries", [])
+    if not entries:
+        print("  (none)")
+        return
+    for entry in entries:
+        age_seconds = entry.get("age_seconds")
+        age_str = f"{age_seconds / 3600:.1f}h" if age_seconds is not None else "unknown"
+        ttl = entry.get("ttl_seconds") or 0
+        ttl_str = f"{ttl / 3600:.1f}h" if ttl else "n/a"
+        print(
+            f"  {entry.get('agent_id')}: version={entry.get('token_version')}, rotated={entry.get('rotated_at')}, "
+            f"age={age_str}, ttl={ttl_str}"
+        )
 
     print("Sample log entries:")
     if summary["samples"]:
@@ -245,6 +384,15 @@ async def run_logs(args: argparse.Namespace) -> None:
         print(json.dumps(summary, indent=2))
     else:
         print_log_summary(summary)
+
+
+async def run_tokens(args: argparse.Namespace) -> None:
+    records = await fetch_agent_tokens(args.base_url, args.token)
+    summary = summarize_agent_tokens(records)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print_token_summary(summary)
 
 
 async def run_overview(args: argparse.Namespace) -> None:
@@ -292,6 +440,8 @@ async def run_async() -> None:
         await run_logs(args)
     elif args.command == "overview":
         await run_overview(args)
+    elif args.command == "tokens":
+        await run_tokens(args)
 
 
 def main() -> None:

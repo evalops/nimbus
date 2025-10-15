@@ -141,3 +141,10 @@ class AgentTokenResponse(BaseModel):
     expires_at: datetime
     ttl_seconds: int
     version: int
+
+
+class AgentTokenRecord(BaseModel):
+    agent_id: str
+    token_version: int
+    rotated_at: datetime
+    ttl_seconds: int

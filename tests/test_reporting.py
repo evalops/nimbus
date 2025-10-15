@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from smith.cli.report import summarize_cache, summarize_jobs, summarize_logs
+from datetime import datetime, timedelta, timezone
+
+from smith.cli.report import (
+    summarize_agent_tokens,
+    summarize_cache,
+    summarize_jobs,
+    summarize_logs,
+)
 
 
 def test_summarize_jobs_counts_and_timeline() -> None:
@@ -66,6 +73,46 @@ def test_summarize_cache_aggregates_hits_and_bytes() -> None:
     assert summary["top_misses"] == 1
     assert summary["top_bytes"] == 3072
     assert len(summary["top_entries"]) == 2
+    assert summary["hit_ratio"] == 0.875
+    assert summary["stale_entry_count"] == 0
+    assert summary["eviction_candidates"] == []
+
+
+def test_summarize_cache_eviction_candidates() -> None:
+    status_payload = {
+        "top_entries": [
+            {"cache_key": "a", "total_hits": 0, "total_misses": 3, "total_bytes": 10, "last_access": "2024-01-01T00:00:00+00:00"},
+            {"cache_key": "b", "total_hits": 0, "total_misses": 1, "total_bytes": 5, "last_access": "2024-01-02T00:00:00+00:00"},
+            {"cache_key": "c", "total_hits": 2, "total_misses": 0, "total_bytes": 7, "last_access": "2024-01-03T00:00:00+00:00"},
+        ]
+    }
+
+    summary = summarize_cache(status_payload, top=2)
+    assert summary["stale_entry_count"] == 2
+    assert [entry["cache_key"] for entry in summary["eviction_candidates"]] == ["a", "b"]
+
+
+def test_summarize_agent_tokens_flags_expiring() -> None:
+    now = datetime.now(timezone.utc)
+    records = [
+        {
+            "agent_id": "agent-1",
+            "token_version": 2,
+            "rotated_at": (now - timedelta(hours=1)).isoformat(),
+            "ttl_seconds": 7200,
+        },
+        {
+            "agent_id": "agent-2",
+            "token_version": 5,
+            "rotated_at": (now - timedelta(hours=10)).isoformat(),
+            "ttl_seconds": 3600,
+        },
+    ]
+
+    summary = summarize_agent_tokens(records)
+    assert summary["total_agents"] == 2
+    assert "agent-2" in summary["expired_agents"]
+    assert summary["entries"][0]["agent_id"] == "agent-1"
 
 
 def test_summarize_logs_counts_levels_and_samples() -> None:

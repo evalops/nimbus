@@ -18,6 +18,7 @@ import structlog
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.schemas import (
     AgentTokenMintRequest,
+    AgentTokenRecord,
     AgentTokenResponse,
     JobAssignment,
     JobLeaseRequest,
@@ -317,6 +318,24 @@ def create_app() -> FastAPI:
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:
         return PlainTextResponse(GLOBAL_REGISTRY.render())
+
+    @app.get("/api/agents", response_model=list[AgentTokenRecord])
+    async def list_agent_tokens(
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[AgentTokenRecord]:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            records = await db.list_agent_credentials(session)
+        return [
+            AgentTokenRecord(
+                agent_id=row["agent_id"],
+                token_version=row["token_version"],
+                rotated_at=row["rotated_at"],
+                ttl_seconds=row["ttl_seconds"],
+            )
+            for row in records
+        ]
 
     return app
 

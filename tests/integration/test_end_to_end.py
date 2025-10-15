@@ -278,6 +278,15 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         assert empty_lease.status_code == 200
         assert empty_lease.json()["job"] is None
 
+        inventory_response = await control_client.get(
+            "/api/agents",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert inventory_response.status_code == 200
+        token_inventory = inventory_response.json()
+        agent_record = next(item for item in token_inventory if item["agent_id"] == "agent-1")
+        assert agent_record["token_version"] == rotated_payload["version"]
+
         head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
         assert head_response.status_code == 200
         assert head_response.headers["content-length"] == "5"

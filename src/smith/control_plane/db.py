@@ -181,3 +181,12 @@ async def rotate_agent_token(
     )
     await session.execute(stmt)
     return version
+
+
+async def list_agent_credentials(session: AsyncSession) -> list[dict]:
+    stmt = select(agent_credentials_table)
+    result = await session.execute(stmt)
+    rows = []
+    for row in result.mappings():
+        rows.append(dict(row))
+    return rows
