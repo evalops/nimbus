@@ -17,19 +17,30 @@ Nimbus gives you:
 ✅ **10x cheaper** – Run on bare metal (Hetzner/your datacenter) for $450/month vs $4,500 on hosted runners  
 ✅ **Air-gapped** – Models and eval data never leave your infrastructure  
 ✅ **Eval-native** – Pre-built containers with OTEL tracing, ollama client, and structured logging for ClickHouse  
-✅ **Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)
+✅ **Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)  
+✅ **Multi-tenant** – Org-scoped isolation for cache, logs, and artifacts with comprehensive access controls  
+✅ **Production-ready** – Lease fencing, automatic cleanup, replay protection, and per-org rate limiting
 
 > **Acknowledgement:** Nimbus builds on key ideas from [Blacksmith.sh](https://blacksmith.sh). Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this implementation. For a production-ready managed solution, check out Blacksmith.
 
 ## Components
-- **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
-- **Host Agent:** Polls the control plane for work, manages Firecracker microVMs, and forwards Firecracker logs to the logging pipeline when configured.
-- Ensure host agents have permissions to create tap devices and bridges (requires `ip`/`iproute2`).
-- **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem or an S3-compatible endpoint (MinIO/Ceph) with HMAC-signed tokens.
-- **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
-- **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
-- **Docker Layer Cache Registry:** Implements a minimal OCI-compatible blob/manifest store to accelerate container builds.
-- **Web Dashboard:** React + Vite single-page app for monitoring jobs, agents, logs, and configuration status.
+
+- **Control Plane (FastAPI):** Receives GitHub webhooks with signature verification and replay protection, manages job leases with fence tokens, enforces per-org rate limits, and coordinates runner registration.
+- **Host Agent:** Polls for work with lease renewal heartbeats, manages Firecracker microVMs with automatic cleanup on crash, handles network isolation with tap devices and bridges.
+- **Cache Proxy:** Org-scoped artifact cache with pull/push permissions, backed by filesystem or S3-compatible storage with circuit breaker resilience.
+- **Logging Pipeline:** Authenticated log ingestion to ClickHouse with org/repo boundaries enforced on all queries.
+- **Docker Layer Cache Registry:** OCI-compatible registry with org-prefixed repositories and blob ownership validation.
+- **Web Dashboard:** React + Vite SPA for monitoring jobs, agents, logs, and system health.
+- **Optional SSH/DNS Helpers:** Secure SSH access to running VMs with port allocation and automatic session expiry.
+
+### Security Features
+
+- **Lease Fencing**: DB-backed leases with fence tokens prevent double-claiming during network partitions
+- **Multi-Tenant Isolation**: Org-scoped access controls on cache, logs, and Docker registry
+- **Secret Masking**: All sensitive configuration automatically redacted in logs and errors
+- **Webhook Protection**: Delivery ID tracking prevents replay attacks
+- **Rate Limiting**: Per-org job submission limits to prevent abuse
+- **Idempotent Cleanup**: Automatic reaper on startup handles orphaned resources from crashes
 
 ## Pre-built Job Runners
 
@@ -78,11 +89,12 @@ jobs:
 ```
 
 The control plane will:
-1. Receive the `workflow_job` webhook from GitHub when jobs with the `nimbus` label are queued
-2. Generate a one-time runner registration token via the GitHub API
-3. Enqueue the job assignment to Redis
-4. Wait for a host agent to lease the job
-5. The host agent spins up a Firecracker microVM that registers as a GitHub Actions runner and executes your workflow
+1. Receive and verify the `workflow_job` webhook from GitHub (signature + replay protection)
+2. Check per-org rate limits and generate a one-time runner registration token via the GitHub API
+3. Enqueue the job assignment to Redis with org-scoped cache token
+4. Agent leases the job with DB-backed fence token and starts heartbeat renewal
+5. Firecracker microVM spins up, registers as a GitHub Actions runner, and executes your workflow
+6. Job completion releases the lease; automatic reaper handles any orphaned resources
 
 Jobs without the `nimbus` label are ignored by the control plane, allowing you to mix Nimbus runners with GitHub-hosted runners in the same repository.
 
@@ -348,10 +360,120 @@ uv run uvicorn nimbus.cache_proxy.main:app --host 0.0.0.0 --port 8001
 
 Configure S3-specific variables when delegating storage to a remote backend.
 
-## Roadmap
-- Implement multi-tenant cache usage metrics and eviction policies.
-- Support configurable Firecracker rootfs build pipelines and image updates.
-- Add automated integration tests that exercise cache, logging, and Firecracker workflows end-to-end.
-- Expand AI/ML workload support with specialized runners and observability for metrics like token usage, cost, and quality.
+## Production Deployment
 
-Nimbus is a work in progress; contributions and suggestions are welcome.
+### Pre-Pilot Checklist
+
+Before deploying to production, review [docs/PRE_PILOT_GAPS.md](docs/PRE_PILOT_GAPS.md) for the complete security and reliability assessment.
+
+**Critical items (all implemented):**
+- ✅ Lease fencing with fence tokens and heartbeat renewal
+- ✅ Idempotent teardown and startup reaper for crash recovery
+- ✅ Multi-tenant isolation (cache, logs, Docker registry)
+- ✅ Secret masking with Pydantic SecretStr
+- ✅ Webhook replay protection via delivery ID tracking
+- ✅ Per-org rate limiting on job submissions
+- ✅ SSH port allocation with unique constraints
+
+**Recommended for scale:**
+- Redis-backed distributed rate limiting (currently per-process)
+- Alembic migrations (currently using ensure_schema)
+- Metrics endpoint authentication or localhost-only binding
+- Comprehensive integration test suite
+- Health check endpoints (/healthz) for K8s readiness probes
+
+### Multi-Tenant Configuration
+
+All services enforce org-level isolation. Key configuration:
+
+```bash
+# Shared secret for cache tokens (used across all services)
+NIMBUS_CACHE_SHARED_SECRET="your-secure-secret-here"
+
+# Job lease TTL (default: 300s)
+NIMBUS_JOB_LEASE_TTL=300
+
+# Per-org rate limits (default: 100 jobs/minute)
+NIMBUS_ORG_JOB_RATE_LIMIT=100
+NIMBUS_ORG_RATE_INTERVAL=60
+```
+
+**Important**: Cache tokens are scoped with `pull:org-{id}` and `push:org-{id}` permissions. Docker repository names **must** be prefixed with `org-{id}/` to enforce boundaries.
+
+### Security Hardening
+
+See [docs/FIRECRACKER_SECURITY.md](docs/FIRECRACKER_SECURITY.md) for Firecracker jailer and seccomp configuration.
+
+Recommended additional hardening:
+- Run Firecracker under jailer with seccomp profile
+- Drop unnecessary capabilities from host agent process
+- Use network namespaces per VM for isolation
+- Enable HTTPS at ingress with trusted proxy headers
+- Bind metrics endpoints to localhost or private network
+
+### Monitoring
+
+Key metrics to monitor in production:
+- `nimbus_control_plane_webhook_replays_blocked` - Replay attack attempts
+- `nimbus_control_plane_org_rate_limits_hit` - Organizations hitting limits
+- `nimbus_host_agent_job_timeouts_total` - Jobs timing out
+- `nimbus_host_agent_lease_errors_total` - Lease acquisition failures
+- `nimbus_cache_evictions_total` - Cache pressure
+
+Prometheus scrape endpoints:
+- Control plane: `http://localhost:8000/metrics`
+- Host agent: `http://localhost:9460/metrics`
+- Cache proxy: `http://localhost:8001/metrics`
+
+### ClickHouse Schema
+
+The logging pipeline requires a specific ClickHouse schema. See [docs/CLICKHOUSE_SCHEMA.md](docs/CLICKHOUSE_SCHEMA.md) for the complete DDL and multi-tenant isolation setup.
+
+**Quick setup:**
+```sql
+CREATE TABLE IF NOT EXISTS nimbus.ci_logs (
+    job_id UInt64,
+    agent_id String,
+    org_id Nullable(UInt64),
+    repo_id Nullable(UInt64),
+    level String,
+    message String,
+    ts DateTime64(3),
+    inserted_at DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (org_id, repo_id, job_id, ts)
+PARTITION BY toYYYYMM(ts);
+```
+
+## Roadmap
+
+**Completed:**
+- ✅ Multi-tenant isolation with org-scoped access controls
+- ✅ Lease fencing to prevent job double-claiming
+- ✅ Webhook replay protection
+- ✅ Per-org rate limiting
+- ✅ Idempotent cleanup and crash recovery
+- ✅ Secret masking and secure credential handling
+
+**In Progress:**
+- Distributed rate limiting across replicas (Redis-backed)
+- Alembic migrations for schema versioning
+- Comprehensive integration test suite
+- Firecracker jailer and seccomp integration
+
+**Planned:**
+- Per-org storage quotas and usage metrics
+- Rootfs content addressing and attestation
+- Performance knobs (vCPU pinning, cgroup tuning)
+- Advanced eval observability (token usage, quality scores)
+- Snapshot-based VM boot for faster startup
+
+## Contributing
+
+Nimbus is production-ready for pilot deployments. See [docs/SELF_REVIEW.md](docs/SELF_REVIEW.md) for current status and [docs/PRE_PILOT_GAPS.md](docs/PRE_PILOT_GAPS.md) for completed security work.
+
+Contributions welcome! Key areas:
+- Integration test coverage
+- Distributed systems testing
+- Performance optimization
+- Additional eval-specific runners
