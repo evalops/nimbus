@@ -152,6 +152,8 @@ class S3CacheBackend(CacheBackend):
         )
 
     async def head(self, cache_key: str) -> int:
+        from botocore.exceptions import ClientError
+        
         try:
             response = await self._call_with_retry(
                 self._client.head_object,
@@ -160,9 +162,17 @@ class S3CacheBackend(CacheBackend):
             )
         except self._client.exceptions.NoSuchKey as exc:  # type: ignore[attr-defined]
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss") from exc
+        except ClientError as exc:
+            # Map S3 error codes to HTTP status
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss") from exc
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="S3 error") from exc
         return int(response["ContentLength"])
 
     async def read(self, cache_key: str) -> bytes:
+        from botocore.exceptions import ClientError
+        
         try:
             response = await self._call_with_retry(
                 self._client.get_object,
@@ -171,6 +181,12 @@ class S3CacheBackend(CacheBackend):
             )
         except self._client.exceptions.NoSuchKey as exc:  # type: ignore[attr-defined]
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss") from exc
+        except ClientError as exc:
+            # Map S3 error codes to HTTP status
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss") from exc
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="S3 error") from exc
         body = response["Body"]
         return await asyncio.to_thread(body.read)
 

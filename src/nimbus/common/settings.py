@@ -36,6 +36,7 @@ class ControlPlaneSettings(BaseSettings):
     job_lease_ttl_seconds: int = env_field(300, "NIMBUS_JOB_LEASE_TTL")
     admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_SUBJECTS")
     admin_allowed_ips: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_IPS")
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list, validation_alias="NIMBUS_TRUSTED_PROXY_CIDRS")
     admin_rate_limit: int = env_field(60, "NIMBUS_ADMIN_RATE_LIMIT")
     admin_rate_interval_seconds: int = env_field(60, "NIMBUS_ADMIN_RATE_INTERVAL")
     require_https: bool = env_field(False, "NIMBUS_REQUIRE_HTTPS")
@@ -61,6 +62,13 @@ class ControlPlaneSettings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def _split_proxy_cidrs(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
 
 class HostAgentSettings(BaseSettings):
     """Configuration for the host agent daemon."""
@@ -74,7 +82,7 @@ class HostAgentSettings(BaseSettings):
     cache_token_secret: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_SECRET")
     cache_token_value: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_VALUE")
     log_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_LOG_SINK_URL")
-    metrics_host: str = env_field("0.0.0.0", "NIMBUS_AGENT_METRICS_HOST")
+    metrics_host: str = env_field("127.0.0.1", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")

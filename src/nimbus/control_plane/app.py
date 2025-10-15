@@ -40,6 +40,7 @@ from ..common.schemas import (
 )
 from ..common.settings import ControlPlaneSettings
 from ..common.security import decode_agent_token_payload, mint_agent_token
+from ..common.ratelimit import RateLimiter as DistributedRateLimiter, InMemoryRateLimiter
 from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job, lease_job_with_fence
@@ -60,6 +61,44 @@ REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 
 LOGGER = structlog.get_logger("nimbus.control_plane")
 TRACER = trace.get_tracer("nimbus.control_plane")
+
+
+def get_client_ip(request: Request, trusted_proxies: list[str]) -> str:
+    """
+    Get client IP, only trusting X-Forwarded-For from known proxies.
+    
+    Args:
+        request: FastAPI request
+        trusted_proxies: List of trusted proxy CIDR ranges
+        
+    Returns:
+        Client IP address
+    """
+    if not trusted_proxies:
+        # No trusted proxies configured, use direct connection
+        return request.client.host if request.client else "unknown"
+    
+    # Check if request came from trusted proxy
+    source_ip = request.client.host if request.client else None
+    if source_ip:
+        from ipaddress import ip_address, ip_network
+        try:
+            source = ip_address(source_ip)
+            is_trusted = any(
+                source in ip_network(cidr, strict=False)
+                for cidr in trusted_proxies
+            )
+            if is_trusted:
+                # Trust X-Forwarded-For header
+                forwarded = request.headers.get("x-forwarded-for")
+                if forwarded:
+                    # Take first IP (original client)
+                    return forwarded.split(",")[0].strip()
+        except ValueError:
+            pass
+    
+    # Fallback to direct connection
+    return source_ip or "unknown"
 
 
 def _row_to_ssh_session(row: dict) -> SSHSession:
@@ -115,14 +154,17 @@ class AppState:
         session_factory,
         token_rate_limiter: RateLimiter,
         admin_rate_limiter: RateLimiter,
+        distributed_limiter: DistributedRateLimiter,
     ) -> None:
         self.settings = settings
         self.redis = redis
+        self.redis_client = redis
         self.http_client = http_client
         self.github_client = github_client
         self.session_factory = session_factory
         self.token_rate_limiter = token_rate_limiter
         self.admin_rate_limiter = admin_rate_limiter
+        self.distributed_limiter = distributed_limiter
 
 
 def _get_state(request: Request) -> AppState:
@@ -189,15 +231,31 @@ def verify_admin_token(
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
 
     if settings.require_https:
-        forwarded_proto = request.headers.get("x-forwarded-proto")
-        scheme = forwarded_proto.split(",")[0].strip() if forwarded_proto else request.url.scheme
+        # Only trust X-Forwarded-Proto from configured proxies
+        scheme = request.url.scheme
+        if settings.trusted_proxy_cidrs:
+            source_ip = request.client.host if request.client else None
+            if source_ip:
+                from ipaddress import ip_address, ip_network
+                try:
+                    source = ip_address(source_ip)
+                    is_trusted = any(
+                        source in ip_network(cidr, strict=False)
+                        for cidr in settings.trusted_proxy_cidrs
+                    )
+                    if is_trusted:
+                        forwarded_proto = request.headers.get("x-forwarded-proto")
+                        if forwarded_proto:
+                            scheme = forwarded_proto.split(",")[0].strip()
+                except ValueError:
+                    pass
+        
         if scheme.lower() != "https":
             LOGGER.warning("Admin request rejected: insecure protocol", subject=subject, scheme=scheme)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="HTTPS required")
 
     if settings.admin_allowed_ips:
-        forwarded_for = request.headers.get("x-forwarded-for")
-        client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else (request.client.host if request.client else None)
+        client_ip = get_client_ip(request, settings.trusted_proxy_cidrs)
         if client_ip not in settings.admin_allowed_ips:
             LOGGER.warning("Admin request rejected: IP not allowed", subject=subject, client_ip=client_ip)
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin source not allowed")
@@ -233,6 +291,7 @@ async def lifespan(app: FastAPI):
         limit=settings.admin_rate_limit,
         interval=float(settings.admin_rate_interval_seconds),
     )
+    distributed_limiter = DistributedRateLimiter(redis)
     container = AppState(
         settings=settings,
         redis=redis,
@@ -241,6 +300,7 @@ async def lifespan(app: FastAPI):
         session_factory=session_factory,
         token_rate_limiter=rate_limiter,
         admin_rate_limiter=admin_rate_limiter,
+        distributed_limiter=distributed_limiter,
     )
     app.state.container = container
     try:
@@ -327,16 +387,15 @@ def create_app() -> FastAPI:
             repo = payload.repository
             span.set_attribute("nimbus.repo", repo.full_name)
             
-            # Check per-org rate limit
+            # Check per-org rate limit using distributed limiter
             org_id = repo.id
-            rate_key = f"rate:org:{org_id}"
-            redis_client = state.redis_client
-            current_count = await redis_client.incr(rate_key)
-            if current_count == 1:
-                # First request in window, set expiry
-                await redis_client.expire(rate_key, settings.org_rate_interval_seconds)
+            allowed, current_count = await state.distributed_limiter.check_limit(
+                key=f"org:{org_id}",
+                limit=settings.org_job_rate_limit,
+                window_seconds=settings.org_rate_interval_seconds,
+            )
             
-            if current_count > settings.org_job_rate_limit:
+            if not allowed:
                 ORG_RATE_LIMIT_COUNTER.inc()
                 LOGGER.warning(
                     "Org rate limit exceeded",
