@@ -1,0 +1,105 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    environment:
+      CLICKHOUSE_DB: smith
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+
+  control-plane:
+    build: .
+    command: ["uvicorn", "smith.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      SMITH_GITHUB_APP_ID: ${SMITH_GITHUB_APP_ID:-1}
+      SMITH_GITHUB_APP_PRIVATE_KEY: ${SMITH_GITHUB_APP_PRIVATE_KEY:-stub}
+      SMITH_GITHUB_APP_INSTALLATION_ID: ${SMITH_GITHUB_APP_INSTALLATION_ID:-1}
+      SMITH_GITHUB_WEBHOOK_SECRET: ${SMITH_GITHUB_WEBHOOK_SECRET:-secret}
+      SMITH_REDIS_URL: redis://redis:6379/0
+      SMITH_DATABASE_URL: sqlite+aiosqlite:///data/control.db
+      SMITH_JWT_SECRET: ${SMITH_JWT_SECRET:-jwt-secret}
+      SMITH_AGENT_TOKEN_SECRET: ${SMITH_AGENT_TOKEN_SECRET:-agent-secret}
+      SMITH_CACHE_SHARED_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
+      SMITH_CACHE_TOKEN_TTL: ${SMITH_CACHE_TOKEN_TTL:-3600}
+      SMITH_PUBLIC_BASE_URL: http://control-plane:8000
+      SMITH_AGENT_TOKEN_RATE_LIMIT: ${SMITH_AGENT_TOKEN_RATE_LIMIT:-15}
+      SMITH_AGENT_TOKEN_RATE_INTERVAL: ${SMITH_AGENT_TOKEN_RATE_INTERVAL:-60}
+      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+      - clickhouse
+    ports:
+      - "8000:8000"
+    volumes:
+      - control-data:/app/data
+
+  cache-proxy:
+    build: .
+    command: ["uvicorn", "smith.cache_proxy.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      SMITH_CACHE_SHARED_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
+      SMITH_CACHE_STORAGE_PATH: /data/cache
+      SMITH_CACHE_METRICS_DB: /data/cache/cache_metrics.db
+      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+    volumes:
+      - cache-data:/data/cache
+    ports:
+      - "8080:8080"
+    depends_on:
+      - control-plane
+
+  logging-pipeline:
+    build: .
+    command: ["uvicorn", "smith.logging_pipeline.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      SMITH_CLICKHOUSE_URL: http://clickhouse:8123
+      SMITH_CLICKHOUSE_DATABASE: smith
+      SMITH_CLICKHOUSE_TABLE: ci_logs
+      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+    depends_on:
+      - clickhouse
+    ports:
+      - "8090:8090"
+
+  host-agent:
+    build: .
+    command: ["python", "-m", "smith.host_agent.main"]
+    environment:
+      SMITH_AGENT_ID: ${SMITH_AGENT_ID:-agent-1}
+      SMITH_CONTROL_PLANE_URL: http://control-plane:8000
+      SMITH_CONTROL_PLANE_TOKEN: ${SMITH_CONTROL_PLANE_TOKEN:-set-agent-token}
+      SMITH_KERNEL_IMAGE: /artifacts/vmlinux
+      SMITH_ROOTFS_IMAGE: /artifacts/rootfs.ext4
+      SMITH_FC_BIN: /artifacts/firecracker
+      SMITH_CACHE_PROXY_URL: http://cache-proxy:8080
+      SMITH_LOG_SINK_URL: http://logging-pipeline:8090
+      SMITH_CACHE_TOKEN_SECRET: ${SMITH_CACHE_SHARED_SECRET:-cache-secret}
+      SMITH_CACHE_TOKEN_VALUE: ${SMITH_CACHE_TOKEN_VALUE:-}
+      SMITH_JOB_TIMEOUT: ${SMITH_JOB_TIMEOUT:-3600}
+      SMITH_AGENT_LEASE_RETRIES: ${SMITH_AGENT_LEASE_RETRIES:-5}
+      SMITH_AGENT_LEASE_RETRY_BASE: ${SMITH_AGENT_LEASE_RETRY_BASE:-1.0}
+      SMITH_AGENT_LEASE_RETRY_MAX: ${SMITH_AGENT_LEASE_RETRY_MAX:-10.0}
+      SMITH_LOG_LEVEL: ${SMITH_LOG_LEVEL:-INFO}
+    volumes:
+      - ./artifacts:/artifacts:ro
+      - /dev/kvm:/dev/kvm
+    depends_on:
+      - control-plane
+      - cache-proxy
+    profiles:
+      - agent
+    privileged: true
+
+volumes:
+  clickhouse-data:
+  control-data:
+  cache-data:

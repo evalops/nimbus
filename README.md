@@ -132,6 +132,12 @@ All services honor the following optional environment variables:
 | `SMITH_OTEL_EXPORTER_HEADERS` | Comma-separated OTLP headers (`key=value`). | none |
 | `SMITH_OTEL_SAMPLER_RATIO` | Sampling ratio (0.0–1.0) for tracing. | `0.1` |
 
+### Docker Compose Stack
+
+1. Copy `compose.env.sample` to `.env` and populate the required secrets. Mint an agent token with `python -m smith.cli.admin tokens rotate ...` and set `SMITH_CONTROL_PLANE_TOKEN`.
+2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
+3. Launch the stack: `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
+
 ### Cache proxy backends
 
 - Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
