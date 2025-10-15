@@ -334,7 +334,7 @@ Configure S3-specific variables when delegating storage to a remote backend.
 ## Roadmap
 - Implement multi-tenant cache usage metrics and eviction policies.
 - Support configurable Firecracker rootfs build pipelines and image updates.
-- Expose Prometheus metrics for control plane, cache proxy, and host agents.
 - Add automated integration tests that exercise cache, logging, and Firecracker workflows end-to-end.
+- Expand AI/ML workload support with specialized runners and observability for metrics like token usage, cost, and quality.
 
 Nimbus is a work in progress; contributions and suggestions are welcome.
