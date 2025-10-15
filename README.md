@@ -88,6 +88,9 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 | `SMITH_TAP_PREFIX` | Prefix for tap interfaces created per VM. | `smith` |
 | `SMITH_JOB_TIMEOUT` | Maximum job runtime in seconds. | `3600` |
 | `SMITH_VM_SHUTDOWN_GRACE` | Graceful shutdown wait in seconds. | `30` |
+| `SMITH_AGENT_LEASE_RETRIES` | Number of retries for lease requests. | `3` |
+| `SMITH_AGENT_LEASE_RETRY_BASE` | Base backoff delay (seconds). | `1.0` |
+| `SMITH_AGENT_LEASE_RETRY_MAX` | Maximum backoff delay (seconds). | `15.0` |
 
 ### Cache Proxy (`smith.cache_proxy`)
 

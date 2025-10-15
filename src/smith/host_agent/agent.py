@@ -87,14 +87,47 @@ class HostAgent:
             capabilities=["firecracker"],
         )
         LEASE_REQUEST_COUNTER.inc()
+        attempts = max(1, self._settings.lease_retry_attempts)
+        base_delay = max(0.0, self._settings.lease_retry_base_seconds)
+        max_delay = max(base_delay, self._settings.lease_retry_max_seconds)
         with TRACER.start_as_current_span("host_agent.lease_job"):
-            resp = await self._http.post(
-                f"{self._settings.control_plane_base_url}/api/jobs/lease",
-                headers=self._auth_headers(),
-                json=request.model_dump(),
-            )
-        resp.raise_for_status()
-        return JobLeaseResponse.model_validate(resp.json())
+            for attempt in range(1, attempts + 1):
+                try:
+                    resp = await self._http.post(
+                        f"{self._settings.control_plane_base_url}/api/jobs/lease",
+                        headers=self._auth_headers(),
+                        json=request.model_dump(),
+                    )
+                    resp.raise_for_status()
+                    return JobLeaseResponse.model_validate(resp.json())
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    if status < 500 and status not in {429}:
+                        raise
+                    if attempt >= attempts:
+                        raise
+                    delay = min(base_delay * (2 ** (attempt - 1)), max_delay) if base_delay else 0.0
+                    LOGGER.warning(
+                        "Lease request failed",
+                        attempt=attempt,
+                        status=status,
+                        retry_in=delay,
+                    )
+                    if delay:
+                        await asyncio.sleep(delay)
+                except httpx.HTTPError as exc:
+                    if attempt >= attempts:
+                        raise
+                    delay = min(base_delay * (2 ** (attempt - 1)), max_delay) if base_delay else 0.0
+                    LOGGER.warning(
+                        "Lease request transport error",
+                        attempt=attempt,
+                        error=str(exc),
+                        retry_in=delay,
+                    )
+                    if delay:
+                        await asyncio.sleep(delay)
+        raise RuntimeError("Lease retry loop exited unexpectedly")
 
     async def _process_job(self, assignment: JobAssignment) -> None:
         with TRACER.start_as_current_span(
