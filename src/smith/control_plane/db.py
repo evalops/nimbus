@@ -122,4 +122,11 @@ async def list_recent_jobs(
         .limit(limit)
     )
     result = await session.execute(stmt)
-    return [dict(row) for row in result.mappings()]
+    rows = [dict(row) for row in result.mappings()]
+    for row in rows:
+        row["repo_private"] = True if row.get("repo_private") == "true" else False
+        for key in ("queued_at", "leased_at", "completed_at", "updated_at"):
+            value = row.get(key)
+            if isinstance(value, datetime):
+                row[key] = value.isoformat()
+    return rows

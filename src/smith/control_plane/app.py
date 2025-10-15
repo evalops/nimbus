@@ -17,6 +17,7 @@ from ..common.schemas import (
     JobAssignment,
     JobLeaseRequest,
     JobLeaseResponse,
+    JobRecord,
     JobStatusUpdate,
     WebhookWorkflowJobEvent,
 )
@@ -194,6 +195,16 @@ def create_app() -> FastAPI:
         )
         await db.record_status_update(session, status_update)
         await session.commit()
+
+    @app.get("/api/jobs/recent", response_model=list[JobRecord])
+    async def recent_jobs(
+        limit: int = 50,
+        _: None = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> list[JobRecord]:
+        limit = max(1, min(limit, 200))
+        rows = await db.list_recent_jobs(session, limit=limit)
+        return [JobRecord.model_validate(row) for row in rows]
 
     return app
 

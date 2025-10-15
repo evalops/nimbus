@@ -22,6 +22,10 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    uvicorn smith.logging_pipeline.main:app --reload --port 8002
    python -m smith.host_agent.main
    ```
+4. Inspect recent jobs from the command line (example):
+   ```bash
+   python -m smith.cli.jobs recent --base-url http://localhost:8000 --token $SMITH_JWT_SECRET --limit 10
+   ```
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:

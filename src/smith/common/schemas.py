@@ -95,6 +95,25 @@ class JobStatusUpdate(BaseModel):
     reported_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class JobRecord(BaseModel):
+    """Job record returned by the control plane."""
+
+    job_id: int
+    run_id: int
+    run_attempt: int
+    repo_id: int
+    repo_full_name: str
+    repo_private: bool
+    labels: list[str]
+    status: str
+    agent_id: Optional[str] = None
+    queued_at: datetime
+    leased_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    last_message: Optional[str] = None
+    updated_at: datetime
+
+
 class LogEntry(BaseModel):
     """Log record emitted by a job or microVM."""
 
