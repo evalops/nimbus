@@ -36,6 +36,10 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    python -m smith.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
    ```
+8. Mint a cache token for testing:
+   ```bash
+   python -m smith.cli.cache --secret $SMITH_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
+   ```
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:
