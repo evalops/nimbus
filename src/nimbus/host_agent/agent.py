@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Dict, Optional
 
 import httpx
 import structlog
@@ -16,7 +16,9 @@ from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, J
 from ..common.settings import HostAgentSettings
 from ..common.security import verify_cache_token
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
-from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
+from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
+from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
+from ..optional.ssh_dns import SSHSessionConfig
 
 LOGGER = structlog.get_logger("nimbus.host_agent")
 TRACER = trace.get_tracer("nimbus.host_agent")
@@ -51,11 +53,16 @@ class HostAgent:
         self._active_jobs_gauge = GLOBAL_REGISTRY.register(
             Gauge("nimbus_host_agent_active_jobs", "Jobs currently being processed", supplier=lambda: float(self._active_jobs))
         )
+        self._job_networks: Dict[int, MicroVMNetwork] = {}
+        self._ssh_sessions: Dict[str, ActiveSSHSession] = {}
+        self._enable_ssh = settings.enable_ssh
+        self._last_ssh_sync = 0.0
 
     async def run(self) -> None:
         self._running = True
         await self._ensure_metrics_server()
         while self._running:
+            await self._sync_ssh_sessions()
             try:
                 response = await self._lease_job()
             except httpx.HTTPError as exc:
@@ -153,11 +160,15 @@ class HostAgent:
                 if fallback:
                     assignment.cache_token = fallback
 
+            network = self._launcher.network_for_job(assignment.job_id)
+            self._job_networks[assignment.job_id] = network
+
             timeout_seconds = self._settings.job_timeout_seconds
             try:
                 result = await self._launcher.execute_job(
                     assignment,
                     timeout_seconds=timeout_seconds,
+                    network=network,
                 )
             except FirecrackerError as exc:
                 await self._emit_logs(assignment, exc.result)
@@ -184,6 +195,8 @@ class HostAgent:
                 JOB_SUCCEEDED_COUNTER.inc()
             finally:
                 self._active_jobs = max(0, self._active_jobs - 1)
+                self._job_networks.pop(assignment.job_id, None)
+                await self._teardown_sessions_for_job(assignment.job_id, reason="job complete")
 
     async def _submit_status(
         self, assignment: JobAssignment, status: str, *, message: Optional[str] = None
@@ -261,6 +274,125 @@ class HostAgent:
                 )
                 LOG_ERROR_COUNTER.inc()
                 break
+
+    async def _sync_ssh_sessions(self) -> None:
+        if not self._enable_ssh:
+            return
+        now = datetime.now(timezone.utc)
+        fetch = False
+        current = time.monotonic()
+        if current - self._last_ssh_sync >= self._settings.ssh_poll_interval_seconds:
+            self._last_ssh_sync = current
+            fetch = True
+
+        if fetch:
+            try:
+                response = await self._http.get(
+                    f"{self._settings.control_plane_base_url}/api/agents/ssh/sessions",
+                    headers=self._auth_headers(),
+                )
+                response.raise_for_status()
+                pending_sessions = response.json()
+            except httpx.HTTPError as exc:
+                LOGGER.debug("Failed to fetch SSH sessions", error=str(exc))
+                pending_sessions = []
+            for session in pending_sessions:
+                session_id = session.get("session_id")
+                if not session_id or session_id in self._ssh_sessions:
+                    continue
+                job_id = int(session.get("job_id"))
+                network = self._job_networks.get(job_id)
+                if not network:
+                    LOGGER.debug("SSH session requested for inactive job", session_id=session_id, job_id=job_id)
+                    continue
+                host_port = int(session.get("host_port"))
+                authorized_user = session.get("authorized_user", "runner")
+                config = SSHSessionConfig(
+                    job_id=job_id,
+                    host_port=host_port,
+                    vm_ip=network.guest_ip,
+                    authorized_user=authorized_user,
+                )
+                try:
+                    rules = await apply_port_forward(config)
+                except RuntimeError as exc:
+                    LOGGER.error("Failed to configure SSH port forwarding", session_id=session_id, error=str(exc))
+                    await self._notify_ssh_failure(session_id, str(exc))
+                    continue
+                try:
+                    activate_resp = await self._http.post(
+                        f"{self._settings.control_plane_base_url}/api/ssh/sessions/{session_id}/activate",
+                        headers=self._auth_headers(),
+                        json={"vm_ip": network.guest_ip},
+                    )
+                    activate_resp.raise_for_status()
+                except httpx.HTTPError as exc:
+                    LOGGER.error("Failed to activate SSH session", session_id=session_id, error=str(exc))
+                    await remove_port_forward(rules)
+                    await self._notify_ssh_failure(session_id, f"activation failed: {exc}")
+                    continue
+                expires_at_raw = session.get("expires_at")
+                if isinstance(expires_at_raw, str) and expires_at_raw.endswith("Z"):
+                    expires_at_raw = expires_at_raw.replace("Z", "+00:00")
+                expires_at = datetime.fromisoformat(expires_at_raw)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                active = ActiveSSHSession(
+                    session_id=session_id,
+                    job_id=job_id,
+                    host_port=host_port,
+                    vm_ip=network.guest_ip,
+                    authorized_user=authorized_user,
+                    expires_at=expires_at,
+                    rules=rules,
+                )
+                self._ssh_sessions[session_id] = active
+                LOGGER.info(
+                    "SSH session ready",
+                    session_id=session_id,
+                    job_id=job_id,
+                    host_port=host_port,
+                    vm_ip=network.guest_ip,
+                )
+
+        for session_id, active in list(self._ssh_sessions.items()):
+            if active.expires_at <= now or active.job_id not in self._job_networks:
+                reason = "expired" if active.expires_at <= now else "job finished"
+                await self._close_session(session_id, active, reason=reason)
+
+    async def _notify_ssh_failure(self, session_id: str, reason: str) -> None:
+        payload = {"reason": reason}
+        try:
+            response = await self._http.post(
+                f"{self._settings.control_plane_base_url}/api/ssh/sessions/{session_id}/close",
+                headers=self._auth_headers(),
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            LOGGER.debug("Failed to notify control plane about SSH failure", session_id=session_id, error=str(exc))
+
+    async def _close_session(self, session_id: str, active: ActiveSSHSession, *, reason: Optional[str]) -> None:
+        LOGGER.info("Closing SSH session", session_id=session_id, reason=reason)
+        try:
+            await remove_port_forward(active.rules)
+        except RuntimeError as exc:
+            LOGGER.debug("Failed to remove port forwarding", session_id=session_id, error=str(exc))
+        try:
+            response = await self._http.post(
+                f"{self._settings.control_plane_base_url}/api/ssh/sessions/{session_id}/close",
+                headers=self._auth_headers(),
+                json={"reason": reason},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            LOGGER.debug("Failed to close SSH session via control plane", session_id=session_id, error=str(exc))
+        self._ssh_sessions.pop(session_id, None)
+
+    async def _teardown_sessions_for_job(self, job_id: int, *, reason: str) -> None:
+        for session_id, active in list(self._ssh_sessions.items()):
+            if active.job_id == job_id:
+                await self._close_session(session_id, active, reason=reason)
 
     async def _ensure_metrics_server(self) -> None:
         if self._metrics_server is not None:

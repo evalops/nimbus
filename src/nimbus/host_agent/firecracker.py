@@ -30,6 +30,17 @@ class FirecrackerResult:
     metrics: Optional[str]
 
 
+@dataclass
+class MicroVMNetwork:
+    """Network configuration details for a microVM."""
+
+    tap_name: str
+    bridge: str
+    host_ip: str
+    guest_ip: str
+    cidr: int = 24
+
+
 class FirecrackerError(RuntimeError):
     """Raised when Firecracker orchestration fails."""
 
@@ -55,7 +66,13 @@ class FirecrackerLauncher:
         self._settings = settings
         self._config = config or MicroVMConfig()
 
-    async def execute_job(self, assignment: JobAssignment, *, timeout_seconds: Optional[int] = None) -> FirecrackerResult:
+    async def execute_job(
+        self,
+        assignment: JobAssignment,
+        *,
+        timeout_seconds: Optional[int] = None,
+        network: Optional[MicroVMNetwork] = None,
+    ) -> FirecrackerResult:
         """Launch a microVM for the given job and wait for completion."""
 
         LOGGER.info("Launching microVM", job_id=assignment.job_id)
@@ -65,11 +82,12 @@ class FirecrackerLauncher:
             log_path = workdir_path / "firecracker.log"
             metrics_path = workdir_path / "firecracker.metrics"
 
-            tap_name = self._allocate_tap_name(assignment.job_id)
+            tap_name = network.tap_name if network else self._allocate_tap_name(assignment.job_id)
+            network = network or self._derive_network(tap_name)
             rootfs_copy = self._prepare_rootfs(workdir_path)
 
             vm_config = self._build_vm_config(rootfs_copy, tap_name)
-            metadata = self._build_metadata(assignment)
+            metadata = self._build_metadata(assignment, network)
 
             tap_created = False
             process: Optional[asyncio.subprocess.Process] = None
@@ -78,7 +96,7 @@ class FirecrackerLauncher:
 
             try:
                 await self._ensure_tap_device(tap_name)
-                await self._configure_network(tap_name)
+                await self._configure_network(network)
                 tap_created = True
                 process = await self._spawn_firecracker(api_socket, log_path, metrics_path)
                 await self._configure_vm(api_socket, vm_config, metadata)
@@ -123,12 +141,24 @@ class FirecrackerLauncher:
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
                 if tap_created:
-                    await self._teardown_network(tap_name)
+                    await self._teardown_network(network)
                     await self._teardown_tap_device(tap_name)
 
     def _allocate_tap_name(self, job_id: int) -> str:
         suffix = job_id % 10000
         return f"{self._settings.tap_device_prefix}{suffix:04d}"
+
+    def _derive_network(self, tap_name: str) -> MicroVMNetwork:
+        suffix = int(tap_name[-4:]) if tap_name[-4:].isdigit() else 0
+        subnet = 50 + (suffix % 200)
+        host_ip = f"172.31.{subnet}.1"
+        guest_ip = f"172.31.{subnet}.2"
+        bridge = f"{tap_name}-br"
+        return MicroVMNetwork(tap_name=tap_name, bridge=bridge, host_ip=host_ip, guest_ip=guest_ip)
+
+    def network_for_job(self, job_id: int) -> MicroVMNetwork:
+        tap_name = self._allocate_tap_name(job_id)
+        return self._derive_network(tap_name)
 
     def _prepare_rootfs(self, workdir: Path) -> Path:
         source = Path(self._settings.rootfs_image_path)
@@ -174,7 +204,7 @@ class FirecrackerLauncher:
 
         return config
 
-    def _build_metadata(self, assignment: JobAssignment) -> dict:
+    def _build_metadata(self, assignment: JobAssignment, network: Optional[MicroVMNetwork]) -> dict:
         cache_section = None
         if assignment.cache_token:
             cache_section = assignment.cache_token.model_dump()
@@ -186,7 +216,7 @@ class FirecrackerLauncher:
             if fallback:
                 cache_section = fallback.model_dump()
 
-        return {
+        payload = {
             "job": {
                 "id": assignment.job_id,
                 "run_id": assignment.run_id,
@@ -200,6 +230,15 @@ class FirecrackerLauncher:
             },
             "cache": cache_section,
         }
+        if network:
+            payload["network"] = {
+                "guest_ip": network.guest_ip,
+                "host_ip": network.host_ip,
+                "cidr": network.cidr,
+            }
+            if self._settings.ssh_authorized_key:
+                payload["network"]["authorized_key"] = self._settings.ssh_authorized_key
+        return payload
 
     async def _ensure_tap_device(self, tap_name: str) -> None:
         if hasattr(os, "geteuid") and os.geteuid() != 0:  # pragma: no cover - platform specific
@@ -241,21 +280,37 @@ class FirecrackerLauncher:
             return
         await process.communicate()
 
-    async def _configure_network(self, tap_name: str) -> None:
-        LOGGER.debug("Configuring network for tap", tap=tap_name)
-        bridge = f"{tap_name}-br"
-        await self._run_command("ip", "link", "del", bridge, skip_fail=True)
-        await self._run_command("ip", "link", "add", bridge, "type", "bridge")
-        await self._run_command("ip", "link", "set", bridge, "up")
-        await self._run_command("ip", "link", "set", tap_name, "master", bridge)
-        await self._run_command("ip", "link", "set", tap_name, "up")
+    async def _configure_network(self, network: MicroVMNetwork) -> None:
+        LOGGER.debug("Configuring network for tap", tap=network.tap_name, bridge=network.bridge)
+        await self._run_command("ip", "link", "del", network.bridge, skip_fail=True)
+        await self._run_command("ip", "link", "add", network.bridge, "type", "bridge")
+        await self._run_command("ip", "link", "set", network.bridge, "up")
+        await self._run_command("ip", "link", "set", network.tap_name, "master", network.bridge)
+        await self._run_command("ip", "link", "set", network.tap_name, "up")
+        await self._run_command(
+            "ip",
+            "addr",
+            "add",
+            f"{network.host_ip}/{network.cidr}",
+            "dev",
+            network.bridge,
+            skip_fail=True,
+        )
 
-    async def _teardown_network(self, tap_name: str) -> None:
-        bridge = f"{tap_name}-br"
-        LOGGER.debug("Tearing down network", tap=tap_name, bridge=bridge)
-        await self._run_command("ip", "link", "set", tap_name, "nomaster", skip_fail=True)
-        await self._run_command("ip", "link", "set", tap_name, "down", skip_fail=True)
-        await self._run_command("ip", "link", "del", bridge, skip_fail=True)
+    async def _teardown_network(self, network: MicroVMNetwork) -> None:
+        LOGGER.debug("Tearing down network", tap=network.tap_name, bridge=network.bridge)
+        await self._run_command(
+            "ip",
+            "addr",
+            "del",
+            f"{network.host_ip}/{network.cidr}",
+            "dev",
+            network.bridge,
+            skip_fail=True,
+        )
+        await self._run_command("ip", "link", "set", network.tap_name, "nomaster", skip_fail=True)
+        await self._run_command("ip", "link", "set", network.tap_name, "down", skip_fail=True)
+        await self._run_command("ip", "link", "del", network.bridge, skip_fail=True)
 
     async def _spawn_firecracker(
         self,

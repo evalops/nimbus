@@ -36,6 +36,9 @@ class ControlPlaneSettings(BaseSettings):
     admin_rate_limit: int = env_field(60, "NIMBUS_ADMIN_RATE_LIMIT")
     admin_rate_interval_seconds: int = env_field(60, "NIMBUS_ADMIN_RATE_INTERVAL")
     require_https: bool = env_field(False, "NIMBUS_REQUIRE_HTTPS")
+    ssh_port_range_start: int = env_field(22000, "NIMBUS_SSH_PORT_START")
+    ssh_port_range_end: int = env_field(22100, "NIMBUS_SSH_PORT_END")
+    ssh_session_default_ttl: int = env_field(900, "NIMBUS_SSH_SESSION_TTL")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
@@ -84,6 +87,9 @@ class HostAgentSettings(BaseSettings):
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+    enable_ssh: bool = env_field(False, "NIMBUS_SSH_ENABLE")
+    ssh_poll_interval_seconds: float = env_field(5.0, "NIMBUS_SSH_POLL_INTERVAL")
+    ssh_authorized_key: Optional[str] = env_field(None, "NIMBUS_SSH_AUTHORIZED_KEY")
 
 
 class CacheProxySettings(BaseSettings):

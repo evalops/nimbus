@@ -8,11 +8,17 @@ import pytest
 from nimbus.common.schemas import GitHubRepository, JobAssignment, RunnerRegistrationToken
 from nimbus.common.settings import HostAgentSettings
 from nimbus.host_agent.agent import HostAgent, JOB_TIMEOUT_COUNTER, JOB_TIMEOUT_LAST_TS
-from nimbus.host_agent.firecracker import FirecrackerError, FirecrackerResult
+from nimbus.host_agent.firecracker import FirecrackerError, FirecrackerResult, MicroVMNetwork
 
 
 class TimeoutLauncher:
-    async def execute_job(self, assignment: JobAssignment, *, timeout_seconds: int | None = None):  # noqa: D401
+    async def execute_job(
+        self,
+        assignment: JobAssignment,
+        *,
+        timeout_seconds: int | None = None,
+        network: MicroVMNetwork | None = None,
+    ) -> None:  # noqa: D401
         await asyncio.sleep(0)
         raise FirecrackerError(
             "Job timed out",
@@ -22,6 +28,14 @@ class TimeoutLauncher:
                 log_lines=[],
                 metrics=None,
             ),
+        )
+
+    def network_for_job(self, job_id: int) -> MicroVMNetwork:
+        return MicroVMNetwork(
+            tap_name=f"tap{job_id:04d}",
+            bridge=f"tap{job_id:04d}-br",
+            host_ip="172.31.100.1",
+            guest_ip="172.31.100.2",
         )
 
 

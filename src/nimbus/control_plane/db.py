@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Iterable, Optional
 
 from sqlalchemy import (
@@ -19,6 +19,7 @@ from sqlalchemy import (
     insert,
     select,
     update,
+    and_,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -68,6 +69,23 @@ agent_token_audit_table = Table(
     Column("token_version", Integer, nullable=False),
     Column("rotated_at", DateTime(timezone=True), nullable=False),
     Column("ttl_seconds", Integer, nullable=False),
+)
+
+
+ssh_sessions_table = Table(
+    "ssh_sessions",
+    metadata,
+    Column("session_id", String(length=64), primary_key=True),
+    Column("job_id", BigInteger, nullable=False),
+    Column("agent_id", String(length=128), nullable=False),
+    Column("host_port", Integer, nullable=False),
+    Column("authorized_user", String(length=128), nullable=False),
+    Column("status", String(length=32), nullable=False),
+    Column("vm_ip", String(length=64), nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -162,6 +180,21 @@ async def job_status_counts(session: AsyncSession) -> dict[str, int]:
     return {row.status: row.count for row in result}
 
 
+async def get_job(session: AsyncSession, job_id: int) -> Optional[dict]:
+    stmt = select(jobs_table).where(jobs_table.c.job_id == job_id).limit(1)
+    result = await session.execute(stmt)
+    row = result.mappings().first()
+    if not row:
+        return None
+    payload = dict(row)
+    for key in ("queued_at", "leased_at", "completed_at", "updated_at"):
+        value = payload.get(key)
+        if isinstance(value, datetime):
+            payload[key] = value.isoformat()
+    payload["repo_private"] = True if payload.get("repo_private") == "true" else False
+    return payload
+
+
 async def get_agent_token_record(session: AsyncSession, agent_id: str) -> Optional[dict]:
     stmt = select(agent_credentials_table).where(agent_credentials_table.c.agent_id == agent_id)
     result = await session.execute(stmt)
@@ -227,6 +260,121 @@ async def list_agent_token_audit(session: AsyncSession, limit: int = 50) -> list
     stmt = (
         select(agent_token_audit_table)
         .order_by(agent_token_audit_table.c.rotated_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return [dict(row) for row in result.mappings()]
+
+
+async def allocate_ssh_port(
+    session: AsyncSession,
+    *,
+    port_start: int,
+    port_end: int,
+) -> Optional[int]:
+    stmt = select(ssh_sessions_table.c.host_port).where(
+        ssh_sessions_table.c.status.in_(
+            ["pending", "active"]
+        )
+    )
+    result = await session.execute(stmt)
+    in_use = {row.host_port for row in result}
+    for port in range(port_start, port_end + 1):
+        if port not in in_use:
+            return port
+    return None
+
+
+async def create_ssh_session(
+    session: AsyncSession,
+    *,
+    session_id: str,
+    job_id: int,
+    agent_id: str,
+    host_port: int,
+    authorized_user: str,
+    ttl_seconds: int,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    stmt = insert(ssh_sessions_table).values(
+        session_id=session_id,
+        job_id=job_id,
+        agent_id=agent_id,
+        host_port=host_port,
+        authorized_user=authorized_user,
+        status="pending",
+        vm_ip=None,
+        reason=None,
+        created_at=now,
+        expires_at=expires_at,
+        updated_at=now,
+    )
+    await session.execute(stmt)
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "agent_id": agent_id,
+        "host_port": host_port,
+        "authorized_user": authorized_user,
+        "status": "pending",
+        "created_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "vm_ip": None,
+        "reason": None,
+    }
+
+
+async def list_agent_pending_ssh_sessions(session: AsyncSession, agent_id: str) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    stmt = select(ssh_sessions_table).where(
+        and_(
+            ssh_sessions_table.c.agent_id == agent_id,
+            ssh_sessions_table.c.status == "pending",
+            ssh_sessions_table.c.expires_at > now,
+        )
+    )
+    result = await session.execute(stmt)
+    return [dict(row) for row in result.mappings()]
+
+
+async def get_ssh_session(session: AsyncSession, session_id: str) -> Optional[dict]:
+    stmt = select(ssh_sessions_table).where(ssh_sessions_table.c.session_id == session_id).limit(1)
+    result = await session.execute(stmt)
+    row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def update_ssh_session(
+    session: AsyncSession,
+    session_id: str,
+    *,
+    status: Optional[str] = None,
+    vm_ip: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Optional[dict]:
+    values: dict = {"updated_at": datetime.now(timezone.utc)}
+    if status is not None:
+        values["status"] = status
+    if vm_ip is not None:
+        values["vm_ip"] = vm_ip
+    if reason is not None:
+        values["reason"] = reason
+    stmt = (
+        update(ssh_sessions_table)
+        .where(ssh_sessions_table.c.session_id == session_id)
+        .values(**values)
+        .returning(ssh_sessions_table)
+    )
+    result = await session.execute(stmt)
+    row = result.mappings().first()
+    return dict(row) if row else None
+
+
+async def list_ssh_sessions(session: AsyncSession, *, limit: int = 100) -> list[dict]:
+    stmt = (
+        select(ssh_sessions_table)
+        .order_by(ssh_sessions_table.c.created_at.desc())
         .limit(limit)
     )
     result = await session.execute(stmt)

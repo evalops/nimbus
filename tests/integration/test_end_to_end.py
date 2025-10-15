@@ -167,7 +167,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
                 "run_id": 202,
                 "run_attempt": 1,
                 "status": "queued",
-                "labels": ["firecracker"],
+                "labels": ["firecracker", "nimbus"],
             },
         }
         body = json.dumps(payload).encode("utf-8")

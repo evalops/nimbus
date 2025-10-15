@@ -157,3 +157,38 @@ class AgentTokenAuditRecord(BaseModel):
     token_version: int
     rotated_at: datetime
     ttl_seconds: int
+
+
+class SSHSessionRequest(BaseModel):
+    """Admin request to open an SSH session for a running job."""
+
+    job_id: int
+    ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    authorized_user: str = Field(default="runner", max_length=128)
+
+
+class SSHSession(BaseModel):
+    """SSH session metadata returned by the control plane."""
+
+    session_id: str
+    job_id: int
+    agent_id: str
+    host_port: int
+    authorized_user: str
+    status: Literal["pending", "active", "closed", "failed", "expired"]
+    created_at: datetime
+    expires_at: datetime
+    vm_ip: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class SSHSessionActivation(BaseModel):
+    """Payload provided by host agents when activating a session."""
+
+    vm_ip: str
+
+
+class SSHSessionCloseRequest(BaseModel):
+    """Payload supplied when closing an SSH session."""
+
+    reason: Optional[str] = None

@@ -9,6 +9,8 @@ import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Optional
+from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -30,6 +32,10 @@ from ..common.schemas import (
     JobRecord,
     JobStatusUpdate,
     WebhookWorkflowJobEvent,
+    SSHSession,
+    SSHSessionRequest,
+    SSHSessionActivation,
+    SSHSessionCloseRequest,
 )
 from ..common.settings import ControlPlaneSettings
 from ..common.security import decode_agent_token_payload, mint_agent_token
@@ -51,6 +57,27 @@ REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 
 LOGGER = structlog.get_logger("nimbus.control_plane")
 TRACER = trace.get_tracer("nimbus.control_plane")
+
+
+def _row_to_ssh_session(row: dict) -> SSHSession:
+    created_at = row.get("created_at")
+    expires_at = row.get("expires_at")
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at)
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    return SSHSession(
+        session_id=row["session_id"],
+        job_id=row["job_id"],
+        agent_id=row["agent_id"],
+        host_port=row["host_port"],
+        authorized_user=row.get("authorized_user", "runner"),
+        status=row.get("status", "pending"),
+        created_at=created_at,
+        expires_at=expires_at,
+        vm_ip=row.get("vm_ip"),
+        reason=row.get("reason"),
+    )
 
 
 class RateLimiter:
@@ -442,6 +469,152 @@ def create_app() -> FastAPI:
                 ttl_seconds=request_body.ttl_seconds,
                 version=version,
             )
+
+    @app.post("/api/ssh/sessions", response_model=SSHSession)
+    async def create_ssh_session_endpoint(
+        request_body: SSHSessionRequest,
+        admin_subject: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+        settings: ControlPlaneSettings = Depends(get_settings),
+    ) -> SSHSession:
+        REQUEST_COUNTER.inc()
+        ttl_seconds = request_body.ttl_seconds or settings.ssh_session_default_ttl
+        ttl_seconds = max(60, min(ttl_seconds, settings.ssh_session_default_ttl))
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            job = await db.get_job(session, request_body.job_id)
+            if not job:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+            agent_id = job.get("agent_id")
+            if not agent_id:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not currently leased to an agent")
+            port = await db.allocate_ssh_port(
+                session,
+                port_start=settings.ssh_port_range_start,
+                port_end=settings.ssh_port_range_end,
+            )
+            if port is None:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No SSH ports available")
+            session_id = uuid4().hex
+            record = await db.create_ssh_session(
+                session,
+                session_id=session_id,
+                job_id=request_body.job_id,
+                agent_id=agent_id,
+                host_port=port,
+                authorized_user=request_body.authorized_user,
+                ttl_seconds=ttl_seconds,
+            )
+            await session.commit()
+        ssh_session = _row_to_ssh_session(record)
+        LOGGER.info(
+            "SSH session created",
+            session_id=ssh_session.session_id,
+            job_id=ssh_session.job_id,
+            agent_id=ssh_session.agent_id,
+            host_port=ssh_session.host_port,
+            requested_by=admin_subject,
+        )
+        return ssh_session
+
+    @app.get("/api/ssh/sessions", response_model=list[SSHSession])
+    async def list_ssh_sessions_endpoint(
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[SSHSession]:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            rows = await db.list_ssh_sessions(session)
+        return [_row_to_ssh_session(row) for row in rows]
+
+    @app.get("/api/agents/ssh/sessions", response_model=list[SSHSession])
+    async def list_agent_ssh_sessions(
+        token_agent_id: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[SSHSession]:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            rows = await db.list_agent_pending_ssh_sessions(session, token_agent_id)
+        return [_row_to_ssh_session(row) for row in rows]
+
+    @app.post("/api/ssh/sessions/{session_id}/activate", response_model=SSHSession)
+    async def activate_ssh_session(
+        session_id: str,
+        payload: SSHSessionActivation,
+        token_agent_id: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> SSHSession:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await db.get_ssh_session(session, session_id)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+            if record["agent_id"] != token_agent_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session owned by another agent")
+            if record["status"] == "closed":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session already closed")
+            updated = await db.update_ssh_session(
+                session,
+                session_id,
+                status="active",
+                vm_ip=payload.vm_ip,
+            )
+            await session.commit()
+        ssh_session = _row_to_ssh_session(updated)
+        LOGGER.info(
+            "SSH session activated",
+            session_id=session_id,
+            agent_id=token_agent_id,
+            vm_ip=payload.vm_ip,
+        )
+        return ssh_session
+
+    @app.post("/api/ssh/sessions/{session_id}/close", response_model=SSHSession)
+    async def close_ssh_session_agent(
+        session_id: str,
+        payload: Optional[SSHSessionCloseRequest] = None,
+        token_agent_id: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> SSHSession:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await db.get_ssh_session(session, session_id)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+            if record["agent_id"] != token_agent_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session owned by another agent")
+            updated = await db.update_ssh_session(
+                session,
+                session_id,
+                status="closed",
+                reason=payload.reason if payload else None,
+            )
+            await session.commit()
+        ssh_session = _row_to_ssh_session(updated)
+        LOGGER.info("SSH session closed", session_id=session_id, agent_id=token_agent_id)
+        return ssh_session
+
+    @app.post("/api/ssh/sessions/{session_id}/terminate", response_model=SSHSession)
+    async def terminate_ssh_session_admin(
+        session_id: str,
+        payload: Optional[SSHSessionCloseRequest] = None,
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> SSHSession:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await db.get_ssh_session(session, session_id)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+            updated = await db.update_ssh_session(
+                session,
+                session_id,
+                status="closed",
+                reason=(payload.reason if payload else None) or "terminated by admin",
+            )
+            await session.commit()
+        ssh_session = _row_to_ssh_session(updated)
+        LOGGER.info("SSH session terminated", session_id=session_id)
+        return ssh_session
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:
