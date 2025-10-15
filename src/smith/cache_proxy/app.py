@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import os
 from pathlib import Path
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
-
+from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
 
 
@@ -23,6 +25,20 @@ def get_settings() -> CacheProxySettings:
     return CacheProxySettings()
 
 
+def require_cache_token(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    settings: CacheProxySettings = Depends(get_settings),
+) -> CacheToken:
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing cache token")
+    token = authorization.split(" ", 1)[1]
+    if token != settings.shared_secret:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid cache token")
+
+    # Prototype: treat shared secret as read/write org 0 token.
+    return CacheToken(token=token, organization_id=0, expires_at=datetime.now(timezone.utc), scope="read_write")
+
+
 def create_app() -> FastAPI:
     app = FastAPI()
 
@@ -31,7 +47,10 @@ def create_app() -> FastAPI:
         cache_key: str,
         request: Request,
         settings: CacheProxySettings = Depends(get_settings),
+        cache_token: CacheToken = Depends(require_cache_token),
     ) -> Response:
+        if cache_token.scope not in {"write", "read_write"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks write scope")
         path = sanitize_key(settings.storage_path, cache_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as file_obj:
@@ -43,7 +62,10 @@ def create_app() -> FastAPI:
     async def head_cache(
         cache_key: str,
         settings: CacheProxySettings = Depends(get_settings),
+        cache_token: CacheToken = Depends(require_cache_token),
     ) -> Response:
+        if cache_token.scope not in {"read", "read_write"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
         path = sanitize_key(settings.storage_path, cache_key)
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss")
@@ -55,7 +77,10 @@ def create_app() -> FastAPI:
     async def get_cache(
         cache_key: str,
         settings: CacheProxySettings = Depends(get_settings),
+        cache_token: CacheToken = Depends(require_cache_token),
     ) -> StreamingResponse:
+        if cache_token.scope not in {"read", "read_write"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
         path = sanitize_key(settings.storage_path, cache_key)
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss")
@@ -69,5 +94,11 @@ def create_app() -> FastAPI:
                     yield chunk
 
         return StreamingResponse(file_iterator(), media_type="application/octet-stream")
+
+    @app.get("/status")
+    async def status_probe(settings: CacheProxySettings = Depends(get_settings)) -> JSONResponse:
+        storage = settings.storage_path
+        storage.mkdir(parents=True, exist_ok=True)
+        return JSONResponse({"storage_path": str(storage), "writable": storage.exists() and os.access(storage, os.W_OK)})
 
     return app

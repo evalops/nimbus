@@ -5,7 +5,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks, issues runner registration tokens, and queues jobs in Redis.
 - **Host Agent:** Polls the control plane for work, prepares Firecracker configs, and (currently) simulates microVM execution.
-- **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem; drop-in replacement for a future MinIO/Ceph proxy.
+- **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem with shared-secret auth; drop-in replacement for a future MinIO/Ceph proxy.
 - **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
 
@@ -14,7 +14,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    pip install -e .
    ```
-2. Copy `env.example` to `.env` and set the required environment variables for the control plane, host agent, cache proxy, and logging pipeline services.
+2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `SMITH_CACHE_SHARED_SECRET`).
 3. Launch services with UVicorn (example):
    ```bash
    uvicorn smith.control_plane.main:app --reload

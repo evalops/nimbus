@@ -51,6 +51,7 @@ class CacheProxySettings(BaseSettings):
     """Configuration for the cache proxy service."""
 
     storage_path: Path = Field(..., env="SMITH_CACHE_STORAGE_PATH")
+    shared_secret: str = Field(..., env="SMITH_CACHE_SHARED_SECRET")
 
     class Config:
         env_file = ".env"

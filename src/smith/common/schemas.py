@@ -54,6 +54,7 @@ class CacheToken(BaseModel):
     token: str
     organization_id: int
     expires_at: datetime
+    scope: Literal["read", "write", "read_write"] = "read_write"
 
 
 class JobAssignment(BaseModel):
