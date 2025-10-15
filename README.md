@@ -2,6 +2,8 @@
 
 Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](https://blacksmith.sh): an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation while crediting the original Blacksmith team for the inspiration.
 
+> **Acknowledgement:** Nimbus exists thanks to the engineering leadership and public write-ups from the [Blacksmith](https://blacksmith.sh) team. Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this prototype. If you are looking for a production-ready solution—or want to support the folks who pioneered these ideas—please start with Blacksmith.
+
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
 - **Host Agent:** Polls the control plane for work, manages Firecracker microVMs, and forwards Firecracker logs to the logging pipeline when configured.
