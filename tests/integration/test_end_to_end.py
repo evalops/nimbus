@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import os
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
+import pytest
+
+from smith.cache_proxy.app import create_app as create_cache_app
+from smith.common.schemas import RunnerRegistrationToken
+from smith.common.security import mint_agent_token, mint_cache_token
+from smith.control_plane.app import create_app as create_control_app
+from smith.logging_pipeline.app import create_app as create_logging_app
+
+
+class FakeRedis:
+    def __init__(self) -> None:
+        self._queues: dict[str, deque[str]] = defaultdict(deque)
+
+    async def lpush(self, key: str, value: str) -> None:
+        self._queues[key].appendleft(value)
+
+    async def rpop(self, key: str) -> Optional[str]:
+        try:
+            return self._queues[key].pop()
+        except IndexError:
+            return None
+
+    async def llen(self, key: str) -> int:
+        return len(self._queues[key])
+
+    async def aclose(self) -> None:
+        return None
+
+
+class FakeGitHubAppClient:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
+        self._token = RunnerRegistrationToken(
+            token="runner-token",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    async def create_runner_registration_token(self, repo_full_name: str) -> RunnerRegistrationToken:
+        return self._token
+
+
+class FakePipelineState:
+    def __init__(self, settings, http_client) -> None:  # noqa: D401
+        self.settings = settings
+        self._entries: list[dict[str, Any]] = []
+
+    async def write_batch(self, rows: Any) -> None:
+        for row in rows:
+            payload = json.loads(row.decode("utf-8"))
+            self._entries.append(payload)
+
+    async def query_logs(
+        self,
+        *,
+        job_id: Optional[int] = None,
+        contains: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        results = []
+        for entry in self._entries:
+            if job_id is not None and entry.get("job_id") != job_id:
+                continue
+            if contains and contains not in entry.get("message", ""):
+                continue
+            results.append(
+                {
+                    "job_id": entry.get("job_id"),
+                    "timestamp": entry.get("timestamp"),
+                    "level": entry.get("level"),
+                    "message": entry.get("message"),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+
+def _git_signature(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, digestmod="sha256").hexdigest()
+
+
+async def _create_client(app):
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+    return client, lifespan
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> None:
+    cache_secret = "cache-secret"
+    webhook_secret = "webhook-secret"
+    agent_secret = "agent-secret"
+
+    database_url = f"sqlite+aiosqlite:///{tmp_path/'control.db'}"
+    storage_path = tmp_path / "cache"
+    storage_path.mkdir()
+
+    monkeypatch.setattr("smith.control_plane.app.redis_from_url", lambda url, decode_responses=False: FakeRedis())
+    monkeypatch.setattr("smith.control_plane.app.GitHubAppClient", FakeGitHubAppClient)
+    monkeypatch.setattr("smith.logging_pipeline.app.PipelineState", FakePipelineState)
+
+    env = {
+        "SMITH_GITHUB_APP_ID": "1",
+        "SMITH_GITHUB_APP_PRIVATE_KEY": "test",
+        "SMITH_GITHUB_APP_INSTALLATION_ID": "1",
+        "SMITH_GITHUB_WEBHOOK_SECRET": webhook_secret,
+        "SMITH_REDIS_URL": "redis://test",
+        "SMITH_DATABASE_URL": database_url,
+        "SMITH_JWT_SECRET": "jwt-secret",
+        "SMITH_PUBLIC_BASE_URL": "http://localhost",
+        "SMITH_CACHE_TOKEN_TTL": "3600",
+        "SMITH_CACHE_SHARED_SECRET": cache_secret,
+        "SMITH_AGENT_TOKEN_SECRET": agent_secret,
+        "SMITH_CACHE_STORAGE_PATH": str(storage_path),
+        "SMITH_CLICKHOUSE_URL": "http://clickhouse",
+        "SMITH_CLICKHOUSE_DATABASE": "smith",
+        "SMITH_CLICKHOUSE_TABLE": "ci_logs",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    control_app = create_control_app()
+    logging_app = create_logging_app()
+    cache_app = create_cache_app()
+
+    control_client: httpx.AsyncClient | None = None
+    logging_client: httpx.AsyncClient | None = None
+    cache_client: httpx.AsyncClient | None = None
+    control_lifespan = logging_lifespan = cache_lifespan = None
+
+    control_client, control_lifespan = await _create_client(control_app)
+    logging_client, logging_lifespan = await _create_client(logging_app)
+    cache_client, cache_lifespan = await _create_client(cache_app)
+
+    try:
+        payload = {
+            "action": "queued",
+            "repository": {
+                "id": 42,
+                "name": "demo",
+                "full_name": "acme/demo",
+                "private": False,
+            },
+            "workflow_job": {
+                "id": 101,
+                "run_id": 202,
+                "run_attempt": 1,
+                "status": "queued",
+                "labels": ["firecracker"],
+            },
+        }
+        body = json.dumps(payload).encode("utf-8")
+        signature = _git_signature(webhook_secret, body)
+        response = await control_client.post(
+            "/webhooks/github",
+            content=body,
+            headers={"x-hub-signature-256": signature, "content-type": "application/json"},
+        )
+        assert response.status_code == 202
+
+        agent_token = mint_agent_token(agent_id="agent-1", secret=agent_secret)
+        headers = {"Authorization": f"Bearer {agent_token}"}
+        lease_response = await control_client.post(
+            "/api/jobs/lease",
+            json={"agent_id": "agent-1", "agent_version": "0.1", "capabilities": ["firecracker"]},
+            headers=headers,
+        )
+        assert lease_response.status_code == 200
+        leased_job = lease_response.json()["job"]
+        assert leased_job["job_id"] == 101
+
+        status_response = await control_client.post(
+            "/api/jobs/status",
+            json={"agent_id": "agent-1", "job_id": 101, "status": "succeeded"},
+            headers=headers,
+        )
+        assert status_response.status_code == 202
+
+        status_payload = await control_client.get("/api/status", headers=headers)
+        assert status_payload.status_code == 200
+        body_json = status_payload.json()
+        assert body_json["queue_length"] == 0
+        assert body_json["jobs_by_status"]["succeeded"] == 1
+
+        log_entries = {
+            "entries": [
+                {
+                    "job_id": 101,
+                    "agent_id": "agent-1",
+                    "level": "info",
+                    "message": "job started",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+                {
+                    "job_id": 101,
+                    "agent_id": "agent-1",
+                    "level": "info",
+                    "message": "job completed",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            ]
+        }
+        ingest_response = await logging_client.post("/logs", json=log_entries)
+        assert ingest_response.status_code == 202
+
+        query_response = await logging_client.get("/logs/query", params={"job_id": 101})
+        assert query_response.status_code == 200
+        logs = query_response.json()
+        assert len(logs) == 2
+        assert logs[0]["message"] in {"job started", "job completed"}
+
+        cache_token = mint_cache_token(secret=cache_secret, organization_id=1, ttl_seconds=60)
+        cache_headers = {"Authorization": f"Bearer {cache_token.token}"}
+
+        upload_response = await cache_client.put("/cache/artifacts/output.txt", content=b"hello", headers=cache_headers)
+        assert upload_response.status_code == 201
+
+        fetch_response = await cache_client.get("/cache/artifacts/output.txt", headers=cache_headers)
+        assert fetch_response.status_code == 200
+        assert fetch_response.content == b"hello"
+
+        head_response = await cache_client.head("/cache/artifacts/output.txt", headers=cache_headers)
+        assert head_response.status_code == 200
+        assert head_response.headers["content-length"] == "5"
+
+        metrics_control = await control_client.get("/metrics")
+        assert "smith_control_plane_requests_total" in metrics_control.text
+
+        metrics_logging = await logging_client.get("/metrics")
+        assert "smith_logging_rows_ingested_total" in metrics_logging.text
+
+        metrics_cache = await cache_client.get("/metrics", headers=cache_headers)
+        assert "smith_cache_hits_total" in metrics_cache.text
+    finally:
+        if control_client is not None:
+            await control_client.aclose()
+        if logging_client is not None:
+            await logging_client.aclose()
+        if cache_client is not None:
+            await cache_client.aclose()
+        if control_lifespan is not None:
+            await control_lifespan.__aexit__(None, None, None)
+        if logging_lifespan is not None:
+            await logging_lifespan.__aexit__(None, None, None)
+        if cache_lifespan is not None:
+            await cache_lifespan.__aexit__(None, None, None)

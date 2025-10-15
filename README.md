@@ -11,12 +11,13 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
 
 ## Getting Started
-1. Install dependencies:
+1. Install dependencies with [uv](https://github.com/astral-sh/uv):
    ```bash
-   pip install -e .
+   uv venv .venv
+   uv pip install -e .
    ```
 2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `SMITH_GITHUB_WEBHOOK_SECRET`, `SMITH_AGENT_TOKEN_SECRET`, and `SMITH_CACHE_SHARED_SECRET`).
-3. Launch services with UVicorn (example):
+3. Launch services with uvicorn (example):
    ```bash
    uvicorn smith.control_plane.main:app --reload
    uvicorn smith.cache_proxy.main:app --reload --port 8001
@@ -44,6 +45,10 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    python -m smith.cli.auth --agent-id agent-001 --secret $SMITH_AGENT_TOKEN_SECRET --ttl 3600
    ```
+10. Run the unit and integration test suite:
+    ```bash
+    uv run pytest
+    ```
 
 ### Cache proxy backends
 

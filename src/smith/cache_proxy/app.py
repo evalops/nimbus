@@ -239,8 +239,8 @@ def build_backend(settings: CacheProxySettings) -> CacheBackend:
     return LocalCacheBackend(settings)
 
 
-def get_state(app: FastAPI) -> CacheProxyState:
-    return app.state.cache_state  # type: ignore[attr-defined]
+def get_state(request: Request) -> CacheProxyState:
+    return request.app.state.cache_state  # type: ignore[attr-defined]
 
 
 def require_cache_token(
@@ -264,7 +264,7 @@ def create_app() -> FastAPI:
     app = FastAPI()
     app.state.cache_state = state
 
-    @app.put("/cache/{cache_key}", status_code=status.HTTP_201_CREATED)
+    @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(
         cache_key: str,
         request: Request,
@@ -282,7 +282,7 @@ def create_app() -> FastAPI:
         TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
         return Response(status_code=status.HTTP_201_CREATED)
 
-    @app.head("/cache/{cache_key}")
+    @app.head("/cache/{cache_key:path}")
     async def head_cache(
         cache_key: str,
         state: CacheProxyState = Depends(get_state),
@@ -304,7 +304,7 @@ def create_app() -> FastAPI:
         response.headers["Content-Length"] = str(size)
         return response
 
-    @app.get("/cache/{cache_key}")
+    @app.get("/cache/{cache_key:path}")
     async def get_cache(
         cache_key: str,
         state: CacheProxyState = Depends(get_state),
