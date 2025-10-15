@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
@@ -11,7 +12,7 @@ import httpx
 
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
-from .firecracker import FirecrackerLauncher
+from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
 
 LOGGER = logging.getLogger("smith.host_agent")
 
@@ -22,7 +23,11 @@ class HostAgent:
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
         self._launcher = FirecrackerLauncher(settings)
-        self._http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        timeout = httpx.Timeout(30.0)
+        self._http = httpx.AsyncClient(timeout=timeout)
+        self._log_http: Optional[httpx.AsyncClient] = None
+        if settings.log_sink_url:
+            self._log_http = httpx.AsyncClient(timeout=timeout)
         self._running = False
 
     async def run(self) -> None:
@@ -45,6 +50,8 @@ class HostAgent:
     async def stop(self) -> None:
         self._running = False
         await self._http.aclose()
+        if self._log_http:
+            await self._log_http.aclose()
 
     async def _lease_job(self) -> JobLeaseResponse:
         request = JobLeaseRequest(
@@ -65,12 +72,19 @@ class HostAgent:
         await self._submit_status(assignment, "starting")
 
         try:
-            await self._launcher.execute_job(assignment)
-        except Exception as exc:  # noqa: BLE001
+            result = await self._launcher.execute_job(assignment)
+        except FirecrackerError as exc:
+            await self._emit_logs(assignment, exc.result)
             LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
             await self._submit_status(assignment, "failed", message=str(exc))
             return
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
+            await self._emit_logs(assignment, None)
+            await self._submit_status(assignment, "failed", message=str(exc))
+            return
 
+        await self._emit_logs(assignment, result)
         LOGGER.info("Job succeeded", extra={"job_id": assignment.job_id})
         await self._submit_status(assignment, "succeeded")
 
@@ -92,6 +106,59 @@ class HostAgent:
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._settings.control_plane_token}"}
+
+    async def _emit_logs(
+        self,
+        assignment: JobAssignment,
+        result: Optional[FirecrackerResult],
+    ) -> None:
+        if not self._log_http or not self._settings.log_sink_url:
+            return
+
+        entries = []
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        if result and result.log_lines:
+            for line in result.log_lines[:1000]:
+                entries.append(
+                    {
+                        "job_id": assignment.job_id,
+                        "agent_id": self._settings.agent_id,
+                        "level": "info",
+                        "message": line,
+                        "timestamp": timestamp,
+                    }
+                )
+
+        if result and result.metrics:
+            metrics_msg = result.metrics
+            if len(metrics_msg) > 2000:
+                metrics_msg = metrics_msg[:2000] + "..."
+            entries.append(
+                {
+                    "job_id": assignment.job_id,
+                    "agent_id": self._settings.agent_id,
+                    "level": "debug",
+                    "message": f"metrics={metrics_msg}",
+                    "timestamp": timestamp,
+                }
+            )
+
+        if not entries:
+            return
+
+        url = self._settings.log_sink_url.rstrip("/") + "/logs"
+        batch_size = 100
+        for idx in range(0, len(entries), batch_size):
+            chunk = {"entries": entries[idx : idx + batch_size]}
+            try:
+                response = await self._log_http.post(url, json=chunk)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:  # pragma: no cover - network dependent
+                LOGGER.warning(
+                    "Failed to emit logs",
+                    extra={"job_id": assignment.job_id, "error": str(exc)},
+                )
+                break
 
 
 @asynccontextmanager

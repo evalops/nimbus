@@ -19,8 +19,22 @@ from ..common.settings import HostAgentSettings
 LOGGER = logging.getLogger("smith.host_agent.firecracker")
 
 
+@dataclass
+class FirecrackerResult:
+    """Artifacts emitted after a Firecracker microVM run."""
+
+    job_id: int
+    exit_code: int
+    log_lines: list[str]
+    metrics: Optional[str]
+
+
 class FirecrackerError(RuntimeError):
     """Raised when Firecracker orchestration fails."""
+
+    def __init__(self, message: str, *, result: Optional[FirecrackerResult] = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass
@@ -40,7 +54,7 @@ class FirecrackerLauncher:
         self._settings = settings
         self._config = config or MicroVMConfig()
 
-    async def execute_job(self, assignment: JobAssignment) -> None:
+    async def execute_job(self, assignment: JobAssignment) -> FirecrackerResult:
         """Launch a microVM for the given job and wait for completion."""
 
         LOGGER.info("Launching microVM", extra={"job_id": assignment.job_id})
@@ -58,6 +72,9 @@ class FirecrackerLauncher:
 
             tap_created = False
             process: Optional[asyncio.subprocess.Process] = None
+            exit_code = -1
+            collected: Optional[FirecrackerResult] = None
+
             try:
                 await self._ensure_tap_device(tap_name)
                 tap_created = True
@@ -65,12 +82,27 @@ class FirecrackerLauncher:
                 await self._configure_vm(api_socket, vm_config, metadata)
                 await self._start_instance(api_socket)
                 await self._wait_for_completion(process)
+                exit_code = process.returncode or 0
+                collected = self._collect_artifacts(
+                    job_id=assignment.job_id,
+                    exit_code=exit_code,
+                    log_path=log_path,
+                    metrics_path=metrics_path,
+                )
+                return collected
             except Exception as exc:  # noqa: BLE001
                 if process and process.returncode is None:
                     process.kill()
                     await process.wait()
                 LOGGER.exception("MicroVM execution failed", extra={"job_id": assignment.job_id})
-                raise FirecrackerError(str(exc)) from exc
+                if not collected:
+                    collected = self._collect_artifacts(
+                        job_id=assignment.job_id,
+                        exit_code=exit_code,
+                        log_path=log_path,
+                        metrics_path=metrics_path,
+                    )
+                raise FirecrackerError(str(exc), result=collected) from exc
             finally:
                 if tap_created:
                     await self._teardown_tap_device(tap_name)
@@ -254,3 +286,33 @@ class FirecrackerLauncher:
             raise FirecrackerError(
                 f"Firecracker API {path} failed: {response.status_code} {response.text.strip()}"
             )
+
+    def _collect_artifacts(
+        self,
+        *,
+        job_id: int,
+        exit_code: int,
+        log_path: Path,
+        metrics_path: Path,
+    ) -> FirecrackerResult:
+        log_lines: list[str] = []
+        if log_path.exists():
+            try:
+                with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    log_lines = [line.rstrip("\n") for line in handle]
+            except OSError:
+                LOGGER.warning("Failed to read Firecracker log", extra={"path": str(log_path)})
+
+        metrics_data: Optional[str] = None
+        if metrics_path.exists():
+            try:
+                metrics_data = metrics_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                LOGGER.warning("Failed to read Firecracker metrics", extra={"path": str(metrics_path)})
+
+        return FirecrackerResult(
+            job_id=job_id,
+            exit_code=exit_code,
+            log_lines=log_lines,
+            metrics=metrics_data,
+        )
