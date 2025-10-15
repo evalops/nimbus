@@ -54,6 +54,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 
 - Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
 - S3-compatible storage: configure `SMITH_CACHE_S3_ENDPOINT`, `SMITH_CACHE_S3_BUCKET`, optionally `SMITH_CACHE_S3_REGION`, and provide credentials via standard AWS environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+- Resilience tuning: adjust `SMITH_CACHE_S3_MAX_RETRIES`, `SMITH_CACHE_S3_RETRY_BASE`, `SMITH_CACHE_S3_RETRY_MAX`, `SMITH_CACHE_S3_CIRCUIT_FAILURES`, and `SMITH_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions.
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:

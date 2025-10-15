@@ -57,13 +57,18 @@ class HostAgentSettings(BaseSettings):
 class CacheProxySettings(BaseSettings):
     """Configuration for the cache proxy service."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", populate_by_name=True)
     storage_path: Path = env_field(Path("./cache"), "SMITH_CACHE_STORAGE_PATH")
     shared_secret: str = env_field(..., "SMITH_CACHE_SHARED_SECRET")
     s3_endpoint_url: Optional[str] = env_field(None, "SMITH_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = env_field(None, "SMITH_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "SMITH_CACHE_S3_REGION")
     metrics_database_path: Path = env_field(Path("./cache/cache_metrics.db"), "SMITH_CACHE_METRICS_DB")
+    s3_max_retries: int = env_field(3, "SMITH_CACHE_S3_MAX_RETRIES")
+    s3_retry_base_seconds: float = env_field(0.2, "SMITH_CACHE_S3_RETRY_BASE")
+    s3_retry_max_seconds: float = env_field(2.0, "SMITH_CACHE_S3_RETRY_MAX")
+    s3_circuit_breaker_failures: int = env_field(5, "SMITH_CACHE_S3_CIRCUIT_FAILURES")
+    s3_circuit_breaker_reset_seconds: float = env_field(30.0, "SMITH_CACHE_S3_CIRCUIT_RESET")
 
 
 class LoggingIngestSettings(BaseSettings):

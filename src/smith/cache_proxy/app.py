@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Callable, Optional
 
 import boto3
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -40,6 +41,39 @@ class CacheBackend:
 
     def status(self) -> dict[str, object]:
         raise NotImplementedError
+
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold: int, reset_timeout: float):
+        self._failure_threshold = max(1, failure_threshold)
+        self._reset_timeout = max(0.0, reset_timeout)
+        self._failure_count = 0
+        self._opened_at: float | None = None
+
+    def _maybe_reset(self) -> None:
+        if self._opened_at is None:
+            return
+        if time.monotonic() - self._opened_at >= self._reset_timeout:
+            self._opened_at = None
+            self._failure_count = 0
+
+    def allow_request(self) -> bool:
+        self._maybe_reset()
+        return self._opened_at is None
+
+    def record_success(self) -> None:
+        self._failure_count = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._failure_count += 1
+        if self._failure_count >= self._failure_threshold:
+            self._opened_at = time.monotonic()
+
+    @property
+    def is_open(self) -> bool:
+        self._maybe_reset()
+        return self._opened_at is not None
 
 
 class LocalCacheBackend(CacheBackend):
@@ -85,12 +119,19 @@ class S3CacheBackend(CacheBackend):
         }
         self._client = session.client("s3", **{k: v for k, v in client_args.items() if v})
         self._bucket = settings.s3_bucket
+        self._max_retries = max(0, settings.s3_max_retries)
+        self._retry_base = max(0.0, settings.s3_retry_base_seconds)
+        self._retry_max = max(self._retry_base, settings.s3_retry_max_seconds)
+        self._breaker = CircuitBreaker(
+            failure_threshold=max(1, settings.s3_circuit_breaker_failures),
+            reset_timeout=max(0.0, settings.s3_circuit_breaker_reset_seconds),
+        )
 
     async def write(self, cache_key: str, data_iter: AsyncIterator[bytes]) -> None:
         data = bytearray()
         async for chunk in data_iter:
             data.extend(chunk)
-        await asyncio.to_thread(
+        await self._call_with_retry(
             self._client.put_object,
             Bucket=self._bucket,
             Key=self._sanitize_key(cache_key),
@@ -99,7 +140,7 @@ class S3CacheBackend(CacheBackend):
 
     async def head(self, cache_key: str) -> int:
         try:
-            response = await asyncio.to_thread(
+            response = await self._call_with_retry(
                 self._client.head_object,
                 Bucket=self._bucket,
                 Key=self._sanitize_key(cache_key),
@@ -110,7 +151,7 @@ class S3CacheBackend(CacheBackend):
 
     async def read(self, cache_key: str) -> bytes:
         try:
-            response = await asyncio.to_thread(
+            response = await self._call_with_retry(
                 self._client.get_object,
                 Bucket=self._bucket,
                 Key=self._sanitize_key(cache_key),
@@ -125,12 +166,41 @@ class S3CacheBackend(CacheBackend):
             "backend": "s3",
             "bucket": self._bucket,
             "endpoint": self._settings.s3_endpoint_url,
+            "circuit_open": self._breaker.is_open,
         }
 
     def _sanitize_key(self, cache_key: str) -> str:
         if ".." in cache_key:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cache key")
         return cache_key.lstrip("/")
+
+    async def _call_with_retry(self, func: Callable[..., object], **kwargs) -> object:
+        if not self._breaker.allow_request():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cache backend temporarily unavailable",
+            )
+
+        attempt = 0
+        while True:
+            try:
+                result = await asyncio.to_thread(func, **kwargs)
+                self._breaker.record_success()
+                return result
+            except self._client.exceptions.NoSuchKey:
+                self._breaker.record_success()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                attempt += 1
+                if attempt > self._max_retries:
+                    self._breaker.record_failure()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Cache backend temporarily unavailable",
+                    ) from exc
+                delay = min(self._retry_base * (2 ** (attempt - 1)), self._retry_max)
+                if delay:
+                    await asyncio.sleep(delay)
 
 
 class CacheProxyState:
