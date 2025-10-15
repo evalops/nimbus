@@ -89,6 +89,19 @@ ssh_sessions_table = Table(
 )
 
 
+job_leases_table = Table(
+    "job_leases",
+    metadata,
+    Column("job_id", BigInteger, primary_key=True),
+    Column("agent_id", String(length=128), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("lease_expires_at", DateTime(timezone=True), nullable=False),
+    Column("heartbeat_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+
 def create_engine(database_url: str) -> AsyncEngine:
     return create_async_engine(database_url, future=True, echo=False)
 
@@ -379,3 +392,126 @@ async def list_ssh_sessions(session: AsyncSession, *, limit: int = 100) -> list[
     )
     result = await session.execute(stmt)
     return [dict(row) for row in result.mappings()]
+
+
+async def try_acquire_job_lease(
+    session: AsyncSession, job_id: int, agent_id: str, ttl_seconds: int
+) -> Optional[int]:
+    """
+    Attempt to acquire a lease on a job. Returns the fence token (version) if successful, None if already leased.
+    Uses CAS approach: try to update expired lease or insert new lease.
+    """
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+
+    # Try to update an expired lease
+    stmt = (
+        update(job_leases_table)
+        .where(
+            and_(
+                job_leases_table.c.job_id == job_id,
+                job_leases_table.c.lease_expires_at <= now,
+            )
+        )
+        .values(
+            agent_id=agent_id,
+            version=job_leases_table.c.version + 1,
+            lease_expires_at=expires_at,
+            heartbeat_at=now,
+            updated_at=now,
+        )
+        .returning(job_leases_table.c.version)
+    )
+    result = await session.execute(stmt)
+    row = result.first()
+    if row:
+        return int(row[0])
+
+    # No expired lease found, try to insert a new one
+    try:
+        stmt = (
+            insert(job_leases_table)
+            .values(
+                job_id=job_id,
+                agent_id=agent_id,
+                version=1,
+                lease_expires_at=expires_at,
+                heartbeat_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            .returning(job_leases_table.c.version)
+        )
+        result = await session.execute(stmt)
+        row = result.first()
+        if row:
+            return int(row[0])
+    except Exception:  # noqa: BLE001
+        # Race condition: another agent acquired the lease between our UPDATE and INSERT
+        return None
+    return None
+
+
+async def renew_job_lease(
+    session: AsyncSession, job_id: int, agent_id: str, fence_token: int, ttl_seconds: int
+) -> bool:
+    """Renew a job lease if the fence token matches and lease hasn't expired."""
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+
+    stmt = (
+        update(job_leases_table)
+        .where(
+            and_(
+                job_leases_table.c.job_id == job_id,
+                job_leases_table.c.agent_id == agent_id,
+                job_leases_table.c.version == fence_token,
+                job_leases_table.c.lease_expires_at > now,
+            )
+        )
+        .values(
+            lease_expires_at=expires_at,
+            heartbeat_at=now,
+            updated_at=now,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.rowcount == 1
+
+
+async def validate_lease_fence(
+    session: AsyncSession, job_id: int, agent_id: str, fence_token: int
+) -> bool:
+    """Check if a fence token is valid for the given job and agent."""
+    now = datetime.now(timezone.utc)
+    stmt = select(
+        job_leases_table.c.version,
+        job_leases_table.c.agent_id,
+        job_leases_table.c.lease_expires_at,
+    ).where(job_leases_table.c.job_id == job_id)
+    result = await session.execute(stmt)
+    row = result.first()
+    if not row:
+        return False
+    return (
+        row.version == fence_token
+        and row.agent_id == agent_id
+        and row.lease_expires_at > now
+    )
+
+
+async def release_job_lease(
+    session: AsyncSession, job_id: int, agent_id: str, fence_token: int
+) -> bool:
+    """Release a job lease if the fence token matches."""
+    from sqlalchemy import delete
+
+    stmt = delete(job_leases_table).where(
+        and_(
+            job_leases_table.c.job_id == job_id,
+            job_leases_table.c.agent_id == agent_id,
+            job_leases_table.c.version == fence_token,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.rowcount == 1

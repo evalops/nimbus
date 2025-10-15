@@ -29,6 +29,7 @@ from ..common.schemas import (
     JobAssignment,
     JobLeaseRequest,
     JobLeaseResponse,
+    JobLeaseRenewalRequest,
     JobRecord,
     JobStatusUpdate,
     WebhookWorkflowJobEvent,
@@ -41,7 +42,7 @@ from ..common.settings import ControlPlaneSettings
 from ..common.security import decode_agent_token_payload, mint_agent_token
 from . import db
 from .github import GitHubAppClient
-from .jobs import QUEUE_KEY, enqueue_job, lease_job
+from .jobs import QUEUE_KEY, enqueue_job, lease_job, lease_job_with_fence
 from ..common.security import mint_cache_token
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_requests_total", "Total control plane requests"))
@@ -349,26 +350,79 @@ def create_app() -> FastAPI:
             span.set_attribute("nimbus.agent_id", request_body.agent_id)
             if token_agent_id != request_body.agent_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
-            assignment = await lease_job(redis_client)
-            if assignment is None:
+            
+            # Use fenced leasing with DB-backed lease records
+            lease_ttl = 300  # 5 minutes
+            result = await lease_job_with_fence(
+                redis_client, session, request_body.agent_id, lease_ttl
+            )
+            if result is None:
                 return JobLeaseResponse(job=None, backoff_seconds=5)
+            
+            assignment, fence_token = result
             span.set_attribute("nimbus.job_id", str(assignment.job_id))
+            span.set_attribute("nimbus.fence_token", fence_token)
             LOGGER.info(
                 "Leased job",
                 job_id=assignment.job_id,
                 agent_id=request_body.agent_id,
+                fence_token=fence_token,
             )
             JOB_LEASE_COUNTER.inc()
             queue_length = await redis_client.llen(QUEUE_KEY)
             QUEUE_LENGTH_GAUGE.set(queue_length)
             span.set_attribute("nimbus.queue_length", queue_length)
-            await db.mark_job_leased(
-                session,
-                job_id=assignment.job_id,
-                agent_id=request_body.agent_id,
+            
+            # Mint cache token for the job
+            cache_token = None
+            if state.settings.cache_shared_secret:
+                cache_token = mint_cache_token(
+                    secret=state.settings.cache_shared_secret,
+                    organization_id=assignment.repository.id,
+                    ttl_seconds=state.settings.cache_token_ttl_seconds,
+                )
+                assignment.cache_token = cache_token
+            
+            await session.commit()
+            return JobLeaseResponse(
+                job=assignment,
+                fence_token=fence_token,
+                lease_ttl_seconds=lease_ttl,
+                backoff_seconds=0,
+            )
+
+    @app.post("/api/jobs/lease/renew", status_code=status.HTTP_200_OK)
+    async def renew_job_lease_endpoint(
+        renewal: JobLeaseRenewalRequest,
+        token_agent_id: str = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("control_plane.renew_lease") as span:
+            span.set_attribute("nimbus.agent_id", renewal.agent_id)
+            span.set_attribute("nimbus.job_id", str(renewal.job_id))
+            if token_agent_id != renewal.agent_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
+            
+            lease_ttl = 300  # 5 minutes
+            success = await db.renew_job_lease(
+                session, renewal.job_id, renewal.agent_id, renewal.fence_token, lease_ttl
             )
             await session.commit()
-            return JobLeaseResponse(job=assignment, backoff_seconds=0)
+            
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Lease renewal failed - invalid fence token or expired lease",
+                )
+            
+            LOGGER.debug(
+                "Lease renewed",
+                job_id=renewal.job_id,
+                agent_id=renewal.agent_id,
+                fence_token=renewal.fence_token,
+            )
+            return {"renewed": True}
 
     @app.post("/api/jobs/status", status_code=status.HTTP_202_ACCEPTED)
     async def job_status(
@@ -383,6 +437,18 @@ def create_app() -> FastAPI:
             span.set_attribute("nimbus.job_status", status_update.status)
             if token_agent_id != status_update.agent_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
+            
+            # Validate fence token if provided
+            if status_update.fence_token is not None:
+                valid = await db.validate_lease_fence(
+                    session, status_update.job_id, status_update.agent_id, status_update.fence_token
+                )
+                if not valid:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Invalid or expired lease fence",
+                    )
+            
             LOGGER.info(
                 "Job status update",
                 job_id=status_update.job_id,

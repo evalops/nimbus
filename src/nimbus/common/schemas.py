@@ -82,6 +82,8 @@ class JobLeaseResponse(BaseModel):
     """Response containing either job details or an idle directive."""
 
     job: Optional[JobAssignment] = None
+    fence_token: Optional[int] = None
+    lease_ttl_seconds: int = 300
     backoff_seconds: int = 5
 
 
@@ -92,6 +94,7 @@ class JobStatusUpdate(BaseModel):
     job_id: int
     status: Literal["starting", "running", "succeeded", "failed", "cancelled"]
     message: Optional[str] = None
+    fence_token: Optional[int] = None
     reported_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -192,3 +195,11 @@ class SSHSessionCloseRequest(BaseModel):
     """Payload supplied when closing an SSH session."""
 
     reason: Optional[str] = None
+
+
+class JobLeaseRenewalRequest(BaseModel):
+    """Request to renew a job lease."""
+
+    job_id: int
+    agent_id: str
+    fence_token: int

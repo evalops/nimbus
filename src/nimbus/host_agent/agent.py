@@ -77,7 +77,9 @@ class HostAgent:
                 continue
 
             assignment = response.job
-            await self._process_job(assignment)
+            fence_token = response.fence_token
+            lease_ttl = response.lease_ttl_seconds
+            await self._process_job(assignment, fence_token=fence_token, lease_ttl=lease_ttl)
 
     async def stop(self) -> None:
         self._running = False
@@ -138,15 +140,17 @@ class HostAgent:
                         await asyncio.sleep(delay)
         raise RuntimeError("Lease retry loop exited unexpectedly")
 
-    async def _process_job(self, assignment: JobAssignment) -> None:
+    async def _process_job(
+        self, assignment: JobAssignment, *, fence_token: Optional[int] = None, lease_ttl: int = 300
+    ) -> None:
         with TRACER.start_as_current_span(
             "host_agent.process_job",
             attributes={"nimbus.job_id": assignment.job_id, "nimbus.repo": assignment.repository.full_name},
         ):
-            LOGGER.info("Starting job", job_id=assignment.job_id)
+            LOGGER.info("Starting job", job_id=assignment.job_id, fence_token=fence_token)
             JOB_STARTED_COUNTER.inc()
             self._active_jobs += 1
-            await self._submit_status(assignment, "starting")
+            await self._submit_status(assignment, "starting", fence_token=fence_token)
 
             if (
                 not assignment.cache_token
@@ -162,6 +166,13 @@ class HostAgent:
 
             network = self._launcher.network_for_job(assignment.job_id)
             self._job_networks[assignment.job_id] = network
+
+            # Start heartbeat renewal task if fence token provided
+            heartbeat_task: Optional[asyncio.Task] = None
+            if fence_token is not None:
+                heartbeat_task = asyncio.create_task(
+                    self._renew_lease_loop(assignment.job_id, fence_token, lease_ttl)
+                )
 
             timeout_seconds = self._settings.job_timeout_seconds
             try:
@@ -179,33 +190,46 @@ class HostAgent:
                     JOB_TIMEOUT_LAST_TS.set(time.time())
                 else:
                     LOGGER.exception("Job failed", job_id=assignment.job_id)
-                await self._submit_status(assignment, "failed", message=str(exc))
+                await self._submit_status(assignment, "failed", message=str(exc), fence_token=fence_token)
                 JOB_FAILED_COUNTER.inc()
                 return
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Job failed", job_id=assignment.job_id)
                 await self._emit_logs(assignment, None)
-                await self._submit_status(assignment, "failed", message=str(exc))
+                await self._submit_status(assignment, "failed", message=str(exc), fence_token=fence_token)
                 JOB_FAILED_COUNTER.inc()
                 return
             else:
                 await self._emit_logs(assignment, result)
                 LOGGER.info("Job succeeded", job_id=assignment.job_id)
-                await self._submit_status(assignment, "succeeded")
+                await self._submit_status(assignment, "succeeded", fence_token=fence_token)
                 JOB_SUCCEEDED_COUNTER.inc()
             finally:
+                # Stop heartbeat renewal
+                if heartbeat_task:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
                 self._active_jobs = max(0, self._active_jobs - 1)
                 self._job_networks.pop(assignment.job_id, None)
                 await self._teardown_sessions_for_job(assignment.job_id, reason="job complete")
 
     async def _submit_status(
-        self, assignment: JobAssignment, status: str, *, message: Optional[str] = None
+        self,
+        assignment: JobAssignment,
+        status: str,
+        *,
+        message: Optional[str] = None,
+        fence_token: Optional[int] = None,
     ) -> None:
         payload = JobStatusUpdate(
             agent_id=self._settings.agent_id,
             job_id=assignment.job_id,
             status=status,  # type: ignore[arg-type]
             message=message,
+            fence_token=fence_token,
         )
         with TRACER.start_as_current_span("host_agent.job_status"):
             resp = await self._http.post(
@@ -214,6 +238,35 @@ class HostAgent:
                 json=payload.model_dump(),
             )
         resp.raise_for_status()
+
+    async def _renew_lease_loop(self, job_id: int, fence_token: int, ttl_seconds: int) -> None:
+        """Periodically renew the job lease to maintain ownership."""
+        period = max(1, ttl_seconds // 3)  # Renew at 1/3 of TTL
+        while True:
+            await asyncio.sleep(period)
+            try:
+                resp = await self._http.post(
+                    f"{self._settings.control_plane_base_url}/api/jobs/lease/renew",
+                    headers=self._auth_headers(),
+                    json={
+                        "job_id": job_id,
+                        "agent_id": self._settings.agent_id,
+                        "fence_token": fence_token,
+                    },
+                )
+                if resp.status_code != 200:
+                    LOGGER.warning(
+                        "Lease renewal rejected",
+                        job_id=job_id,
+                        fence_token=fence_token,
+                        status=resp.status_code,
+                    )
+                    # Could abort job here, but for now just log the issue
+                    break
+                else:
+                    LOGGER.debug("Lease renewed", job_id=job_id, fence_token=fence_token)
+            except httpx.HTTPError as exc:
+                LOGGER.debug("Lease renewal error", job_id=job_id, error=str(exc))
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._settings.control_plane_token}"}
