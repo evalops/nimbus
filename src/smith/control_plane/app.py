@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -106,10 +109,24 @@ def create_app() -> FastAPI:
 
     @app.post("/webhooks/github")
     async def github_webhook(
-        payload: WebhookWorkflowJobEvent,
+        request: Request,
         state: AppState = Depends(_get_state),
         session: AsyncSession = Depends(get_session),
+        settings: ControlPlaneSettings = Depends(get_settings),
     ) -> Response:
+        raw_body = await request.body()
+        signature = request.headers.get("x-hub-signature-256")
+        if not _verify_github_signature(settings.github_webhook_secret, raw_body, signature):
+            LOGGER.warning("Webhook signature verification failed")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
+
+        try:
+            payload_dict = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:  # pragma: no cover - payload dependent
+            LOGGER.error("Invalid webhook payload", extra={"error": str(exc)})
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload") from exc
+
+        payload = WebhookWorkflowJobEvent.model_validate(payload_dict)
         if payload.action != "queued":
             LOGGER.debug("Ignoring webhook action", action=payload.action)
             return Response(status_code=status.HTTP_202_ACCEPTED)
@@ -179,3 +196,11 @@ def create_app() -> FastAPI:
         await session.commit()
 
     return app
+
+
+def _verify_github_signature(secret: str, body: bytes, signature: str | None) -> bool:
+    if not signature or not signature.startswith("sha256="):
+        return False
+    provided = signature.split("=", 1)[1]
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(provided, digest)

@@ -14,6 +14,7 @@ class ControlPlaneSettings(BaseSettings):
     github_app_id: int = Field(..., env="SMITH_GITHUB_APP_ID")
     github_app_private_key: str = Field(..., env="SMITH_GITHUB_APP_PRIVATE_KEY")
     github_app_installation_id: int = Field(..., env="SMITH_GITHUB_APP_INSTALLATION_ID")
+    github_webhook_secret: str = Field(..., env="SMITH_GITHUB_WEBHOOK_SECRET")
     redis_url: RedisDsn = Field(..., env="SMITH_REDIS_URL")
     database_url: str = Field(..., env="SMITH_DATABASE_URL")
     jwt_secret: str = Field(..., env="SMITH_JWT_SECRET")
