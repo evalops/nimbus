@@ -12,6 +12,33 @@ Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](h
 - **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.
 
+## Using Nimbus with GitHub Actions
+
+Once your Nimbus infrastructure is configured and running, you can use it to execute GitHub Actions workflows by specifying `runs-on: nimbus` in your workflow files:
+
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: nimbus
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: |
+          echo "Running on Nimbus!"
+          # Your test commands here
+```
+
+The control plane will:
+1. Receive the `workflow_job` webhook from GitHub when jobs with the `nimbus` label are queued
+2. Generate a one-time runner registration token via the GitHub API
+3. Enqueue the job assignment to Redis
+4. Wait for a host agent to lease the job
+5. The host agent spins up a Firecracker microVM that registers as a GitHub Actions runner and executes your workflow
+
+Jobs without the `nimbus` label are ignored by the control plane, allowing you to mix Nimbus runners with GitHub-hosted runners in the same repository.
+
 ## Getting Started
 1. Install dependencies with [uv](https://github.com/astral-sh/uv):
    ```bash

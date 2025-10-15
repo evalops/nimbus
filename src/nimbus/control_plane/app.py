@@ -269,6 +269,14 @@ def create_app() -> FastAPI:
                 LOGGER.debug("Ignoring webhook action", action=payload.action)
                 return Response(status_code=status.HTTP_202_ACCEPTED)
 
+            if "nimbus" not in payload.workflow_job.labels:
+                LOGGER.debug(
+                    "Ignoring job without nimbus label",
+                    job_id=payload.workflow_job.id,
+                    labels=payload.workflow_job.labels,
+                )
+                return Response(status_code=status.HTTP_202_ACCEPTED)
+
             repo = payload.repository
             span.set_attribute("nimbus.repo", repo.full_name)
             LOGGER.info(
