@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
@@ -30,6 +31,7 @@ LOG_BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_batch
 LOG_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_rows_total", "Log rows emitted"))
 LOG_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_errors_total", "Log emission errors"))
 JOB_TIMEOUT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_job_timeouts_total", "Jobs terminated by watchdog"))
+JOB_TIMEOUT_LAST_TS = GLOBAL_REGISTRY.register(Gauge("smith_host_agent_last_timeout_timestamp", "Unix timestamp of last job timeout"))
 
 
 class HostAgent:
@@ -163,6 +165,7 @@ class HostAgent:
                 if "timed out" in message.lower():
                     LOGGER.warning("Job timed out", job_id=assignment.job_id, timeout_seconds=timeout_seconds)
                     JOB_TIMEOUT_COUNTER.inc()
+                    JOB_TIMEOUT_LAST_TS.set(time.time())
                 else:
                     LOGGER.exception("Job failed", job_id=assignment.job_id)
                 await self._submit_status(assignment, "failed", message=str(exc))

@@ -7,7 +7,7 @@ import pytest
 
 from smith.common.schemas import GitHubRepository, JobAssignment, RunnerRegistrationToken
 from smith.common.settings import HostAgentSettings
-from smith.host_agent.agent import HostAgent, JOB_TIMEOUT_COUNTER
+from smith.host_agent.agent import HostAgent, JOB_TIMEOUT_COUNTER, JOB_TIMEOUT_LAST_TS
 from smith.host_agent.firecracker import FirecrackerError, FirecrackerResult
 
 
@@ -55,6 +55,7 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     agent._submit_status = fake_submit_status  # type: ignore[assignment]
     agent._emit_logs = fake_emit_logs  # type: ignore[assignment]
 
+    JOB_TIMEOUT_LAST_TS.set(0.0)
     before = JOB_TIMEOUT_COUNTER._value
 
     repo = GitHubRepository(id=1, name="demo", full_name="acme/demo", private=False)
@@ -74,6 +75,7 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     await agent._process_job(assignment)
 
     assert JOB_TIMEOUT_COUNTER._value == before + 1
+    assert JOB_TIMEOUT_LAST_TS._value > 0
     assert statuses[-1][0] == "failed"
     assert statuses[-1][1] is not None and "timed out" in statuses[-1][1]
 

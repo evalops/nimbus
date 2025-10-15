@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import asynccontextmanager
 from typing import Iterable, Optional
 
@@ -13,7 +14,7 @@ import structlog
 
 from ..common.schemas import LogIngestRequest
 from ..common.settings import LoggingIngestSettings
-from ..common.metrics import GLOBAL_REGISTRY, Counter
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_ingest_requests_total", "Total log ingest requests"))
 INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
@@ -23,6 +24,13 @@ BATCH_BYTES_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_batch_byte
 CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_clickhouse_errors_total", "ClickHouse request errors"))
 QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_requests_total", "Log query requests"))
 QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_errors_total", "Log query failures"))
+BATCH_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
+    Histogram(
+        "smith_logging_batch_latency_seconds",
+        buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+        description="Latency of ClickHouse batch writes",
+    )
+)
 
 LOGGER = structlog.get_logger("smith.logging_pipeline")
 
@@ -46,12 +54,14 @@ class PipelineState:
             f"INSERT INTO {self.settings.clickhouse_database}.{self.settings.clickhouse_table} "
             "FORMAT JSONEachRow"
         )
+        start = time.perf_counter()
         response = await self.http.post(
             self.settings.clickhouse_url,
             params={"query": query},
             content=data,
             auth=self._auth,
         )
+        duration = time.perf_counter() - start
         if response.is_error:
             CLICKHOUSE_ERRORS_COUNTER.inc()
             LOGGER.error(
@@ -59,9 +69,11 @@ class PipelineState:
                 status=response.status_code,
                 body=response.text[:2000],
             )
+            BATCH_LATENCY_HISTOGRAM.observe(duration)
             raise HTTPException(status_code=502, detail="ClickHouse insert failed")
         BATCH_COUNTER.inc()
         BATCH_BYTES_COUNTER.inc(len(data))
+        BATCH_LATENCY_HISTOGRAM.observe(duration)
 
     async def query_logs(
         self,
