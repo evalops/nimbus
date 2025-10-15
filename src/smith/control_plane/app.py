@@ -24,7 +24,7 @@ from ..common.schemas import (
 from ..common.settings import ControlPlaneSettings
 from . import db
 from .github import GitHubAppClient
-from .jobs import enqueue_job, lease_job
+from .jobs import QUEUE_KEY, enqueue_job, lease_job
 from ..common.security import mint_cache_token
 
 LOGGER = logging.getLogger("smith.control_plane")
@@ -211,6 +211,19 @@ def create_app() -> FastAPI:
         limit = max(1, min(limit, 200))
         rows = await db.list_recent_jobs(session, limit=limit)
         return [JobRecord.model_validate(row) for row in rows]
+
+    @app.get("/api/status", status_code=status.HTTP_200_OK)
+    async def service_status(
+        _: None = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+        redis_client: Redis = Depends(get_redis),
+    ) -> dict[str, object]:
+        queue_length = await redis_client.llen(QUEUE_KEY)
+        counts = await db.job_status_counts(session)
+        return {
+            "queue_length": queue_length,
+            "jobs_by_status": counts,
+        }
 
     return app
 

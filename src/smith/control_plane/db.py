@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    func,
     insert,
     select,
     update,
@@ -130,3 +131,9 @@ async def list_recent_jobs(
             if isinstance(value, datetime):
                 row[key] = value.isoformat()
     return rows
+
+
+async def job_status_counts(session: AsyncSession) -> dict[str, int]:
+    stmt = select(jobs_table.c.status, func.count().label("count")).group_by(jobs_table.c.status)
+    result = await session.execute(stmt)
+    return {row.status: row.count for row in result}
