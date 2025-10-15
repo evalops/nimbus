@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
 
 from ..common.schemas import (
@@ -17,6 +18,7 @@ from ..common.schemas import (
     WebhookWorkflowJobEvent,
 )
 from ..common.settings import ControlPlaneSettings
+from . import db
 from .github import GitHubAppClient
 from .jobs import enqueue_job, lease_job
 
@@ -32,11 +34,13 @@ class AppState:
         redis: Redis,
         http_client: httpx.AsyncClient,
         github_client: GitHubAppClient,
+        session_factory,
     ) -> None:
         self.settings = settings
         self.redis = redis
         self.http_client = http_client
         self.github_client = github_client
+        self.session_factory = session_factory
 
 
 def _get_state(request: Request) -> AppState:
@@ -56,6 +60,11 @@ def get_github_client(state: AppState = Depends(_get_state)) -> GitHubAppClient:
     return state.github_client
 
 
+async def get_session(state: AppState = Depends(_get_state)) -> AsyncSession:
+    async with state.session_factory() as session:  # type: ignore[call-arg]
+        yield session
+
+
 def verify_agent_token(
     request: Request, settings: ControlPlaneSettings = Depends(get_settings)
 ) -> None:
@@ -73,11 +82,15 @@ async def lifespan(app: FastAPI):
     redis = redis_from_url(str(settings.redis_url), decode_responses=False)
     http_client = httpx.AsyncClient(timeout=20)
     github_client = GitHubAppClient(settings=settings, http_client=http_client)
+    engine = db.create_engine(settings.database_url)
+    await db.ensure_schema(engine)
+    session_factory = db.session_factory(engine)
     container = AppState(
         settings=settings,
         redis=redis,
         http_client=http_client,
         github_client=github_client,
+        session_factory=session_factory,
     )
     app.state.container = container
     try:
@@ -85,6 +98,7 @@ async def lifespan(app: FastAPI):
     finally:
         await redis.aclose()
         await http_client.aclose()
+        await engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -94,6 +108,7 @@ def create_app() -> FastAPI:
     async def github_webhook(
         payload: WebhookWorkflowJobEvent,
         state: AppState = Depends(_get_state),
+        session: AsyncSession = Depends(get_session),
     ) -> Response:
         if payload.action != "queued":
             LOGGER.debug("Ignoring webhook action", action=payload.action)
@@ -120,6 +135,8 @@ def create_app() -> FastAPI:
             cache_token=None,
         )
         await enqueue_job(state.redis, assignment)
+        await db.record_job_queued(session, assignment)
+        await session.commit()
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
     @app.post("/api/jobs/lease", response_model=JobLeaseResponse)
@@ -127,6 +144,7 @@ def create_app() -> FastAPI:
         request_body: JobLeaseRequest,
         _: None = Depends(verify_agent_token),
         redis_client: Redis = Depends(get_redis),
+        session: AsyncSession = Depends(get_session),
     ) -> JobLeaseResponse:
         assignment = await lease_job(redis_client)
         if assignment is None:
@@ -135,12 +153,19 @@ def create_app() -> FastAPI:
             "Leased job",
             extra={"job_id": assignment.job_id, "agent_id": request_body.agent_id},
         )
+        await db.mark_job_leased(
+            session,
+            job_id=assignment.job_id,
+            agent_id=request_body.agent_id,
+        )
+        await session.commit()
         return JobLeaseResponse(job=assignment, backoff_seconds=0)
 
     @app.post("/api/jobs/status", status_code=status.HTTP_202_ACCEPTED)
     async def job_status(
         status_update: JobStatusUpdate,
         _: None = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
     ) -> None:
         LOGGER.info(
             "Job status update",
@@ -150,5 +175,7 @@ def create_app() -> FastAPI:
                 "status": status_update.status,
             },
         )
+        await db.record_status_update(session, status_update)
+        await session.commit()
 
     return app
