@@ -31,6 +31,8 @@ class ControlPlaneSettings(BaseSettings):
     agent_token_secret: SecretStr = env_field(..., "NIMBUS_AGENT_TOKEN_SECRET")
     agent_token_rate_limit: int = env_field(15, "NIMBUS_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "NIMBUS_AGENT_TOKEN_RATE_INTERVAL")
+    org_job_rate_limit: int = env_field(100, "NIMBUS_ORG_JOB_RATE_LIMIT")
+    org_rate_interval_seconds: int = env_field(60, "NIMBUS_ORG_RATE_INTERVAL")
     admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_SUBJECTS")
     admin_allowed_ips: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_IPS")
     admin_rate_limit: int = env_field(60, "NIMBUS_ADMIN_RATE_LIMIT")

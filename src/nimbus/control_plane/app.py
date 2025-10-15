@@ -49,6 +49,7 @@ REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_request
 JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_job_leases_total", "Total leased jobs"))
 QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_control_plane_queue_length", "Current queue length"))
 WEBHOOK_REPLAY_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_webhook_replays_blocked", "Webhook replay attacks blocked"))
+ORG_RATE_LIMIT_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_org_rate_limits_hit", "Organizations hitting rate limits"))
 REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
         "nimbus_control_plane_request_latency_seconds",
@@ -325,6 +326,30 @@ def create_app() -> FastAPI:
 
             repo = payload.repository
             span.set_attribute("nimbus.repo", repo.full_name)
+            
+            # Check per-org rate limit
+            org_id = repo.id
+            rate_key = f"rate:org:{org_id}"
+            redis_client = state.redis_client
+            current_count = await redis_client.incr(rate_key)
+            if current_count == 1:
+                # First request in window, set expiry
+                await redis_client.expire(rate_key, settings.org_rate_interval_seconds)
+            
+            if current_count > settings.org_job_rate_limit:
+                ORG_RATE_LIMIT_COUNTER.inc()
+                LOGGER.warning(
+                    "Org rate limit exceeded",
+                    org_id=org_id,
+                    repo=repo.full_name,
+                    count=current_count,
+                    limit=settings.org_job_rate_limit,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Organization rate limit exceeded: {settings.org_job_rate_limit} jobs per {settings.org_rate_interval_seconds}s",
+                )
+            
             LOGGER.info(
                 "Enqueuing job",
                 job_id=payload.workflow_job.id,
