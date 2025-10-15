@@ -60,6 +60,7 @@ class CacheProxySettings(BaseSettings):
     s3_endpoint_url: Optional[str] = Field(None, env="SMITH_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = Field(None, env="SMITH_CACHE_S3_BUCKET")
     s3_region: Optional[str] = Field(None, env="SMITH_CACHE_S3_REGION")
+    metrics_database_path: Path = Field(Path("./cache/cache_metrics.db"), env="SMITH_CACHE_METRICS_DB")
 
     class Config:
         env_file = ".env"

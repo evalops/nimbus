@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -131,9 +133,93 @@ class S3CacheBackend(CacheBackend):
 
 
 class CacheProxyState:
-    def __init__(self, settings: CacheProxySettings, backend: CacheBackend):
+    def __init__(self, settings: CacheProxySettings, backend: CacheBackend, metrics):
         self.settings = settings
         self.backend = backend
+        self.metrics = metrics
+
+
+class CacheMetrics:
+    def __init__(self, db_path: Path):
+        self._db_path = db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_metrics (
+                    cache_key TEXT PRIMARY KEY,
+                    total_hits INTEGER NOT NULL DEFAULT 0,
+                    total_misses INTEGER NOT NULL DEFAULT 0,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    last_access TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+    @contextmanager
+    def _connect(self):
+        conn = sqlite3.connect(self._db_path)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def record_hit(self, cache_key: str, bytes_served: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cache_metrics (cache_key, total_hits, total_bytes, last_access)
+                VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    total_hits = total_hits + 1,
+                    total_bytes = total_bytes + ?,
+                    last_access = CURRENT_TIMESTAMP
+                """,
+                (cache_key, bytes_served, bytes_served),
+            )
+
+    def record_miss(self, cache_key: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cache_metrics (cache_key, total_misses, last_access)
+                VALUES (?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    total_misses = total_misses + 1,
+                    last_access = CURRENT_TIMESTAMP
+                """,
+                (cache_key,),
+            )
+
+    def top_entries(self, limit: int = 10) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT cache_key, total_hits, total_misses, total_bytes, last_access
+                FROM cache_metrics
+                ORDER BY total_hits DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "cache_key": row[0],
+                "total_hits": row[1],
+                "total_misses": row[2],
+                "total_bytes": row[3],
+                "last_access": row[4],
+            }
+            for row in rows
+        ]
+
+    def total_entries(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT COUNT(*) FROM cache_metrics")
+            (count,) = cur.fetchone()
+        return int(count)
 
 
 def build_backend(settings: CacheProxySettings) -> CacheBackend:
@@ -164,7 +250,8 @@ def require_cache_token(
 def create_app() -> FastAPI:
     settings = CacheProxySettings()
     backend = build_backend(settings)
-    state = CacheProxyState(settings, backend)
+    metrics = CacheMetrics(settings.metrics_database_path)
+    state = CacheProxyState(settings, backend, metrics)
     app = FastAPI()
     app.state.cache_state = state
 
@@ -178,6 +265,8 @@ def create_app() -> FastAPI:
         if cache_token.scope not in {"write", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks write scope")
         await state.backend.write(cache_key, request.stream())
+        bytes_written = await state.backend.head(cache_key)
+        state.metrics.record_hit(cache_key, bytes_written)
         return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key}")
@@ -188,7 +277,13 @@ def create_app() -> FastAPI:
     ) -> Response:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
-        size = await state.backend.head(cache_key)
+        try:
+            size = await state.backend.head(cache_key)
+            state.metrics.record_hit(cache_key, size)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                state.metrics.record_miss(cache_key)
+            raise
         response = Response(status_code=status.HTTP_200_OK)
         response.headers["Content-Length"] = str(size)
         return response
@@ -201,11 +296,26 @@ def create_app() -> FastAPI:
     ) -> StreamingResponse:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
-        data = await state.backend.read(cache_key)
+        try:
+            data = await state.backend.read(cache_key)
+            state.metrics.record_hit(cache_key, len(data))
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                state.metrics.record_miss(cache_key)
+            raise
         return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
     @app.get("/status")
     async def status_probe(state: CacheProxyState = Depends(get_state)) -> JSONResponse:
-        return JSONResponse(state.backend.status())
+        status_payload = state.backend.status()
+        status_payload.update(
+            {
+                "total_entries": state.metrics.total_entries(),
+                "top_entries": state.metrics.top_entries(),
+            }
+        )
+        return JSONResponse(status_payload)
+
+    return app
 
     return app
