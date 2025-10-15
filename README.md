@@ -27,6 +27,10 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    python -m smith.cli.jobs recent --base-url http://localhost:8000 --token $SMITH_JWT_SECRET --limit 10
    ```
+5. Check overall queue health:
+   ```bash
+   python -m smith.cli.jobs status --base-url http://localhost:8000 --token $SMITH_JWT_SECRET
+   ```
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:

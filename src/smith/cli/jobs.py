@@ -13,11 +13,18 @@ import httpx
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect Smith job records")
-    parser.add_argument("command", choices=["recent"], help="Command to run")
     parser.add_argument("--base-url", required=True, help="Smith control plane base URL")
     parser.add_argument("--token", required=True, help="Bearer token for authentication")
-    parser.add_argument("--limit", type=int, default=20, help="Number of jobs to fetch")
-    parser.add_argument("--json", action="store_true", help="Output raw JSON instead of a table")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    recent_parser = subparsers.add_parser("recent", help="List recent jobs")
+    recent_parser.add_argument("--limit", type=int, default=20, help="Number of jobs to fetch")
+    recent_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    status_parser = subparsers.add_parser("status", help="Show queue depth and job counts")
+    status_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+
     return parser.parse_args()
 
 
@@ -27,6 +34,16 @@ async def fetch_recent_jobs(base_url: str, token: str, limit: int) -> list[dict[
             f"{base_url.rstrip('/')}/api/jobs/recent",
             headers={"Authorization": f"Bearer {token}"},
             params={"limit": limit},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def fetch_status(base_url: str, token: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/api/status",
+            headers={"Authorization": f"Bearer {token}"},
         )
         response.raise_for_status()
         return response.json()
@@ -75,6 +92,19 @@ async def run() -> None:
             print(json.dumps(jobs, indent=2))
         else:
             print_table(jobs)
+    elif args.command == "status":
+        status_payload = await fetch_status(args.base_url, args.token)
+        if args.json:
+            print(json.dumps(status_payload, indent=2))
+        else:
+            print(f"Queue length: {status_payload.get('queue_length', 0)}")
+            counts = status_payload.get("jobs_by_status", {})
+            if counts:
+                print("Jobs by status:")
+                for key, value in sorted(counts.items()):
+                    print(f"  {key}: {value}")
+            else:
+                print("Jobs by status: none")
 
 
 def main() -> None:
