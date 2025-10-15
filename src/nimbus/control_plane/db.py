@@ -139,11 +139,20 @@ async def record_job_queued(session: AsyncSession, assignment: JobAssignment) ->
 
 async def mark_job_leased(
     session: AsyncSession, job_id: int, agent_id: str, *, backfill_status: Optional[str] = None
-) -> None:
+) -> bool:
+    """
+    Mark a job as leased. Only succeeds if job is currently in queued status.
+    Returns True if the job was marked as leased, False if it was already leased or in another state.
+    """
     now = datetime.now(timezone.utc)
     stmt = (
         update(jobs_table)
-        .where(jobs_table.c.job_id == job_id)
+        .where(
+            and_(
+                jobs_table.c.job_id == job_id,
+                jobs_table.c.status == "queued",
+            )
+        )
         .values(
             agent_id=agent_id,
             status=backfill_status or "leased",
@@ -151,7 +160,8 @@ async def mark_job_leased(
             updated_at=now,
         )
     )
-    await session.execute(stmt)
+    result = await session.execute(stmt)
+    return result.rowcount > 0
 
 
 async def record_status_update(session: AsyncSession, update_payload: JobStatusUpdate) -> None:
@@ -162,10 +172,16 @@ async def record_status_update(session: AsyncSession, update_payload: JobStatusU
         "updated_at": now,
         "last_message": update_payload.message,
     }
-    if update_payload.status in {"succeeded", "failed", "cancelled"}:
+    is_terminal = update_payload.status in {"succeeded", "failed", "cancelled"}
+    if is_terminal:
         values["completed_at"] = now
+    
     stmt = update(jobs_table).where(jobs_table.c.job_id == update_payload.job_id).values(**values)
     await session.execute(stmt)
+    
+    # Release lease on terminal states to prevent leak
+    if is_terminal and update_payload.fence_token is not None:
+        await release_job_lease(session, update_payload.job_id, update_payload.agent_id, update_payload.fence_token)
 
 
 async def list_recent_jobs(
@@ -446,8 +462,12 @@ async def try_acquire_job_lease(
         row = result.first()
         if row:
             return int(row[0])
-    except Exception:  # noqa: BLE001
+    except Exception as exc:
         # Race condition: another agent acquired the lease between our UPDATE and INSERT
+        # This is expected during concurrent lease attempts on the same job
+        import structlog
+        logger = structlog.get_logger("nimbus.control_plane.db")
+        logger.debug("Lease acquisition race condition", job_id=job_id, agent_id=agent_id, error=str(exc))
         return None
     return None
 

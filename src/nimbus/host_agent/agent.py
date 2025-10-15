@@ -250,7 +250,16 @@ class HostAgent:
 
     async def _renew_lease_loop(self, job_id: int, fence_token: int, ttl_seconds: int) -> None:
         """Periodically renew the job lease to maintain ownership."""
-        period = max(1, ttl_seconds // 3)  # Renew at 1/3 of TTL
+        import random
+        
+        # Renew at 40% of TTL with ±10% jitter to avoid thundering herd
+        base_period = max(1, int(ttl_seconds * 0.4))
+        jitter = int(base_period * 0.1)
+        period = base_period + random.randint(-jitter, jitter)
+        
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
         while True:
             await asyncio.sleep(period)
             try:
@@ -263,19 +272,41 @@ class HostAgent:
                         "fence_token": fence_token,
                     },
                 )
-                if resp.status_code != 200:
-                    LOGGER.warning(
-                        "Lease renewal rejected",
+                if resp.status_code == 200:
+                    consecutive_failures = 0
+                    LOGGER.debug("Lease renewed", job_id=job_id, fence_token=fence_token)
+                elif resp.status_code in {409, 410}:
+                    # Lease lost or expired - stop renewing
+                    LOGGER.error(
+                        "Lease renewal rejected - lease lost",
                         job_id=job_id,
                         fence_token=fence_token,
                         status=resp.status_code,
                     )
-                    # Could abort job here, but for now just log the issue
                     break
                 else:
-                    LOGGER.debug("Lease renewed", job_id=job_id, fence_token=fence_token)
+                    consecutive_failures += 1
+                    LOGGER.warning(
+                        "Lease renewal failed",
+                        job_id=job_id,
+                        fence_token=fence_token,
+                        status=resp.status_code,
+                        consecutive_failures=consecutive_failures,
+                    )
+                    if consecutive_failures >= max_consecutive_failures:
+                        LOGGER.error("Too many renewal failures, stopping", job_id=job_id)
+                        break
             except httpx.HTTPError as exc:
-                LOGGER.debug("Lease renewal error", job_id=job_id, error=str(exc))
+                consecutive_failures += 1
+                LOGGER.warning(
+                    "Lease renewal error",
+                    job_id=job_id,
+                    error=str(exc),
+                    consecutive_failures=consecutive_failures,
+                )
+                if consecutive_failures >= max_consecutive_failures:
+                    LOGGER.error("Too many renewal failures, stopping", job_id=job_id)
+                    break
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._settings.control_plane_token.get_secret_value()}"}

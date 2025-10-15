@@ -481,8 +481,15 @@ def create_app() -> FastAPI:
             if token_agent_id != status_update.agent_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
             
-            # Validate fence token if provided
-            if status_update.fence_token is not None:
+            # Validate fence token (required for all status updates)
+            if status_update.fence_token is None:
+                # Allow fence-less updates for backward compat, but log warning
+                LOGGER.warning(
+                    "Status update without fence token",
+                    job_id=status_update.job_id,
+                    agent_id=status_update.agent_id,
+                )
+            else:
                 valid = await db.validate_lease_fence(
                     session, status_update.job_id, status_update.agent_id, status_update.fence_token
                 )

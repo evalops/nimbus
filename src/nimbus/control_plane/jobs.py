@@ -60,6 +60,13 @@ async def lease_job_with_fence(
         await redis.lpush(QUEUE_KEY, payload)
         return None
 
-    # Mark job as leased in jobs table
-    await mark_job_leased(session, assignment.job_id, agent_id)
+    # Mark job as leased in jobs table (only if still queued)
+    marked = await mark_job_leased(session, assignment.job_id, agent_id)
+    if not marked:
+        # Job was already leased or completed; release our lease and push back
+        from .db import release_job_lease
+        await release_job_lease(session, assignment.job_id, agent_id, fence)
+        await redis.lpush(QUEUE_KEY, payload)
+        return None
+    
     return assignment, fence
