@@ -68,6 +68,38 @@ async def test_cache_status_reports_cold_entries(monkeypatch, tmp_path: Path):
         assert entries["cold/item"]["total_misses"] >= 1
 
 
+@pytest.mark.anyio("asyncio")
+async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
+    storage = tmp_path / "cache"
+    metrics_db = tmp_path / "metrics.db"
+    storage.mkdir()
+
+    env = {
+        "SMITH_CACHE_STORAGE_PATH": str(storage),
+        "SMITH_CACHE_SHARED_SECRET": "local-cache-secret",
+        "SMITH_CACHE_METRICS_DB": str(metrics_db),
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    app = create_cache_app()
+    async with app_client(app) as client:
+        token = mint_cache_token(secret="local-cache-secret", organization_id=1, ttl_seconds=60)
+        headers = {"Authorization": f"Bearer {token.token}"}
+
+        for idx in range(20):
+            path = f"/cache/key-{idx}"
+            await client.put(path, content=b"payload", headers=headers)
+            await client.get(path, headers=headers)
+
+        metrics_response = await client.get("/metrics")
+        assert metrics_response.status_code == 200
+        metrics_text = metrics_response.text
+        assert "smith_cache_proxy_request_latency_seconds_count" in metrics_text
+        match = re.search(r"smith_cache_proxy_request_latency_seconds_count (\d+)", metrics_text)
+        assert match and int(match.group(1)) >= 40
+
+
 class DummyResponse:
     def __init__(self, status_code: int, text: str = "", json_data: dict | None = None):
         self.status_code = status_code

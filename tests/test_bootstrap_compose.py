@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -42,3 +43,31 @@ def test_bootstrap_respects_existing_file(tmp_path: Path):
     module = _load_module()
     with pytest.raises(FileExistsError):
         module.bootstrap_env(output)
+
+
+def test_bootstrap_mints_agent_token_when_requested(tmp_path: Path):
+    output = tmp_path / ".env"
+    module = _load_module()
+
+    fake_token = "minted-agent-token"
+
+    with mock.patch.object(module, "_mint_agent_token_remote", return_value=fake_token) as mocked:
+        module.bootstrap_env(
+            output,
+            force=True,
+            control_plane_url="http://localhost:8000",
+            admin_token="admin-jwt",
+            agent_id="agent-42",
+            agent_ttl=900,
+        )
+
+    mocked.assert_called_once_with(
+        "http://localhost:8000",
+        "admin-jwt",
+        agent_id="agent-42",
+        ttl_seconds=900,
+    )
+
+    contents = output.read_text().splitlines()
+    env = dict(line.split("=", 1) for line in contents[1:])
+    assert env["SMITH_CONTROL_PLANE_TOKEN"] == fake_token
