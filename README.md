@@ -14,12 +14,12 @@ Running production AI evaluations at scale hits three walls:
 
 Nimbus gives you:
 
-✅ **10x cheaper** – Run on bare metal (Hetzner/your datacenter) for $450/month vs $4,500 on hosted runners  
-✅ **Air-gapped** – Models and eval data never leave your infrastructure  
-✅ **Eval-native** – Pre-built containers with OTEL tracing, ollama client, and structured logging for ClickHouse  
-✅ **Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)  
-✅ **Multi-tenant** – Org-scoped isolation for cache, logs, and artifacts with comprehensive access controls  
-✅ **Production-ready** – Lease fencing, automatic cleanup, replay protection, and per-org rate limiting
+**10x cheaper** – Run on bare metal (Hetzner/your datacenter) for $450/month vs $4,500 on hosted runners  
+**Air-gapped** – Models and eval data never leave your infrastructure  
+**Eval-native** – Pre-built containers with OTEL tracing, ollama client, and structured logging for ClickHouse  
+**Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)  
+**Multi-tenant** – Org-scoped isolation for cache, logs, and artifacts with comprehensive access controls  
+**Production-ready** – Lease fencing, automatic cleanup, replay protection, and per-org rate limiting
 
 > **Acknowledgement:** Nimbus builds on key ideas from [Blacksmith.sh](https://blacksmith.sh). Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this implementation. For a production-ready managed solution, check out Blacksmith.
 
@@ -367,18 +367,16 @@ Configure S3-specific variables when delegating storage to a remote backend.
 Before deploying to production, review [docs/PRE_PILOT_GAPS.md](docs/PRE_PILOT_GAPS.md) for the complete security and reliability assessment.
 
 **Critical items (all implemented):**
-- ✅ Lease fencing with fence tokens and heartbeat renewal
-- ✅ Idempotent teardown and startup reaper for crash recovery
-- ✅ Multi-tenant isolation (cache, logs, Docker registry)
-- ✅ Secret masking with Pydantic SecretStr
-- ✅ Webhook replay protection via delivery ID tracking
-- ✅ Per-org rate limiting on job submissions
-- ✅ SSH port allocation with unique constraints
+- Lease fencing with fence tokens and heartbeat renewal
+- Idempotent teardown and startup reaper for crash recovery
+- Multi-tenant isolation (cache, logs, Docker registry)
+- Secret masking with Pydantic SecretStr
+- Webhook replay protection via delivery ID tracking
+- Per-org rate limiting on job submissions
+- SSH port allocation with unique constraints
 
 **Recommended for scale:**
-- Redis-backed distributed rate limiting (currently per-process)
 - Alembic migrations (currently using ensure_schema)
-- Metrics endpoint authentication or localhost-only binding
 - Comprehensive integration test suite
 - Health check endpoints (/healthz) for K8s readiness probes
 
@@ -448,15 +446,17 @@ PARTITION BY toYYYYMM(ts);
 ## Roadmap
 
 **Completed:**
-- ✅ Multi-tenant isolation with org-scoped access controls
-- ✅ Lease fencing to prevent job double-claiming
-- ✅ Webhook replay protection
-- ✅ Per-org rate limiting
-- ✅ Idempotent cleanup and crash recovery
-- ✅ Secret masking and secure credential handling
+- Multi-tenant isolation with org-scoped access controls
+- Lease fencing to prevent job double-claiming
+- Webhook replay protection
+- Distributed per-org rate limiting
+- Idempotent cleanup and crash recovery
+- Secret masking and secure credential handling
+- Proxy header trust validation
+- S3 error handling and circuit breakers
+- Metrics endpoint security (localhost-only default)
 
 **In Progress:**
-- Distributed rate limiting across replicas (Redis-backed)
 - Alembic migrations for schema versioning
 - Comprehensive integration test suite
 - Firecracker jailer and seccomp integration
