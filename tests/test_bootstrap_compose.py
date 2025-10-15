@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +48,7 @@ def test_bootstrap_respects_existing_file(tmp_path: Path):
 
 def test_bootstrap_mints_agent_token_when_requested(tmp_path: Path):
     output = tmp_path / ".env"
+    secrets_file = tmp_path / "tokens.json"
     module = _load_module()
 
     fake_token = "minted-agent-token"
@@ -59,6 +61,7 @@ def test_bootstrap_mints_agent_token_when_requested(tmp_path: Path):
             admin_token="admin-jwt",
             agent_id="agent-42",
             agent_ttl=900,
+            secrets_output=secrets_file,
         )
 
     mocked.assert_called_once_with(
@@ -71,3 +74,7 @@ def test_bootstrap_mints_agent_token_when_requested(tmp_path: Path):
     contents = output.read_text().splitlines()
     env = dict(line.split("=", 1) for line in contents[1:])
     assert env["SMITH_CONTROL_PLANE_TOKEN"] == fake_token
+
+    secrets_payload = json.loads(secrets_file.read_text())
+    assert secrets_payload["agent_token"] == fake_token
+    assert secrets_payload["agent_id"] == "agent-42"
