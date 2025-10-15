@@ -12,6 +12,7 @@ import httpx
 
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
+from ..common.security import verify_cache_token
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
 
 LOGGER = logging.getLogger("smith.host_agent")
@@ -70,6 +71,18 @@ class HostAgent:
     async def _process_job(self, assignment: JobAssignment) -> None:
         LOGGER.info("Starting job", extra={"job_id": assignment.job_id})
         await self._submit_status(assignment, "starting")
+
+        if (
+            not assignment.cache_token
+            and self._settings.cache_token_secret
+            and self._settings.cache_token_value
+        ):
+            fallback = verify_cache_token(
+                self._settings.cache_token_secret,
+                self._settings.cache_token_value,
+            )
+            if fallback:
+                assignment.cache_token = fallback
 
         try:
             result = await self._launcher.execute_job(assignment)

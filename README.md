@@ -23,15 +23,16 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    uvicorn smith.logging_pipeline.main:app --reload --port 8002
    python -m smith.host_agent.main
    ```
-4. Inspect recent jobs from the command line (example):
+4. Optionally provide a fallback cache token to hosts via `SMITH_CACHE_TOKEN_SECRET` and `SMITH_CACHE_TOKEN_VALUE` when experimenting without live control-plane minted tokens.
+5. Inspect recent jobs from the command line (example):
    ```bash
    python -m smith.cli.jobs recent --base-url http://localhost:8000 --token $SMITH_JWT_SECRET --limit 10
    ```
-5. Check overall queue health:
+6. Check overall queue health:
    ```bash
    python -m smith.cli.jobs status --base-url http://localhost:8000 --token $SMITH_JWT_SECRET
    ```
-6. Query logs for a job:
+7. Query logs for a job:
    ```bash
    python -m smith.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
    ```

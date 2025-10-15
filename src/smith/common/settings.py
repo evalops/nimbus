@@ -35,6 +35,8 @@ class HostAgentSettings(BaseSettings):
     control_plane_token: str = Field(..., env="SMITH_CONTROL_PLANE_TOKEN")
     redis_url: Optional[RedisDsn] = Field(None, env="SMITH_AGENT_REDIS_URL")
     cache_proxy_url: Optional[HttpUrl] = Field(None, env="SMITH_CACHE_PROXY_URL")
+    cache_token_secret: Optional[str] = Field(None, env="SMITH_CACHE_TOKEN_SECRET")
+    cache_token_value: Optional[str] = Field(None, env="SMITH_CACHE_TOKEN_VALUE")
     log_sink_url: Optional[HttpUrl] = Field(None, env="SMITH_LOG_SINK_URL")
 
     firecracker_bin_path: str = Field("/usr/local/bin/firecracker", env="SMITH_FC_BIN")

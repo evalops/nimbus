@@ -15,6 +15,7 @@ import httpx
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
+from ..common.security import verify_cache_token
 
 LOGGER = logging.getLogger("smith.host_agent.firecracker")
 
@@ -158,6 +159,17 @@ class FirecrackerLauncher:
         return config
 
     def _build_metadata(self, assignment: JobAssignment) -> dict:
+        cache_section = None
+        if assignment.cache_token:
+            cache_section = assignment.cache_token.model_dump()
+        elif self._settings.cache_token_secret and self._settings.cache_token_value:
+            fallback = verify_cache_token(
+                self._settings.cache_token_secret,
+                self._settings.cache_token_value,
+            )
+            if fallback:
+                cache_section = fallback.model_dump()
+
         return {
             "job": {
                 "id": assignment.job_id,
@@ -170,7 +182,7 @@ class FirecrackerLauncher:
                 "registration_token": assignment.runner_registration.token,
                 "registration_expires_at": assignment.runner_registration.expires_at.isoformat(),
             },
-            "cache": assignment.cache_token.model_dump() if assignment.cache_token else None,
+            "cache": cache_section,
         }
 
     async def _ensure_tap_device(self, tap_name: str) -> None:
