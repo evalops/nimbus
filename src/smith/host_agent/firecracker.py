@@ -55,7 +55,7 @@ class FirecrackerLauncher:
         self._settings = settings
         self._config = config or MicroVMConfig()
 
-    async def execute_job(self, assignment: JobAssignment) -> FirecrackerResult:
+    async def execute_job(self, assignment: JobAssignment, *, timeout_seconds: Optional[int] = None) -> FirecrackerResult:
         """Launch a microVM for the given job and wait for completion."""
 
         LOGGER.info("Launching microVM", job_id=assignment.job_id)
@@ -83,7 +83,23 @@ class FirecrackerLauncher:
                 process = await self._spawn_firecracker(api_socket, log_path, metrics_path)
                 await self._configure_vm(api_socket, vm_config, metadata)
                 await self._start_instance(api_socket)
-                await self._wait_for_completion(process)
+                try:
+                    if timeout_seconds is not None:
+                        await asyncio.wait_for(self._wait_for_completion(process), timeout_seconds)
+                    else:
+                        await self._wait_for_completion(process)
+                except asyncio.TimeoutError as exc:
+                    if process and process.returncode is None:
+                        process.kill()
+                        await process.wait()
+                    LOGGER.warning("MicroVM execution timed out", job_id=assignment.job_id, timeout_seconds=timeout_seconds)
+                    collected = self._collect_artifacts(
+                        job_id=assignment.job_id,
+                        exit_code=-1,
+                        log_path=log_path,
+                        metrics_path=metrics_path,
+                    )
+                    raise FirecrackerError("Job timed out", result=collected) from exc
                 exit_code = process.returncode or 0
                 collected = self._collect_artifacts(
                     job_id=assignment.job_id,

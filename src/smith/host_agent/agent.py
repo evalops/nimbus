@@ -29,6 +29,7 @@ JOB_FAILED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_fai
 LOG_BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_batches_total", "Log batches emitted"))
 LOG_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_rows_total", "Log rows emitted"))
 LOG_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_errors_total", "Log emission errors"))
+JOB_TIMEOUT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_job_timeouts_total", "Jobs terminated by watchdog"))
 
 
 class HostAgent:
@@ -117,11 +118,20 @@ class HostAgent:
                 if fallback:
                     assignment.cache_token = fallback
 
+            timeout_seconds = self._settings.job_timeout_seconds
             try:
-                result = await self._launcher.execute_job(assignment)
+                result = await self._launcher.execute_job(
+                    assignment,
+                    timeout_seconds=timeout_seconds,
+                )
             except FirecrackerError as exc:
                 await self._emit_logs(assignment, exc.result)
-                LOGGER.exception("Job failed", job_id=assignment.job_id)
+                message = str(exc)
+                if "timed out" in message.lower():
+                    LOGGER.warning("Job timed out", job_id=assignment.job_id, timeout_seconds=timeout_seconds)
+                    JOB_TIMEOUT_COUNTER.inc()
+                else:
+                    LOGGER.exception("Job failed", job_id=assignment.job_id)
                 await self._submit_status(assignment, "failed", message=str(exc))
                 JOB_FAILED_COUNTER.inc()
                 return
