@@ -216,6 +216,13 @@ class DockerCacheMetrics:
                 (now, repository, reference),
             )
 
+    def get_blob_org_id(self, digest: str) -> Optional[int]:
+        """Get the organization ID that owns a blob."""
+        with self._connect() as conn:
+            cur = conn.execute("SELECT org_id FROM blobs WHERE digest=?", (digest,))
+            row = cur.fetchone()
+        return row[0] if row else None
+
 
 class DockerCacheState:
     def __init__(self, settings: DockerCacheSettings, metrics: DockerCacheMetrics):
@@ -456,11 +463,18 @@ def create_app() -> FastAPI:
         name: str,
         upload_id: str,
         request: Request,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
-        sanitize_repository(name)
+        repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "push")
         session = await state.get_upload(upload_id)
+        # Validate session repository matches request path
+        if session.repository != repository:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload session repository mismatch"
+            )
         await _append_stream_to_session(session, request)
         headers = {
             "Location": f"/v2/{session.repository}/blobs/uploads/{upload_id}",
@@ -474,15 +488,22 @@ def create_app() -> FastAPI:
         name: str,
         upload_id: str,
         request: Request,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "push")
         digest_param = request.query_params.get("digest")
         if not digest_param:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="digest query parameter required")
         validate_digest(digest_param)
         session = await state.get_upload(upload_id)
+        # Validate session repository matches request path
+        if session.repository != repository:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload session repository mismatch"
+            )
         await _append_stream_to_session(session, request)
         expected_digest = session.digest()
         if expected_digest != digest_param:
@@ -499,7 +520,7 @@ def create_app() -> FastAPI:
         else:
             os.replace(final_session.file_path, target_path)
         BLOB_BYTES_WRITTEN_COUNTER.inc(final_session.size)
-        state.metrics.record_blob(expected_digest, final_session.size)
+        state.metrics.record_blob(expected_digest, final_session.size, org_id=token.organization_id)
         state.ensure_storage_limit()
 
         headers = {
@@ -512,14 +533,22 @@ def create_app() -> FastAPI:
     async def stat_blob(
         name: str,
         digest: str,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
-        sanitize_repository(name)
+        repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "pull")
         validate_digest(digest)
         path = state.blob_path(digest)
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+        # Validate blob ownership
+        blob_org_id = state.metrics.get_blob_org_id(digest)
+        if blob_org_id is not None and blob_org_id != token.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to blob from different organization"
+            )
         size = path.stat().st_size
         state.metrics.touch_blob(digest)
         headers = {"Content-Length": str(size), "Docker-Content-Digest": digest}
@@ -529,14 +558,22 @@ def create_app() -> FastAPI:
     async def fetch_blob(
         name: str,
         digest: str,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> StreamingResponse:
-        sanitize_repository(name)
+        repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "pull")
         validate_digest(digest)
         path = state.blob_path(digest)
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+        # Validate blob ownership
+        blob_org_id = state.metrics.get_blob_org_id(digest)
+        if blob_org_id is not None and blob_org_id != token.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to blob from different organization"
+            )
         size = path.stat().st_size
         state.metrics.touch_blob(digest)
         BLOB_BYTES_READ_COUNTER.inc(size)
@@ -560,10 +597,11 @@ def create_app() -> FastAPI:
         name: str,
         reference: str,
         request: Request,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "push")
         body = await request.body()
         if not body:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest body required")
@@ -597,10 +635,11 @@ def create_app() -> FastAPI:
     async def get_manifest(
         name: str,
         reference: str,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "pull")
         data, digest_value, media_type = await _read_manifest(state, repository, reference)
         headers = {"Docker-Content-Digest": digest_value}
         return Response(content=data, media_type=media_type or "application/vnd.docker.distribution.manifest.v2+json", headers=headers)
@@ -609,10 +648,11 @@ def create_app() -> FastAPI:
     async def head_manifest(
         name: str,
         reference: str,
-        _: CacheToken = Depends(require_cache_token),
+        token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
+        validate_repository_access(repository, token, "pull")
         data, digest_value, media_type = await _read_manifest(state, repository, reference)
         headers = {
             "Docker-Content-Digest": digest_value,
