@@ -66,6 +66,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_table: str = Field("ci_logs", env="SMITH_CLICKHOUSE_TABLE")
     clickhouse_username: Optional[str] = Field(None, env="SMITH_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = Field(None, env="SMITH_CLICKHOUSE_PASSWORD")
+    clickhouse_timeout_seconds: int = Field(10, env="SMITH_CLICKHOUSE_TIMEOUT")
 
     class Config:
         env_file = ".env"
