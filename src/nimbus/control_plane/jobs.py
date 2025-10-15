@@ -66,7 +66,9 @@ async def lease_job_with_fence(
         # Job was already leased or completed; release our lease and push back
         from .db import release_job_lease
         await release_job_lease(session, assignment.job_id, agent_id, fence)
+        # Note: Transaction will be rolled back or committed by caller
         await redis.lpush(QUEUE_KEY, payload)
         return None
     
+    # Success - transaction will be committed by caller
     return assignment, fence

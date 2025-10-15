@@ -395,7 +395,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
             
             # Use fenced leasing with DB-backed lease records
-            lease_ttl = 300  # 5 minutes
+            lease_ttl = settings.job_lease_ttl_seconds
             result = await lease_job_with_fence(
                 redis_client, session, request_body.agent_id, lease_ttl
             )
@@ -447,7 +447,7 @@ def create_app() -> FastAPI:
             if token_agent_id != renewal.agent_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
             
-            lease_ttl = 300  # 5 minutes
+            lease_ttl = settings.job_lease_ttl_seconds
             success = await db.renew_job_lease(
                 session, renewal.job_id, renewal.agent_id, renewal.fence_token, lease_ttl
             )

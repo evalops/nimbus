@@ -5,16 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Iterable, Optional
 
+import structlog
 from sqlalchemy import (
     JSON,
     BigInteger,
     Column,
     Integer,
     DateTime,
+    Index,
     MetaData,
     String,
     Table,
     Text,
+    UniqueConstraint,
     func,
     insert,
     select,
@@ -72,8 +75,6 @@ agent_token_audit_table = Table(
 )
 
 
-from sqlalchemy import Index, UniqueConstraint
-
 ssh_sessions_table = Table(
     "ssh_sessions",
     metadata,
@@ -103,6 +104,7 @@ job_leases_table = Table(
     Column("heartbeat_at", DateTime(timezone=True), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    Index("ix_job_leases_expires", "lease_expires_at"),
 )
 
 
@@ -501,7 +503,6 @@ async def try_acquire_job_lease(
     except Exception as exc:
         # Race condition: another agent acquired the lease between our UPDATE and INSERT
         # This is expected during concurrent lease attempts on the same job
-        import structlog
         logger = structlog.get_logger("nimbus.control_plane.db")
         logger.debug("Lease acquisition race condition", job_id=job_id, agent_id=agent_id, error=str(exc))
         return None
