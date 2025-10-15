@@ -31,6 +31,16 @@ def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
     return resolved
 
 
+def directory_size(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            total += item.stat().st_size
+    return total
+
+
 class CacheBackend:
     async def write(self, cache_key: str, data_iter: AsyncIterator[bytes]) -> None:  # pragma: no cover - interface
         raise NotImplementedError
@@ -212,6 +222,36 @@ class CacheProxyState:
         self.metrics = metrics
         self.logger = structlog.get_logger("smith.cache_proxy").bind(backend=backend.status().get("backend"))
 
+    def enforce_storage_limit(self) -> None:
+        max_bytes = self.settings.max_storage_bytes
+        if not max_bytes:
+            return
+        storage_path = self.settings.storage_path
+        total = directory_size(storage_path)
+        if total <= max_bytes:
+            return
+        self.logger.info("cache_eviction_started", total_bytes=total, max_bytes=max_bytes)
+        candidates = self.metrics.oldest_entries(limit=100)
+        for entry in candidates:
+            if total <= max_bytes:
+                break
+            cache_key = entry["cache_key"]
+            path = sanitize_key(storage_path, cache_key)
+            size = path.stat().st_size if path.exists() else 0
+            if path.exists():
+                path.unlink(missing_ok=True)
+                if path.parent != storage_path:
+                    try:
+                        path.parent.rmdir()
+                    except OSError:
+                        pass
+            self.metrics.delete(cache_key)
+            CACHE_EVICTIONS_COUNTER.inc()
+            total -= size
+            self.logger.info("cache_evicted", cache_key=cache_key, reclaimed_bytes=size)
+        TOTAL_ENTRIES_GAUGE.set(float(self.metrics.total_entries()))
+        self.logger.info("cache_eviction_completed", total_bytes=directory_size(storage_path))
+
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_requests_total", "Total cache proxy requests"))
 HIT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_hits_total", "Cache hits"))
@@ -219,6 +259,7 @@ MISS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_misses_total", "Cac
 BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_read_total", "Bytes served from cache"))
 BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_written_total", "Bytes written to cache"))
 TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_cache_entries", "Number of cache entries"))
+CACHE_EVICTIONS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_evictions_total", "Cache entries evicted to enforce limits"))
 CACHE_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
         "smith_cache_proxy_request_latency_seconds",
@@ -310,6 +351,33 @@ class CacheMetrics:
             (count,) = cur.fetchone()
         return int(count)
 
+    def oldest_entries(self, limit: int = 10) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT cache_key, total_hits, total_misses, total_bytes, last_access
+                FROM cache_metrics
+                ORDER BY last_access ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "cache_key": row[0],
+                "total_hits": row[1],
+                "total_misses": row[2],
+                "total_bytes": row[3],
+                "last_access": row[4],
+            }
+            for row in rows
+        ]
+
+    def delete(self, cache_key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM cache_metrics WHERE cache_key = ?", (cache_key,))
+
 
 def build_backend(settings: CacheProxySettings) -> CacheBackend:
     if settings.s3_bucket:
@@ -378,6 +446,7 @@ def create_app() -> FastAPI:
         HIT_COUNTER.inc()
         TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
         state.logger.info("cache_write", cache_key=cache_key, bytes=bytes_written)
+        state.enforce_storage_limit()
         return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key:path}")
@@ -434,6 +503,7 @@ def create_app() -> FastAPI:
             {
                 "total_entries": state.metrics.total_entries(),
                 "top_entries": state.metrics.top_entries(),
+                "max_storage_bytes": state.settings.max_storage_bytes,
             }
         )
         TOTAL_ENTRIES_GAUGE.set(float(status_payload["total_entries"]))

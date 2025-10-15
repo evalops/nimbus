@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, HttpUrl, RedisDsn
+from pydantic import Field, HttpUrl, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,10 +31,18 @@ class ControlPlaneSettings(BaseSettings):
     agent_token_secret: str = env_field(..., "SMITH_AGENT_TOKEN_SECRET")
     agent_token_rate_limit: int = env_field(15, "SMITH_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "SMITH_AGENT_TOKEN_RATE_INTERVAL")
+    admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="SMITH_ADMIN_ALLOWED_SUBJECTS")
     log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "SMITH_OTEL_SAMPLER_RATIO")
+
+    @field_validator("admin_allowed_subjects", mode="before")
+    @classmethod
+    def _split_admin_subjects(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
 
 class HostAgentSettings(BaseSettings):
@@ -82,6 +90,7 @@ class CacheProxySettings(BaseSettings):
     s3_retry_max_seconds: float = env_field(2.0, "SMITH_CACHE_S3_RETRY_MAX")
     s3_circuit_breaker_failures: int = env_field(5, "SMITH_CACHE_S3_CIRCUIT_FAILURES")
     s3_circuit_breaker_reset_seconds: float = env_field(30.0, "SMITH_CACHE_S3_CIRCUIT_RESET")
+    max_storage_bytes: Optional[int] = env_field(None, "SMITH_CACHE_MAX_BYTES")
     log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")

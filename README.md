@@ -69,6 +69,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 | `SMITH_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
 | `SMITH_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
 | `SMITH_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
+| `SMITH_ADMIN_ALLOWED_SUBJECTS` | Comma-separated list of allowed admin JWT subjects. | empty (all subjects) |
 
 ### Host Agent (`smith.host_agent`)
 
@@ -109,6 +110,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 | `SMITH_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
 | `SMITH_CACHE_S3_CIRCUIT_FAILURES` | Failures before circuit opens. | `5` |
 | `SMITH_CACHE_S3_CIRCUIT_RESET` | Seconds before retrying after circuit opens. | `30` |
+| `SMITH_CACHE_MAX_BYTES` | Optional storage cap that triggers eviction of cold entries. | unset |
 
 ### Logging Pipeline (`smith.logging_pipeline`)
 
@@ -137,11 +139,18 @@ All services honor the following optional environment variables:
 - **Environment generation** – run `uv run python scripts/bootstrap_compose.py --output .env` to create a secrets-filled `.env`. Append `--control-plane-url http://localhost:8000 --admin-token <jwt>` to mint an initial host-agent token, and `--secrets-output bootstrap-tokens.json` to capture minted tokens in a separate JSON file for secure distribution.
 - **Manual setup** – alternatively copy `compose.env.sample` and populate the required secrets by hand using the `smith.cli.admin` commands described below.
 
+### Developer Shortcuts
+
+- **Makefile targets** – `make bootstrap`, `make compose-up`, `make compose-down`, and `make test` wrap common commands.
+- **uv scripts** – the same workflows are exposed via `uv run bootstrap`, `uv run compose-up`, and `uv run test` for consistent cross-platform invocation.
+
 ### Docker Compose Stack
 
 1. Ensure `.env` is prepared via the bootstrap script. If you minted an agent token into `bootstrap-tokens.json`, copy `agent_token` into `SMITH_CONTROL_PLANE_TOKEN` before starting services.
 2. Place Firecracker assets in `./artifacts/`: `vmlinux`, `rootfs.ext4`, and a `firecracker` binary (matching the path specified in `compose.yaml`).
 3. Launch the stack with `docker compose up --build`. Start the host agent when KVM and Firecracker are available by adding the `agent` profile (`docker compose --profile agent up host-agent`).
+
+> **Optional smoke test:** run `SMITH_RUN_COMPOSE_TESTS=1 uv run pytest tests/system/test_compose_stack.py` to validate the compose configuration (requires Docker).
 
 ### Cache proxy backends
 

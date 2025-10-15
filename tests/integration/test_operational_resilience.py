@@ -100,6 +100,40 @@ async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
         assert match and int(match.group(1)) >= 40
 
 
+@pytest.mark.anyio("asyncio")
+async def test_cache_eviction_respects_limit(monkeypatch, tmp_path: Path):
+    storage = tmp_path / "cache"
+    metrics_db = tmp_path / "metrics.db"
+    storage.mkdir()
+
+    env = {
+        "SMITH_CACHE_STORAGE_PATH": str(storage),
+        "SMITH_CACHE_SHARED_SECRET": "local-cache-secret",
+        "SMITH_CACHE_METRICS_DB": str(metrics_db),
+        "SMITH_CACHE_MAX_BYTES": "40",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    app = create_cache_app()
+    async with app_client(app) as client:
+        token = mint_cache_token(secret="local-cache-secret", organization_id=1, ttl_seconds=60)
+        headers = {"Authorization": f"Bearer {token.token}"}
+
+        await client.put("/cache/old", content=b"abcdefghij", headers=headers)
+        await client.get("/cache/old", headers=headers)
+
+        await client.put("/cache/new", content=b"x" * 32, headers=headers)
+
+        old_response = await client.get("/cache/old", headers=headers)
+        assert old_response.status_code == 404
+
+        new_response = await client.get("/cache/new", headers=headers)
+        assert new_response.status_code == 200
+
+        size = sum(p.stat().st_size for p in storage.rglob("*") if p.is_file())
+        assert size <= 40
+
 class DummyResponse:
     def __init__(self, status_code: int, text: str = "", json_data: dict | None = None):
         self.status_code = status_code

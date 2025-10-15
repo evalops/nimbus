@@ -148,6 +148,9 @@ def verify_admin_token(
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
     subject, _ = decoded
+    if settings.admin_allowed_subjects and subject not in settings.admin_allowed_subjects:
+        LOGGER.warning("Admin token subject not allowed", subject=subject)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin subject not allowed")
     return subject
 
 
@@ -337,6 +340,11 @@ def create_app() -> FastAPI:
     ) -> AgentTokenResponse:
         REQUEST_COUNTER.inc()
         if not state.token_rate_limiter.allow(admin_subject):
+            LOGGER.warning(
+                "Agent token request rate limited",
+                agent_id=request_body.agent_id,
+                subject=admin_subject,
+            )
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Agent token rotation rate limited")
         async with state.session_factory() as session:  # type: ignore[call-arg]
             version = await db.rotate_agent_token(session, request_body.agent_id, request_body.ttl_seconds)
