@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import httpx
 import structlog
@@ -322,6 +324,20 @@ class FirecrackerLauncher:
         log_path: Path,
         metrics_path: Path,
     ) -> asyncio.subprocess.Process:
+        """Spawn Firecracker, using jailer if configured."""
+        if self._settings.jailer_bin_path:
+            return await self._spawn_firecracker_with_jailer(api_socket, log_path, metrics_path)
+        else:
+            return await self._spawn_firecracker_direct(api_socket, log_path, metrics_path)
+
+    async def _spawn_firecracker_direct(
+        self,
+        api_socket: Path,
+        log_path: Path,
+        metrics_path: Path,
+    ) -> asyncio.subprocess.Process:
+        """Spawn Firecracker directly without jailer (less secure)."""
+        LOGGER.warning("Running Firecracker without jailer - not recommended for production")
         process = await asyncio.create_subprocess_exec(
             self._settings.firecracker_bin_path,
             "--api-sock",
@@ -341,6 +357,79 @@ class FirecrackerLauncher:
             raise FirecrackerError(
                 f"Firecracker exited prematurely: {stderr.decode().strip() or stdout.decode().strip()}"
             )
+        return process
+
+    async def _spawn_firecracker_with_jailer(
+        self,
+        api_socket: Path,
+        log_path: Path,
+        metrics_path: Path,
+    ) -> asyncio.subprocess.Process:
+        """Spawn Firecracker using the jailer for security isolation."""
+        vm_id = uuid4().hex[:16]
+        jailer_chroot = self._settings.jailer_chroot_base / vm_id
+        jailer_chroot.mkdir(parents=True, exist_ok=True)
+        
+        # Prepare chroot directory structure
+        (jailer_chroot / "root").mkdir(exist_ok=True)
+        (jailer_chroot / "root" / "run").mkdir(exist_ok=True)
+        
+        # Copy Firecracker binary into chroot
+        fc_in_chroot = jailer_chroot / "firecracker"
+        shutil.copy2(self._settings.firecracker_bin_path, fc_in_chroot)
+        fc_in_chroot.chmod(0o755)
+        
+        # Build jailer command
+        cmd = [
+            self._settings.jailer_bin_path,
+            "--id", vm_id,
+            "--exec-file", str(fc_in_chroot),
+            "--uid", str(self._settings.jailer_uid),
+            "--gid", str(self._settings.jailer_gid),
+            "--chroot-base-dir", str(self._settings.jailer_chroot_base),
+            "--new-pid-ns",
+        ]
+        
+        # Add seccomp filter if configured
+        if self._settings.seccomp_filter_path and self._settings.seccomp_filter_path.exists():
+            cmd.extend(["--seccomp-filter", str(self._settings.seccomp_filter_path)])
+        elif self._settings.seccomp_filter_path:
+            LOGGER.warning("Seccomp filter configured but not found", path=self._settings.seccomp_filter_path)
+        
+        # Firecracker arguments after --
+        cmd.extend([
+            "--",
+            "--api-sock", "/run/firecracker.sock",
+            "--log-path", str(log_path),
+            "--level", "Info",
+            "--metrics-path", str(metrics_path),
+        ])
+        
+        LOGGER.info(
+            "Spawning Firecracker with jailer",
+            vm_id=vm_id,
+            uid=self._settings.jailer_uid,
+            gid=self._settings.jailer_gid,
+            seccomp=self._settings.seccomp_filter_path is not None,
+        )
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        
+        # Give jailer time to set up
+        await asyncio.sleep(0.2)
+        
+        if process.returncode is not None:
+            stdout, stderr = await process.communicate()
+            # Cleanup chroot on failure
+            shutil.rmtree(jailer_chroot, ignore_errors=True)
+            raise FirecrackerError(
+                f"Jailer/Firecracker exited prematurely: {stderr.decode().strip() or stdout.decode().strip()}"
+            )
+        
         return process
 
     async def _configure_vm(self, api_socket: Path, config: dict, metadata: dict) -> None:

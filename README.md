@@ -270,10 +270,44 @@ All services honor the following optional environment variables:
 - Resilience tuning: adjust `NIMBUS_CACHE_S3_MAX_RETRIES`, `NIMBUS_CACHE_S3_RETRY_BASE`, `NIMBUS_CACHE_S3_RETRY_MAX`, `NIMBUS_CACHE_S3_CIRCUIT_FAILURES`, and `NIMBUS_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions. Pair `NIMBUS_CACHE_MAX_BYTES` with `NIMBUS_CACHE_EVICTION_BATCH` to cap disk usage and control eviction sweep size.
 
 ## Firecracker Assets
+
+### Download Kernel and Rootfs
+
 Use the helper script to download Firecracker kernel and root filesystem images:
 ```bash
 python scripts/setup_firecracker_assets.py ./artifacts
 ```
+
+### Security Setup (Production)
+
+Install jailer, seccomp profiles, and capability dropping:
+
+```bash
+# 1. Download architecture-specific seccomp profile
+python scripts/setup_seccomp_profile.py /etc/nimbus
+
+# 2. Install security components (creates nimbus user, sets up directories)
+sudo bash scripts/install-security.sh
+
+# 3. Configure agent to use jailer
+cat >> .env << EOF
+NIMBUS_JAILER_BIN=/usr/local/bin/jailer
+NIMBUS_SECCOMP_FILTER=/etc/nimbus/seccomp-$(uname -m).json
+NIMBUS_JAILER_UID=$(id -u nimbus)
+NIMBUS_JAILER_GID=$(id -g nimbus)
+NIMBUS_JAILER_CHROOT_BASE=/srv/jailer
+EOF
+
+# 4. Start agent with privileged setup (drops to CAP_NET_ADMIN only)
+sudo /usr/local/bin/nimbus-privileged-setup.sh python -m nimbus.host_agent.main
+```
+
+**Security features enabled:**
+- Firecracker runs in chroot jail
+- Process drops to non-root user (UID 1000)
+- PID namespace isolation (--new-pid-ns)
+- Architecture-specific seccomp filtering
+- CAP_NET_ADMIN only (no CAP_SYS_ADMIN)
 
 ### Rootfs build pipeline
 

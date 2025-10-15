@@ -1,0 +1,33 @@
+[Unit]
+Description=Nimbus Host Agent
+After=network.target redis.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Environment file with secrets
+EnvironmentFile=/etc/nimbus/agent.env
+
+# Privileged setup then drop to nimbus user with CAP_NET_ADMIN
+ExecStart=/usr/local/bin/nimbus-privileged-setup.sh /usr/bin/python3 -m nimbus.host_agent.main
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nimbus /var/run/nimbus /srv/jailer
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

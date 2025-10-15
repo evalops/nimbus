@@ -7,6 +7,7 @@ import asyncio
 from ..common.observability import configure_logging, configure_tracing
 from ..common.settings import HostAgentSettings
 from .agent import HostAgent
+from .security import check_capabilities
 
 
 async def main() -> None:
@@ -18,6 +19,10 @@ async def main() -> None:
         headers=settings.otel_exporter_headers,
         sampler_ratio=settings.otel_sampler_ratio,
     )
+    
+    # Check capabilities on startup
+    check_capabilities()
+    
     agent = HostAgent(settings)
     try:
         await agent.run()
