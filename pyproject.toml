@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "smith"
+version = "0.1.0"
+description = "Smith: control plane and host agent prototype for accelerated GitHub Actions"
+authors = [
+  { name = "EvalOps" }
+]
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.112,<0.115",
+  "uvicorn[standard]>=0.30,<0.32",
+  "httpx>=0.27,<0.28",
+  "pydantic>=2.7,<2.9",
+  "redis>=5.0,<5.1",
+  "sqlalchemy>=2.0,<2.1",
+  "asyncpg>=0.29,<0.30",
+  "python-dotenv>=1.0,<1.1",
+  "PyJWT[crypto]>=2.8,<2.9"
+]
+
+[project.optional-dependencies]
+host = [
+  "structlog>=24.1,<25",
+  "aiodocker>=0.21,<0.22"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smith"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

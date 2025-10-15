@@ -1,0 +1,154 @@
+"""FastAPI application providing Smith control plane APIs."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from redis.asyncio import Redis, from_url as redis_from_url
+
+from ..common.schemas import (
+    JobAssignment,
+    JobLeaseRequest,
+    JobLeaseResponse,
+    JobStatusUpdate,
+    WebhookWorkflowJobEvent,
+)
+from ..common.settings import ControlPlaneSettings
+from .github import GitHubAppClient
+from .jobs import enqueue_job, lease_job
+
+LOGGER = logging.getLogger("smith.control_plane")
+
+
+class AppState:
+    """Container for application-level shared resources."""
+
+    def __init__(
+        self,
+        settings: ControlPlaneSettings,
+        redis: Redis,
+        http_client: httpx.AsyncClient,
+        github_client: GitHubAppClient,
+    ) -> None:
+        self.settings = settings
+        self.redis = redis
+        self.http_client = http_client
+        self.github_client = github_client
+
+
+def _get_state(request: Request) -> AppState:
+    state: AppState = request.app.state.container  # type: ignore[attr-defined]
+    return state
+
+
+def get_settings(state: AppState = Depends(_get_state)) -> ControlPlaneSettings:
+    return state.settings
+
+
+def get_redis(state: AppState = Depends(_get_state)) -> Redis:
+    return state.redis
+
+
+def get_github_client(state: AppState = Depends(_get_state)) -> GitHubAppClient:
+    return state.github_client
+
+
+def verify_agent_token(
+    request: Request, settings: ControlPlaneSettings = Depends(get_settings)
+) -> None:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    token = auth_header.split(" ", 1)[1]
+    if token != settings.jwt_secret:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = ControlPlaneSettings()
+    redis = redis_from_url(str(settings.redis_url), decode_responses=False)
+    http_client = httpx.AsyncClient(timeout=20)
+    github_client = GitHubAppClient(settings=settings, http_client=http_client)
+    container = AppState(
+        settings=settings,
+        redis=redis,
+        http_client=http_client,
+        github_client=github_client,
+    )
+    app.state.container = container
+    try:
+        yield
+    finally:
+        await redis.aclose()
+        await http_client.aclose()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(lifespan=lifespan)
+
+    @app.post("/webhooks/github")
+    async def github_webhook(
+        payload: WebhookWorkflowJobEvent,
+        state: AppState = Depends(_get_state),
+    ) -> Response:
+        if payload.action != "queued":
+            LOGGER.debug("Ignoring webhook action", action=payload.action)
+            return Response(status_code=status.HTTP_202_ACCEPTED)
+
+        repo = payload.repository
+        LOGGER.info(
+            "Enqueuing job",
+            extra={
+                "job_id": payload.workflow_job.id,
+                "repo": repo.full_name,
+                "labels": payload.workflow_job.labels,
+            },
+        )
+
+        runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
+        assignment = JobAssignment(
+            job_id=payload.workflow_job.id,
+            run_id=payload.workflow_job.run_id,
+            run_attempt=payload.workflow_job.run_attempt,
+            repository=repo,
+            labels=payload.workflow_job.labels,
+            runner_registration=runner_token,
+            cache_token=None,
+        )
+        await enqueue_job(state.redis, assignment)
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+
+    @app.post("/api/jobs/lease", response_model=JobLeaseResponse)
+    async def lease_job_endpoint(
+        request_body: JobLeaseRequest,
+        _: None = Depends(verify_agent_token),
+        redis_client: Redis = Depends(get_redis),
+    ) -> JobLeaseResponse:
+        assignment = await lease_job(redis_client)
+        if assignment is None:
+            return JobLeaseResponse(job=None, backoff_seconds=5)
+        LOGGER.info(
+            "Leased job",
+            extra={"job_id": assignment.job_id, "agent_id": request_body.agent_id},
+        )
+        return JobLeaseResponse(job=assignment, backoff_seconds=0)
+
+    @app.post("/api/jobs/status", status_code=status.HTTP_202_ACCEPTED)
+    async def job_status(
+        status_update: JobStatusUpdate,
+        _: None = Depends(verify_agent_token),
+    ) -> None:
+        LOGGER.info(
+            "Job status update",
+            extra={
+                "job_id": status_update.job_id,
+                "agent_id": status_update.agent_id,
+                "status": status_update.status,
+            },
+        )
+
+    return app
