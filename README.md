@@ -50,6 +50,83 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
     uv run pytest
     ```
 
+## Environment Variables
+
+### Control Plane (`smith.control_plane`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `SMITH_GITHUB_APP_ID` | GitHub App numeric identifier. | required |
+| `SMITH_GITHUB_APP_PRIVATE_KEY` | PEM-encoded private key for the GitHub App. | required |
+| `SMITH_GITHUB_APP_INSTALLATION_ID` | Installation ID for the GitHub App. | required |
+| `SMITH_GITHUB_WEBHOOK_SECRET` | Shared secret for validating webhook signatures. | required |
+| `SMITH_REDIS_URL` | Redis connection string (e.g. `redis://localhost:6379/0`). | required |
+| `SMITH_DATABASE_URL` | SQLAlchemy async database URL (e.g. `sqlite+aiosqlite:///./smith.db`). | required |
+| `SMITH_JWT_SECRET` | Secret used to mint control-plane JWTs for CLI access. | required |
+| `SMITH_PUBLIC_BASE_URL` | Public URL base returned to GitHub for runner callbacks. | required |
+| `SMITH_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
+| `SMITH_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
+| `SMITH_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
+
+### Host Agent (`smith.host_agent`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `SMITH_AGENT_ID` | Unique identifier for the host agent instance. | required |
+| `SMITH_CONTROL_PLANE_URL` | Base URL of the control plane API. | required |
+| `SMITH_CONTROL_PLANE_TOKEN` | Bearer token issued by the control plane. | required |
+| `SMITH_AGENT_REDIS_URL` | Optional Redis URL for local coordination/caching. | optional |
+| `SMITH_CACHE_PROXY_URL` | Cache proxy base URL for artifact downloads. | optional |
+| `SMITH_CACHE_TOKEN_SECRET` | Fallback cache token verification secret (lab/dev). | optional |
+| `SMITH_CACHE_TOKEN_VALUE` | Pre-minted cache token when bypassing control plane. | optional |
+| `SMITH_LOG_SINK_URL` | Logging pipeline ingest endpoint. | optional |
+| `SMITH_AGENT_METRICS_HOST` | Prometheus metrics listener host. | `0.0.0.0` |
+| `SMITH_AGENT_METRICS_PORT` | Prometheus metrics listener port. | `9460` |
+| `SMITH_FC_BIN` | Path to the Firecracker binary. | `/usr/local/bin/firecracker` |
+| `SMITH_KERNEL_IMAGE` | Path to kernel image used for VMs. | required |
+| `SMITH_ROOTFS_IMAGE` | Root filesystem image path. | required |
+| `SMITH_TAP_PREFIX` | Prefix for tap interfaces created per VM. | `smith` |
+| `SMITH_JOB_TIMEOUT` | Maximum job runtime in seconds. | `3600` |
+| `SMITH_VM_SHUTDOWN_GRACE` | Graceful shutdown wait in seconds. | `30` |
+
+### Cache Proxy (`smith.cache_proxy`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `SMITH_CACHE_STORAGE_PATH` | Filesystem directory for cached artifacts. | `./cache` |
+| `SMITH_CACHE_SHARED_SECRET` | HMAC secret for API token validation. | required |
+| `SMITH_CACHE_S3_ENDPOINT` | S3-compatible endpoint URL (enable remote backend). | optional |
+| `SMITH_CACHE_S3_BUCKET` | S3 bucket/key prefix for remote storage. | optional |
+| `SMITH_CACHE_S3_REGION` | AWS region for the S3 endpoint. | optional |
+| `SMITH_CACHE_METRICS_DB` | SQLite database used for cache metrics. | `./cache/cache_metrics.db` |
+| `SMITH_CACHE_S3_MAX_RETRIES` | Retry attempts for S3 operations. | `3` |
+| `SMITH_CACHE_S3_RETRY_BASE` | Base backoff (seconds) for retries. | `0.2` |
+| `SMITH_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
+| `SMITH_CACHE_S3_CIRCUIT_FAILURES` | Failures before circuit opens. | `5` |
+| `SMITH_CACHE_S3_CIRCUIT_RESET` | Seconds before retrying after circuit opens. | `30` |
+
+### Logging Pipeline (`smith.logging_pipeline`)
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `SMITH_CLICKHOUSE_URL` | ClickHouse HTTP endpoint (e.g. `http://localhost:8123`). | required |
+| `SMITH_CLICKHOUSE_DATABASE` | Target database name. | `smith` |
+| `SMITH_CLICKHOUSE_TABLE` | Target table for log ingestion. | `ci_logs` |
+| `SMITH_CLICKHOUSE_USERNAME` | Basic auth username for ClickHouse. | optional |
+| `SMITH_CLICKHOUSE_PASSWORD` | Basic auth password for ClickHouse. | optional |
+| `SMITH_CLICKHOUSE_TIMEOUT` | HTTP timeout in seconds for ClickHouse operations. | `10` |
+
+### Shared observability variables
+
+All services honor the following optional environment variables:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `SMITH_LOG_LEVEL` | Structured logging level (`DEBUG`, `INFO`, etc.). | `INFO` |
+| `SMITH_OTEL_EXPORTER_ENDPOINT` | OTLP collector endpoint (HTTP or gRPC). | console exporter |
+| `SMITH_OTEL_EXPORTER_HEADERS` | Comma-separated OTLP headers (`key=value`). | none |
+| `SMITH_OTEL_SAMPLER_RATIO` | Sampling ratio (0.0–1.0) for tracing. | `0.1` |
+
 ### Cache proxy backends
 
 - Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
@@ -114,6 +191,38 @@ Use the reporting CLI to generate quick snapshots across services:
 
 - Structured logging is enabled across services via `structlog`; adjust verbosity with `SMITH_LOG_LEVEL` (e.g. `DEBUG`, `INFO`).
 - Enable OpenTelemetry tracing by setting `SMITH_OTEL_EXPORTER_ENDPOINT` (OTLP HTTP/GRPC), optional `SMITH_OTEL_EXPORTER_HEADERS` (`key=value` pairs), and `SMITH_OTEL_SAMPLER_RATIO` (0.0–1.0) to control sampling.
+
+## Deployment Recipes
+
+### Local development stack
+
+1. Export the required environment variables for each service (see [Environment Variables](#environment-variables)).
+2. Start the core APIs with uv:
+   ```bash
+   uv run uvicorn smith.control_plane.main:app --host 0.0.0.0 --port 8000 --reload
+   uv run uvicorn smith.cache_proxy.main:app --host 0.0.0.0 --port 8001 --reload
+   uv run uvicorn smith.logging_pipeline.main:app --host 0.0.0.0 --port 8002 --reload
+   ```
+3. Launch a host agent once kernel/rootfs assets are in place:
+   ```bash
+   uv run python -m smith.host_agent.main
+   ```
+
+### Remote host agent
+
+- Install the same wheel (`uv pip install .`) or copy the project to the host.
+- Provision kernel/rootfs images with `scripts/setup_firecracker_assets.py`.
+- Export `SMITH_CONTROL_PLANE_URL`, `SMITH_CONTROL_PLANE_TOKEN`, and networking variables appropriate for the host.
+- Run `python -m smith.host_agent.main` under a process manager (e.g. `systemd` or `supervisord`).
+
+### Minimal cache proxy deployment
+
+```bash
+export SMITH_CACHE_SHARED_SECRET="super-secret"
+uv run uvicorn smith.cache_proxy.main:app --host 0.0.0.0 --port 8001
+```
+
+Configure S3-specific variables when delegating storage to a remote backend.
 
 ## Roadmap
 - Implement multi-tenant cache usage metrics and eviction policies.
