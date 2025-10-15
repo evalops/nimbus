@@ -25,6 +25,7 @@ from ..common.settings import ControlPlaneSettings
 from . import db
 from .github import GitHubAppClient
 from .jobs import enqueue_job, lease_job
+from ..common.security import mint_cache_token
 
 LOGGER = logging.getLogger("smith.control_plane")
 
@@ -143,6 +144,11 @@ def create_app() -> FastAPI:
         )
 
         runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
+        cache_token = mint_cache_token(
+            secret=settings.cache_shared_secret,
+            organization_id=repo.id,
+            ttl_seconds=settings.cache_token_ttl_seconds,
+        )
         assignment = JobAssignment(
             job_id=payload.workflow_job.id,
             run_id=payload.workflow_job.run_id,
@@ -150,7 +156,7 @@ def create_app() -> FastAPI:
             repository=repo,
             labels=payload.workflow_job.labels,
             runner_registration=runner_token,
-            cache_token=None,
+            cache_token=cache_token,
         )
         await enqueue_job(state.redis, assignment)
         await db.record_job_queued(session, assignment)

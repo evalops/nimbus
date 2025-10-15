@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -10,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
+from ..common.security import verify_cache_token
 
 
 def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
@@ -32,11 +32,10 @@ def require_cache_token(
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing cache token")
     token = authorization.split(" ", 1)[1]
-    if token != settings.shared_secret:
+    cache_token = verify_cache_token(settings.shared_secret, token)
+    if cache_token is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid cache token")
-
-    # Prototype: treat shared secret as read/write org 0 token.
-    return CacheToken(token=token, organization_id=0, expires_at=datetime.now(timezone.utc), scope="read_write")
+    return cache_token
 
 
 def create_app() -> FastAPI:

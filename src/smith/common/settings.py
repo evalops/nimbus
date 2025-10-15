@@ -20,6 +20,7 @@ class ControlPlaneSettings(BaseSettings):
     jwt_secret: str = Field(..., env="SMITH_JWT_SECRET")
     public_base_url: HttpUrl = Field(..., env="SMITH_PUBLIC_BASE_URL")
     cache_token_ttl_seconds: int = Field(3600, env="SMITH_CACHE_TOKEN_TTL")
+    cache_shared_secret: str = Field(..., env="SMITH_CACHE_SHARED_SECRET")
 
     class Config:
         env_file = ".env"
