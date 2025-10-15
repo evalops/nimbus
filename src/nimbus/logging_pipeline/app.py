@@ -8,12 +8,13 @@ from contextlib import asynccontextmanager
 from typing import Iterable, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 import structlog
 from opentelemetry import trace
 
-from ..common.schemas import LogIngestRequest
+from ..common.schemas import CacheToken, LogIngestRequest
+from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.settings import LoggingIngestSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
@@ -187,17 +188,54 @@ def get_state(request: Request) -> PipelineState:
     return request.app.state.pipeline  # type: ignore[attr-defined]
 
 
+def get_settings(request: Request) -> LoggingIngestSettings:
+    return request.app.state.pipeline.settings  # type: ignore[attr-defined]
+
+
+def require_cache_token(
+    authorization: Optional[str] = Header(None),
+    settings: LoggingIngestSettings = Depends(get_settings),
+) -> CacheToken:
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing auth token")
+    token = authorization.split(" ", 1)[1]
+    cache_token = verify_cache_token(settings.shared_secret.get_secret_value(), token)
+    if cache_token is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token")
+    return cache_token
+
+
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
 
     @app.post("/logs", status_code=status.HTTP_202_ACCEPTED)
-    async def ingest_logs(request: LogIngestRequest, state: PipelineState = Depends(get_state)) -> None:
+    async def ingest_logs(
+        request: LogIngestRequest,
+        token: CacheToken = Depends(require_cache_token),
+        state: PipelineState = Depends(get_state),
+    ) -> None:
         INGEST_REQUEST_COUNTER.inc()
         with TRACER.start_as_current_span("logging_pipeline.ingest") as span:
+            # Validate push scope
+            org_id = token.organization_id
+            if not validate_cache_scope(token, "push", org_id):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks push scope")
+            
             entries = request.entries
             span.set_attribute("nimbus.ingest.count", len(entries))
+            span.set_attribute("nimbus.org_id", org_id)
             if not entries:
                 return
+            
+            # Validate all entries belong to the authenticated org
+            for entry in entries:
+                if entry.org_id is not None and entry.org_id != org_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Entry org_id mismatch: expected {org_id}, got {entry.org_id}",
+                    )
+                # Ensure org_id is set
+                entry.org_id = org_id
 
             batch: list[bytes] = []
             batch_len = 0
@@ -237,13 +275,19 @@ def create_app() -> FastAPI:
     @app.get("/logs/query", status_code=status.HTTP_200_OK)
     async def query_logs_endpoint(
         job_id: Optional[int] = None,
-        org_id: Optional[int] = None,
         repo_id: Optional[int] = None,
         contains: Optional[str] = None,
         limit: int = 100,
+        token: CacheToken = Depends(require_cache_token),
         state: PipelineState = Depends(get_state),
     ) -> list[dict[str, object]]:
+        # Validate pull scope
+        org_id = token.organization_id
+        if not validate_cache_scope(token, "pull", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks pull scope")
+        
         QUERY_REQUEST_COUNTER.inc()
+        # Always scope queries to the authenticated org - ignore client-supplied org_id
         return await state.query_logs(
             job_id=job_id, org_id=org_id, repo_id=repo_id, contains=contains, limit=limit
         )

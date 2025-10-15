@@ -132,6 +132,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
+    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
