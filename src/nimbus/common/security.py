@@ -24,9 +24,23 @@ def mint_cache_token(
     secret: str,
     organization_id: int,
     ttl_seconds: int,
-    scope: str = "read_write",
+    scope: Optional[str] = None,
 ) -> CacheToken:
+    """
+    Mint a cache token with org-scoped permissions.
+    
+    Args:
+        secret: HMAC secret
+        organization_id: Organization ID
+        ttl_seconds: TTL in seconds
+        scope: Scope string like "pull:org-123,push:org-123" or None for full access
+    """
     expires_at = _utc_now() + timedelta(seconds=ttl_seconds)
+    
+    # Default scope includes both read and write for the org
+    if scope is None:
+        scope = f"pull:org-{organization_id},push:org-{organization_id}"
+    
     payload = {
         "organization_id": organization_id,
         "expires_at": expires_at.isoformat(),
@@ -125,3 +139,32 @@ def _encode(payload: bytes, signature: str) -> str:
 def _decode_payload(encoded_payload: str) -> bytes:
     padding = "=" * (-len(encoded_payload) % 4)
     return base64.urlsafe_b64decode(encoded_payload + padding)
+
+
+def validate_cache_scope(token: CacheToken, operation: str, org_id: int) -> bool:
+    """
+    Check if a cache token has the required scope for an operation on an org.
+    
+    Args:
+        token: The cache token to check
+        operation: Either "pull" or "push"
+        org_id: The organization ID being accessed
+    
+    Returns:
+        True if the token has the required scope
+    """
+    if token.organization_id != org_id:
+        return False
+    
+    # Legacy tokens with simple scopes
+    if token.scope == "read_write":
+        return True
+    if token.scope == "read" and operation == "pull":
+        return True
+    if token.scope == "write" and operation == "push":
+        return True
+    
+    # New scoped format: "pull:org-123,push:org-456"
+    required_scope = f"{operation}:org-{org_id}"
+    scopes = [s.strip() for s in token.scope.split(",")]
+    return required_scope in scopes

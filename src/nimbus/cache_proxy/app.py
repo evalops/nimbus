@@ -18,7 +18,7 @@ from opentelemetry import trace
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
-from ..common.security import verify_cache_token
+from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 
@@ -449,19 +449,25 @@ def create_app() -> FastAPI:
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> Response:
-        if cache_token.scope not in {"write", "read_write"}:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks write scope")
+        # Validate scope for push operation
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "push", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks push scope")
+        
+        # Namespace cache key by org to prevent cross-org access
+        namespaced_key = f"org-{org_id}/{cache_key}"
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("cache_proxy.put", attributes={"nimbus.cache_key": cache_key}) as span:
-            await state.backend.write(cache_key, request.stream())
-            bytes_written = await state.backend.head(cache_key)
-            state.metrics.record_hit(cache_key, bytes_written)
+        with TRACER.start_as_current_span("cache_proxy.put", attributes={"nimbus.cache_key": namespaced_key}) as span:
+            await state.backend.write(namespaced_key, request.stream())
+            bytes_written = await state.backend.head(namespaced_key)
+            state.metrics.record_hit(namespaced_key, bytes_written)
             BYTES_WRITTEN_COUNTER.inc(bytes_written)
             HIT_COUNTER.inc()
             TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
-            state.logger.info("cache_write", cache_key=cache_key, bytes=bytes_written)
+            state.logger.info("cache_write", cache_key=namespaced_key, org_id=org_id, bytes=bytes_written)
             state.enforce_storage_limit()
             span.set_attribute("nimbus.bytes_written", bytes_written)
+            span.set_attribute("nimbus.org_id", org_id)
             return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key:path}")
@@ -470,24 +476,30 @@ def create_app() -> FastAPI:
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> Response:
-        if cache_token.scope not in {"read", "read_write"}:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
+        # Validate scope for pull operation
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "pull", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks pull scope")
+        
+        # Namespace cache key by org
+        namespaced_key = f"org-{org_id}/{cache_key}"
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("cache_proxy.head", attributes={"nimbus.cache_key": cache_key}) as span:
+        with TRACER.start_as_current_span("cache_proxy.head", attributes={"nimbus.cache_key": namespaced_key}) as span:
             try:
-                size = await state.backend.head(cache_key)
-                state.metrics.record_hit(cache_key, size)
+                size = await state.backend.head(namespaced_key)
+                state.metrics.record_hit(namespaced_key, size)
                 HIT_COUNTER.inc()
             except HTTPException as exc:
                 if exc.status_code == status.HTTP_404_NOT_FOUND:
-                    state.metrics.record_miss(cache_key)
+                    state.metrics.record_miss(namespaced_key)
                     MISS_COUNTER.inc()
-                    state.logger.info("cache_miss", cache_key=cache_key)
+                    state.logger.info("cache_miss", cache_key=namespaced_key, org_id=org_id)
                 raise
-            state.logger.info("cache_head", cache_key=cache_key, bytes=size)
+            state.logger.info("cache_head", cache_key=namespaced_key, org_id=org_id, bytes=size)
             response = Response(status_code=status.HTTP_200_OK)
             response.headers["Content-Length"] = str(size)
             span.set_attribute("nimbus.bytes", size)
+            span.set_attribute("nimbus.org_id", org_id)
             return response
 
     @app.get("/cache/{cache_key:path}")
@@ -496,23 +508,29 @@ def create_app() -> FastAPI:
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> StreamingResponse:
-        if cache_token.scope not in {"read", "read_write"}:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
+        # Validate scope for pull operation
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "pull", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks pull scope")
+        
+        # Namespace cache key by org
+        namespaced_key = f"org-{org_id}/{cache_key}"
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("cache_proxy.get", attributes={"nimbus.cache_key": cache_key}) as span:
+        with TRACER.start_as_current_span("cache_proxy.get", attributes={"nimbus.cache_key": namespaced_key}) as span:
             try:
-                data = await state.backend.read(cache_key)
-                state.metrics.record_hit(cache_key, len(data))
+                data = await state.backend.read(namespaced_key)
+                state.metrics.record_hit(namespaced_key, len(data))
                 HIT_COUNTER.inc()
                 BYTES_READ_COUNTER.inc(len(data))
             except HTTPException as exc:
                 if exc.status_code == status.HTTP_404_NOT_FOUND:
-                    state.metrics.record_miss(cache_key)
+                    state.metrics.record_miss(namespaced_key)
                     MISS_COUNTER.inc()
-                    state.logger.info("cache_miss", cache_key=cache_key)
+                    state.logger.info("cache_miss", cache_key=namespaced_key, org_id=org_id)
                 raise
-            state.logger.info("cache_hit", cache_key=cache_key, bytes=len(data))
+            state.logger.info("cache_hit", cache_key=namespaced_key, org_id=org_id, bytes=len(data))
             span.set_attribute("nimbus.bytes", len(data))
+            span.set_attribute("nimbus.org_id", org_id)
             return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
     @app.get("/status")
