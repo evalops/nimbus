@@ -14,7 +14,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
    ```bash
    pip install -e .
    ```
-2. Copy `.env.example` to `.env` and set the required environment variables for the control plane, host agent, cache proxy, and logging pipeline services.
+2. Copy `env.example` to `.env` and set the required environment variables for the control plane, host agent, cache proxy, and logging pipeline services.
 3. Launch services with UVicorn (example):
    ```bash
    uvicorn smith.control_plane.main:app --reload

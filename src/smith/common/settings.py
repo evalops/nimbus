@@ -39,6 +39,8 @@ class HostAgentSettings(BaseSettings):
     kernel_image_path: str = Field(..., env="SMITH_KERNEL_IMAGE")
     rootfs_image_path: str = Field(..., env="SMITH_ROOTFS_IMAGE")
     tap_device_prefix: str = Field("smith", env="SMITH_TAP_PREFIX")
+    job_timeout_seconds: int = Field(3600, env="SMITH_JOB_TIMEOUT")
+    vm_shutdown_grace_seconds: int = Field(30, env="SMITH_VM_SHUTDOWN_GRACE")
 
     class Config:
         env_file = ".env"
