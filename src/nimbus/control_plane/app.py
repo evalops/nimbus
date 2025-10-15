@@ -48,6 +48,7 @@ from ..common.observability import configure_logging, configure_tracing, instrum
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_requests_total", "Total control plane requests"))
 JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_job_leases_total", "Total leased jobs"))
 QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_control_plane_queue_length", "Current queue length"))
+WEBHOOK_REPLAY_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_webhook_replays_blocked", "Webhook replay attacks blocked"))
 REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
         "nimbus_control_plane_request_latency_seconds",
@@ -281,9 +282,26 @@ def create_app() -> FastAPI:
         with TRACER.start_as_current_span("control_plane.github_webhook") as span:
             raw_body = await request.body()
             signature = request.headers.get("x-hub-signature-256")
+            delivery_id = request.headers.get("x-github-delivery")
+            
+            # Verify signature
             if not _verify_github_signature(settings.github_webhook_secret.get_secret_value(), raw_body, signature):
                 LOGGER.warning("Webhook signature verification failed")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
+            
+            # Check for replay attack via delivery ID (nonce)
+            if delivery_id:
+                # Check if we've seen this delivery ID before
+                seen_key = f"webhook:seen:{delivery_id}"
+                redis_client = state.redis_client
+                is_replay = await redis_client.get(seen_key)
+                if is_replay:
+                    WEBHOOK_REPLAY_COUNTER.inc()
+                    LOGGER.warning("Webhook replay detected", delivery_id=delivery_id)
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Webhook already processed")
+                
+                # Mark as seen with 10 minute TTL
+                await redis_client.set(seen_key, "1", ex=600)
 
             try:
                 payload_dict = json.loads(raw_body.decode("utf-8"))
