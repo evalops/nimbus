@@ -111,6 +111,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 | `SMITH_CACHE_S3_CIRCUIT_FAILURES` | Failures before circuit opens. | `5` |
 | `SMITH_CACHE_S3_CIRCUIT_RESET` | Seconds before retrying after circuit opens. | `30` |
 | `SMITH_CACHE_MAX_BYTES` | Optional storage cap that triggers eviction of cold entries. | unset |
+| `SMITH_CACHE_EVICTION_BATCH` | Number of cold entries inspected per eviction pass. | `100` |
 
 ### Logging Pipeline (`smith.logging_pipeline`)
 
@@ -143,6 +144,7 @@ All services honor the following optional environment variables:
 
 - **Makefile targets** – `make bootstrap`, `make compose-up`, `make compose-down`, and `make test` wrap common commands.
 - **uv scripts** – the same workflows are exposed via `uv run bootstrap`, `uv run compose-up`, and `uv run test` for consistent cross-platform invocation.
+- **Compose helper** – call `python scripts/compose_manager.py <command>` (e.g. `up`, `down`, `logs --follow`) for consistent env-file handling and profile selection.
 
 ### Docker Compose Stack
 
@@ -156,7 +158,7 @@ All services honor the following optional environment variables:
 
 - Local filesystem (default): set `SMITH_CACHE_STORAGE_PATH` to a writable directory.
 - S3-compatible storage: configure `SMITH_CACHE_S3_ENDPOINT`, `SMITH_CACHE_S3_BUCKET`, optionally `SMITH_CACHE_S3_REGION`, and provide credentials via standard AWS environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
-- Resilience tuning: adjust `SMITH_CACHE_S3_MAX_RETRIES`, `SMITH_CACHE_S3_RETRY_BASE`, `SMITH_CACHE_S3_RETRY_MAX`, `SMITH_CACHE_S3_CIRCUIT_FAILURES`, and `SMITH_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions.
+- Resilience tuning: adjust `SMITH_CACHE_S3_MAX_RETRIES`, `SMITH_CACHE_S3_RETRY_BASE`, `SMITH_CACHE_S3_RETRY_MAX`, `SMITH_CACHE_S3_CIRCUIT_FAILURES`, and `SMITH_CACHE_S3_CIRCUIT_RESET` to control exponential backoff and circuit breaker cooldowns for S3 interactions. Pair `SMITH_CACHE_MAX_BYTES` with `SMITH_CACHE_EVICTION_BATCH` to cap disk usage and control eviction sweep size.
 
 ## Firecracker Assets
 Use the helper script to download Firecracker kernel and root filesystem images:

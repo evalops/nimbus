@@ -198,11 +198,20 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def record_request_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
         start = time.perf_counter()
+        response = None
         try:
             response = await call_next(request)
             return response
         finally:
-            REQUEST_LATENCY_HISTOGRAM.observe(time.perf_counter() - start)
+            duration = time.perf_counter() - start
+            REQUEST_LATENCY_HISTOGRAM.observe(duration)
+            LOGGER.info(
+                "http_request",
+                method=request.method,
+                path=request.url.path,
+                status=getattr(response, "status_code", None),
+                duration_ms=round(duration * 1000, 2),
+            )
 
     @app.post("/webhooks/github")
     async def github_webhook(

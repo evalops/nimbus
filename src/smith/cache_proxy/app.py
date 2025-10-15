@@ -231,7 +231,8 @@ class CacheProxyState:
         if total <= max_bytes:
             return
         self.logger.info("cache_eviction_started", total_bytes=total, max_bytes=max_bytes)
-        candidates = self.metrics.oldest_entries(limit=100)
+        batch_size = max(1, self.settings.cache_eviction_batch_size)
+        candidates = self.metrics.oldest_entries(limit=batch_size)
         for entry in candidates:
             if total <= max_bytes:
                 break
@@ -423,11 +424,21 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def record_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
         start = time.perf_counter()
+        state = request.app.state.cache_state  # type: ignore[attr-defined]
+        response = None
         try:
             response = await call_next(request)
             return response
         finally:
-            CACHE_LATENCY_HISTOGRAM.observe(time.perf_counter() - start)
+            duration = time.perf_counter() - start
+            CACHE_LATENCY_HISTOGRAM.observe(duration)
+            state.logger.info(
+                "http_request",
+                method=request.method,
+                path=request.url.path,
+                status=getattr(response, "status_code", None),
+                duration_ms=round(duration * 1000, 2),
+            )
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(

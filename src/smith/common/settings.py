@@ -91,6 +91,7 @@ class CacheProxySettings(BaseSettings):
     s3_circuit_breaker_failures: int = env_field(5, "SMITH_CACHE_S3_CIRCUIT_FAILURES")
     s3_circuit_breaker_reset_seconds: float = env_field(30.0, "SMITH_CACHE_S3_CIRCUIT_RESET")
     max_storage_bytes: Optional[int] = env_field(None, "SMITH_CACHE_MAX_BYTES")
+    cache_eviction_batch_size: int = env_field(100, "SMITH_CACHE_EVICTION_BATCH")
     log_level: str = env_field("INFO", "SMITH_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "SMITH_OTEL_EXPORTER_HEADERS")

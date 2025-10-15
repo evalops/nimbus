@@ -36,13 +36,8 @@ host = [
   "aiodocker>=0.21,<0.22"
 ]
 
-[tool.uv.scripts]
-bootstrap = "python scripts/bootstrap_compose.py --output .env --secrets-output bootstrap-tokens.json"
-compose-up = "docker compose up --build"
-compose-down = "docker compose down"
-compose-logs = "docker compose logs --follow"
-test = "pytest"
-test-integration = "pytest tests/integration"
+[tool.uv]
+scripts = { bootstrap = "python scripts/bootstrap_compose.py --output .env --secrets-output bootstrap-tokens.json", compose-up = "python scripts/compose_manager.py up", compose-down = "python scripts/compose_manager.py down", compose-logs = "python scripts/compose_manager.py logs --follow", test = "pytest", test-integration = "pytest tests/integration" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smith"]
