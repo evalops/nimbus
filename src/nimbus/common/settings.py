@@ -75,6 +75,11 @@ class HostAgentSettings(BaseSettings):
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")
+    jailer_bin_path: Optional[str] = env_field(None, "NIMBUS_JAILER_BIN")
+    jailer_uid: int = env_field(1000, "NIMBUS_JAILER_UID")
+    jailer_gid: int = env_field(1000, "NIMBUS_JAILER_GID")
+    jailer_chroot_base: Path = env_field(Path("/srv/jailer"), "NIMBUS_JAILER_CHROOT_BASE")
+    seccomp_filter_path: Optional[Path] = env_field(None, "NIMBUS_SECCOMP_FILTER")
     kernel_image_path: str = env_field(..., "NIMBUS_KERNEL_IMAGE")
     rootfs_image_path: str = env_field(..., "NIMBUS_ROOTFS_IMAGE")
     tap_device_prefix: str = env_field("nimbus", "NIMBUS_TAP_PREFIX")
