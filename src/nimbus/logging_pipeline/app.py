@@ -11,6 +11,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 import structlog
+from opentelemetry import trace
 
 from ..common.schemas import LogIngestRequest
 from ..common.settings import LoggingIngestSettings
@@ -33,6 +34,7 @@ BATCH_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 )
 
 LOGGER = structlog.get_logger("nimbus.logging_pipeline")
+TRACER = trace.get_tracer("nimbus.logging_pipeline")
 
 MAX_ROWS_PER_BATCH = 500
 MAX_BYTES_PER_BATCH = 4 * 1024 * 1024  # 4 MiB
@@ -54,26 +56,31 @@ class PipelineState:
             f"INSERT INTO {self.settings.clickhouse_database}.{self.settings.clickhouse_table} "
             "FORMAT JSONEachRow"
         )
-        start = time.perf_counter()
-        response = await self.http.post(
-            self.settings.clickhouse_url,
-            params={"query": query},
-            content=data,
-            auth=self._auth,
-        )
-        duration = time.perf_counter() - start
-        if response.is_error:
-            CLICKHOUSE_ERRORS_COUNTER.inc()
-            LOGGER.error(
-                "ClickHouse insert failed",
-                status=response.status_code,
-                body=response.text[:2000],
+        with TRACER.start_as_current_span("logging_pipeline.write_batch") as span:
+            start = time.perf_counter()
+            response = await self.http.post(
+                self.settings.clickhouse_url,
+                params={"query": query},
+                content=data,
+                auth=self._auth,
             )
+            duration = time.perf_counter() - start
+            rows_count = data.count(b"\n") + 1
+            span.set_attribute("nimbus.batch_rows", rows_count)
+            span.set_attribute("nimbus.batch_bytes", len(data))
+            if response.is_error:
+                CLICKHOUSE_ERRORS_COUNTER.inc()
+                LOGGER.error(
+                    "ClickHouse insert failed",
+                    status=response.status_code,
+                    body=response.text[:2000],
+                )
+                BATCH_LATENCY_HISTOGRAM.observe(duration)
+                raise HTTPException(status_code=502, detail="ClickHouse insert failed")
+            BATCH_COUNTER.inc()
+            BATCH_BYTES_COUNTER.inc(len(data))
             BATCH_LATENCY_HISTOGRAM.observe(duration)
-            raise HTTPException(status_code=502, detail="ClickHouse insert failed")
-        BATCH_COUNTER.inc()
-        BATCH_BYTES_COUNTER.inc(len(data))
-        BATCH_LATENCY_HISTOGRAM.observe(duration)
+            span.set_attribute("nimbus.batch_latency_seconds", duration)
 
     async def query_logs(
         self,
@@ -83,60 +90,63 @@ class PipelineState:
         limit: int = 100,
     ) -> list[dict[str, object]]:
         limit = max(1, min(limit, 500))
-        query_parts = [
-            "SELECT job_id, ts, level, message",
-            f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_table}",
-            "WHERE 1",
-        ]
-        params: dict[str, object] = {"limit": limit}
+        with TRACER.start_as_current_span("logging_pipeline.query") as span:
+            span.set_attribute("nimbus.query.limit", limit)
+            query_parts = [
+                "SELECT job_id, ts, level, message",
+                f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_table}",
+                "WHERE 1",
+            ]
+            params: dict[str, object] = {"limit": limit}
 
-        if job_id is not None:
-            query_parts.append("AND job_id = {job_id:UInt64}")
-            params["job_id"] = job_id
+            if job_id is not None:
+                query_parts.append("AND job_id = {job_id:UInt64}")
+                params["job_id"] = job_id
+                span.set_attribute("nimbus.query.job_id", job_id)
 
-        if contains:
-            contains = contains.strip()
             if contains:
-                query_parts.append("AND message ILIKE {contains:String}")
-                params["contains"] = f"%{contains}%"
+                contains = contains.strip()
+                if contains:
+                    query_parts.append("AND message ILIKE {contains:String}")
+                    params["contains"] = f"%{contains}%"
+                    span.set_attribute("nimbus.query.contains", contains)
 
-        query_parts.append("ORDER BY ts DESC")
-        query_parts.append("LIMIT {limit:UInt32}")
-        query_parts.append("FORMAT JSON")
-        query = " \n".join(query_parts)
+            query_parts.append("ORDER BY ts DESC")
+            query_parts.append("LIMIT {limit:UInt32}")
+            query_parts.append("FORMAT JSON")
+            query = " \n".join(query_parts)
 
-        query_params = {"query": query}
-        for key, value in params.items():
-            query_params[f"param_{key}"] = value
+            query_params = {"query": query}
+            for key, value in params.items():
+                query_params[f"param_{key}"] = value
 
-        response = await self.http.get(
-            self.settings.clickhouse_url,
-            params=query_params,
-            auth=self._auth,
-        )
-        if response.is_error:
-            CLICKHOUSE_ERRORS_COUNTER.inc()
-            QUERY_ERRORS_COUNTER.inc()
-            LOGGER.error(
-                "ClickHouse query failed",
-                status=response.status_code,
-                body=response.text[:2000],
+            response = await self.http.get(
+                self.settings.clickhouse_url,
+                params=query_params,
+                auth=self._auth,
             )
-            raise HTTPException(status_code=502, detail="ClickHouse query failed")
+            if response.is_error:
+                CLICKHOUSE_ERRORS_COUNTER.inc()
+                QUERY_ERRORS_COUNTER.inc()
+                LOGGER.error(
+                    "ClickHouse query failed",
+                    status=response.status_code,
+                    body=response.text[:2000],
+                )
+                raise HTTPException(status_code=502, detail="ClickHouse query failed")
 
-        payload = response.json()
-        rows = payload.get("data", [])
-        result: list[dict[str, object]] = []
-        for row in rows:
-            result.append(
+            payload = response.json()
+            rows = payload.get("data", [])
+            span.set_attribute("nimbus.query.rows", len(rows))
+            return [
                 {
                     "job_id": row.get("job_id"),
                     "timestamp": row.get("ts"),
                     "level": row.get("level"),
                     "message": row.get("message"),
                 }
-            )
-        return result
+                for row in rows
+            ]
 
 
 @asynccontextmanager
@@ -169,33 +179,39 @@ def create_app() -> FastAPI:
     @app.post("/logs", status_code=status.HTTP_202_ACCEPTED)
     async def ingest_logs(request: LogIngestRequest, state: PipelineState = Depends(get_state)) -> None:
         INGEST_REQUEST_COUNTER.inc()
-        entries = request.entries
-        if not entries:
-            return
+        with TRACER.start_as_current_span("logging_pipeline.ingest") as span:
+            entries = request.entries
+            span.set_attribute("nimbus.ingest.count", len(entries))
+            if not entries:
+                return
 
-        batch: list[bytes] = []
-        batch_len = 0
+            batch: list[bytes] = []
+            batch_len = 0
+            batches_flushed = 0
 
-        for entry in entries:
-            serialized = json.dumps(entry.model_dump(mode="json"))
-            encoded = serialized.encode("utf-8")
-            if len(encoded) > MAX_BYTES_PER_BATCH:
-                DROPPED_ROWS_COUNTER.inc()
-                LOGGER.warning("Dropping oversize log entry", bytes=len(encoded))
-                continue
+            for entry in entries:
+                serialized = json.dumps(entry.model_dump(mode="json"))
+                encoded = serialized.encode("utf-8")
+                if len(encoded) > MAX_BYTES_PER_BATCH:
+                    DROPPED_ROWS_COUNTER.inc()
+                    LOGGER.warning("Dropping oversize log entry", bytes=len(encoded))
+                    continue
 
-            projected_size = batch_len + len(encoded) + (1 if batch else 0)
-            if len(batch) >= MAX_ROWS_PER_BATCH or projected_size > MAX_BYTES_PER_BATCH:
+                projected_size = batch_len + len(encoded) + (1 if batch else 0)
+                if len(batch) >= MAX_ROWS_PER_BATCH or projected_size > MAX_BYTES_PER_BATCH:
+                    await state.write_batch(batch)
+                    batches_flushed += 1
+                    batch = []
+                    batch_len = 0
+
+                batch.append(encoded)
+                batch_len += len(encoded) + (1 if len(batch) > 1 else 0)
+                INGESTED_ROWS_COUNTER.inc()
+
+            if batch:
                 await state.write_batch(batch)
-                batch = []
-                batch_len = 0
-
-            batch.append(encoded)
-            batch_len += len(encoded) + (1 if len(batch) > 1 else 0)
-            INGESTED_ROWS_COUNTER.inc()
-
-        if batch:
-            await state.write_batch(batch)
+                batches_flushed += 1
+            span.set_attribute("nimbus.ingest.batches", batches_flushed)
 
     @app.get("/status", status_code=status.HTTP_200_OK)
     async def status_probe(state: PipelineState = Depends(get_state)) -> dict[str, str]:

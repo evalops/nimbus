@@ -806,6 +806,62 @@ wheels = [
 ]
 
 [[package]]
+name = "nimbus"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "asyncpg" },
+    { name = "boto3" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-httpx" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-dotenv" },
+    { name = "redis" },
+    { name = "sqlalchemy" },
+    { name = "structlog" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+host = [
+    { name = "aiodocker" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiodocker", marker = "extra == 'host'", specifier = ">=0.21,<0.22" },
+    { name = "aiosqlite", specifier = ">=0.19,<0.20" },
+    { name = "asyncpg", specifier = ">=0.29,<0.30" },
+    { name = "boto3", specifier = ">=1.35,<1.36" },
+    { name = "fastapi", specifier = ">=0.112,<0.115" },
+    { name = "httpx", specifier = ">=0.27,<0.28" },
+    { name = "opentelemetry-api", specifier = ">=1.37,<1.38" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.37,<1.38" },
+    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.58b0,<0.59" },
+    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.58b0,<0.59" },
+    { name = "opentelemetry-sdk", specifier = ">=1.37,<1.38" },
+    { name = "pydantic", specifier = ">=2.7,<2.9" },
+    { name = "pydantic-settings", specifier = ">=2.2,<2.3" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8,<2.9" },
+    { name = "python-dotenv", specifier = ">=1.0,<1.1" },
+    { name = "redis", specifier = ">=5.0,<5.1" },
+    { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
+    { name = "structlog", specifier = ">=24.1,<26" },
+    { name = "structlog", marker = "extra == 'host'", specifier = ">=24.1,<26" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<0.32" },
+]
+provides-extras = ["host"]
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -924,6 +980,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/64/09/4f8fcab834af6b403e5e2d94bdfb2d0835ba8cd1049bcc156995f47b65fb/opentelemetry_instrumentation_fastapi-0.58b0.tar.gz", hash = "sha256:03da470d694116a0a40f4e76319e42f3ff9efc49abf804b2acc2c07f96661497", size = 24598, upload-time = "2025-09-11T11:42:35.325Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/45/fb/82de06eba54e5cb979274f073065ebc374794853502d342b5155073d1194/opentelemetry_instrumentation_fastapi-0.58b0-py3-none-any.whl", hash = "sha256:d89bfec69c9ffc5d9f3fe58655d6660a66b2bca863b9132712c06edcde68b6fa", size = 13460, upload-time = "2025-09-11T11:41:28.507Z" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-httpx"
+version = "0.58b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "opentelemetry-util-http" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/21/ba3a0106795337716e5e324f58fd3c04f5967e330c0408d0d68d873454db/opentelemetry_instrumentation_httpx-0.58b0.tar.gz", hash = "sha256:3cd747e7785a06d06bd58875e8eb11595337c98c4341f4fe176ff1f734a90db7", size = 19887, upload-time = "2025-09-11T11:42:37.926Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/e7/6dc8ee4881889993fa4a7d3da225e5eded239c975b9831eff392abd5a5e4/opentelemetry_instrumentation_httpx-0.58b0-py3-none-any.whl", hash = "sha256:d3f5a36c7fed08c245f1b06d1efd91f624caf2bff679766df80981486daaccdb", size = 15197, upload-time = "2025-09-11T11:41:32.66Z" },
 ]
 
 [[package]]
@@ -1277,60 +1349,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
-
-[[package]]
-name = "nimbus"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "asyncpg" },
-    { name = "boto3" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "opentelemetry-sdk" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt", extra = ["crypto"] },
-    { name = "python-dotenv" },
-    { name = "redis" },
-    { name = "sqlalchemy" },
-    { name = "structlog" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-host = [
-    { name = "aiodocker" },
-    { name = "structlog" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiodocker", marker = "extra == 'host'", specifier = ">=0.21,<0.22" },
-    { name = "aiosqlite", specifier = ">=0.19,<0.20" },
-    { name = "asyncpg", specifier = ">=0.29,<0.30" },
-    { name = "boto3", specifier = ">=1.35,<1.36" },
-    { name = "fastapi", specifier = ">=0.112,<0.115" },
-    { name = "httpx", specifier = ">=0.27,<0.28" },
-    { name = "opentelemetry-api", specifier = ">=1.37,<1.38" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.37,<1.38" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.58b0,<0.59" },
-    { name = "opentelemetry-sdk", specifier = ">=1.37,<1.38" },
-    { name = "pydantic", specifier = ">=2.7,<2.9" },
-    { name = "pydantic-settings", specifier = ">=2.2,<2.3" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8,<2.9" },
-    { name = "python-dotenv", specifier = ">=1.0,<1.1" },
-    { name = "redis", specifier = ">=5.0,<5.1" },
-    { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
-    { name = "structlog", specifier = ">=24.1,<26" },
-    { name = "structlog", marker = "extra == 'host'", specifier = ">=24.1,<26" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<0.32" },
-]
-provides-extras = ["host"]
 
 [[package]]
 name = "sniffio"

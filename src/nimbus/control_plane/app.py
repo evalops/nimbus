@@ -16,6 +16,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
 import structlog
+from opentelemetry import trace
 
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.schemas import (
@@ -49,6 +50,7 @@ REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 )
 
 LOGGER = structlog.get_logger("nimbus.control_plane")
+TRACER = trace.get_tracer("nimbus.control_plane")
 
 
 class RateLimiter:
@@ -82,6 +84,7 @@ class AppState:
         github_client: GitHubAppClient,
         session_factory,
         token_rate_limiter: RateLimiter,
+        admin_rate_limiter: RateLimiter,
     ) -> None:
         self.settings = settings
         self.redis = redis
@@ -89,6 +92,7 @@ class AppState:
         self.github_client = github_client
         self.session_factory = session_factory
         self.token_rate_limiter = token_rate_limiter
+        self.admin_rate_limiter = admin_rate_limiter
 
 
 def _get_state(request: Request) -> AppState:
@@ -151,6 +155,26 @@ def verify_admin_token(
     if settings.admin_allowed_subjects and subject not in settings.admin_allowed_subjects:
         LOGGER.warning("Admin token subject not allowed", subject=subject)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin subject not allowed")
+
+    state: AppState = request.app.state.container  # type: ignore[attr-defined]
+
+    if settings.require_https:
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        scheme = forwarded_proto.split(",")[0].strip() if forwarded_proto else request.url.scheme
+        if scheme.lower() != "https":
+            LOGGER.warning("Admin request rejected: insecure protocol", subject=subject, scheme=scheme)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="HTTPS required")
+
+    if settings.admin_allowed_ips:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else (request.client.host if request.client else None)
+        if client_ip not in settings.admin_allowed_ips:
+            LOGGER.warning("Admin request rejected: IP not allowed", subject=subject, client_ip=client_ip)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin source not allowed")
+
+    if settings.admin_rate_limit > 0 and not state.admin_rate_limiter.allow(subject):
+        LOGGER.warning("Admin request rate limited", subject=subject, path=request.url.path)
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Admin rate limit exceeded")
     return subject
 
 
@@ -175,6 +199,10 @@ async def lifespan(app: FastAPI):
         limit=settings.agent_token_rate_limit,
         interval=float(settings.agent_token_rate_interval_seconds),
     )
+    admin_rate_limiter = RateLimiter(
+        limit=settings.admin_rate_limit,
+        interval=float(settings.admin_rate_interval_seconds),
+    )
     container = AppState(
         settings=settings,
         redis=redis,
@@ -182,6 +210,7 @@ async def lifespan(app: FastAPI):
         github_client=github_client,
         session_factory=session_factory,
         token_rate_limiter=rate_limiter,
+        admin_rate_limiter=admin_rate_limiter,
     )
     app.state.container = container
     try:
@@ -221,52 +250,57 @@ def create_app() -> FastAPI:
         settings: ControlPlaneSettings = Depends(get_settings),
     ) -> Response:
         REQUEST_COUNTER.inc()
-        raw_body = await request.body()
-        signature = request.headers.get("x-hub-signature-256")
-        if not _verify_github_signature(settings.github_webhook_secret, raw_body, signature):
-            LOGGER.warning("Webhook signature verification failed")
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
+        with TRACER.start_as_current_span("control_plane.github_webhook") as span:
+            raw_body = await request.body()
+            signature = request.headers.get("x-hub-signature-256")
+            if not _verify_github_signature(settings.github_webhook_secret, raw_body, signature):
+                LOGGER.warning("Webhook signature verification failed")
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
 
-        try:
-            payload_dict = json.loads(raw_body.decode("utf-8"))
-        except json.JSONDecodeError as exc:  # pragma: no cover - payload dependent
-            LOGGER.error("Invalid webhook payload", error=str(exc))
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload") from exc
+            try:
+                payload_dict = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError as exc:  # pragma: no cover - payload dependent
+                LOGGER.error("Invalid webhook payload", error=str(exc))
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload") from exc
 
-        payload = WebhookWorkflowJobEvent.model_validate(payload_dict)
-        if payload.action != "queued":
-            LOGGER.debug("Ignoring webhook action", action=payload.action)
+            payload = WebhookWorkflowJobEvent.model_validate(payload_dict)
+            span.set_attribute("nimbus.webhook.action", payload.action)
+            if payload.action != "queued":
+                LOGGER.debug("Ignoring webhook action", action=payload.action)
+                return Response(status_code=status.HTTP_202_ACCEPTED)
+
+            repo = payload.repository
+            span.set_attribute("nimbus.repo", repo.full_name)
+            LOGGER.info(
+                "Enqueuing job",
+                job_id=payload.workflow_job.id,
+                repo=repo.full_name,
+                labels=payload.workflow_job.labels,
+            )
+
+            runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
+            cache_token = mint_cache_token(
+                secret=settings.cache_shared_secret,
+                organization_id=repo.id,
+                ttl_seconds=settings.cache_token_ttl_seconds,
+            )
+            assignment = JobAssignment(
+                job_id=payload.workflow_job.id,
+                run_id=payload.workflow_job.run_id,
+                run_attempt=payload.workflow_job.run_attempt,
+                repository=repo,
+                labels=payload.workflow_job.labels,
+                runner_registration=runner_token,
+                cache_token=cache_token,
+            )
+            await enqueue_job(state.redis, assignment)
+            await db.record_job_queued(session, assignment)
+            await session.commit()
+            queue_length = await state.redis.llen(QUEUE_KEY)
+            QUEUE_LENGTH_GAUGE.set(queue_length)
+            span.set_attribute("nimbus.queue_length", queue_length)
+            span.set_attribute("nimbus.job_id", str(payload.workflow_job.id))
             return Response(status_code=status.HTTP_202_ACCEPTED)
-
-        repo = payload.repository
-        LOGGER.info(
-            "Enqueuing job",
-            job_id=payload.workflow_job.id,
-            repo=repo.full_name,
-            labels=payload.workflow_job.labels,
-        )
-
-        runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
-        cache_token = mint_cache_token(
-            secret=settings.cache_shared_secret,
-            organization_id=repo.id,
-            ttl_seconds=settings.cache_token_ttl_seconds,
-        )
-        assignment = JobAssignment(
-            job_id=payload.workflow_job.id,
-            run_id=payload.workflow_job.run_id,
-            run_attempt=payload.workflow_job.run_attempt,
-            repository=repo,
-            labels=payload.workflow_job.labels,
-            runner_registration=runner_token,
-            cache_token=cache_token,
-        )
-        await enqueue_job(state.redis, assignment)
-        await db.record_job_queued(session, assignment)
-        await session.commit()
-        queue_length = await state.redis.llen(QUEUE_KEY)
-        QUEUE_LENGTH_GAUGE.set(queue_length)
-        return Response(status_code=status.HTTP_202_ACCEPTED)
 
     @app.post("/api/jobs/lease", response_model=JobLeaseResponse)
     async def lease_job_endpoint(
@@ -276,26 +310,30 @@ def create_app() -> FastAPI:
         session: AsyncSession = Depends(get_session),
     ) -> JobLeaseResponse:
         REQUEST_COUNTER.inc()
-        if token_agent_id != request_body.agent_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
-        assignment = await lease_job(redis_client)
-        if assignment is None:
-            return JobLeaseResponse(job=None, backoff_seconds=5)
-        LOGGER.info(
-            "Leased job",
-            job_id=assignment.job_id,
-            agent_id=request_body.agent_id,
-        )
-        JOB_LEASE_COUNTER.inc()
-        queue_length = await redis_client.llen(QUEUE_KEY)
-        QUEUE_LENGTH_GAUGE.set(queue_length)
-        await db.mark_job_leased(
-            session,
-            job_id=assignment.job_id,
-            agent_id=request_body.agent_id,
-        )
-        await session.commit()
-        return JobLeaseResponse(job=assignment, backoff_seconds=0)
+        with TRACER.start_as_current_span("control_plane.lease_job") as span:
+            span.set_attribute("nimbus.agent_id", request_body.agent_id)
+            if token_agent_id != request_body.agent_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
+            assignment = await lease_job(redis_client)
+            if assignment is None:
+                return JobLeaseResponse(job=None, backoff_seconds=5)
+            span.set_attribute("nimbus.job_id", str(assignment.job_id))
+            LOGGER.info(
+                "Leased job",
+                job_id=assignment.job_id,
+                agent_id=request_body.agent_id,
+            )
+            JOB_LEASE_COUNTER.inc()
+            queue_length = await redis_client.llen(QUEUE_KEY)
+            QUEUE_LENGTH_GAUGE.set(queue_length)
+            span.set_attribute("nimbus.queue_length", queue_length)
+            await db.mark_job_leased(
+                session,
+                job_id=assignment.job_id,
+                agent_id=request_body.agent_id,
+            )
+            await session.commit()
+            return JobLeaseResponse(job=assignment, backoff_seconds=0)
 
     @app.post("/api/jobs/status", status_code=status.HTTP_202_ACCEPTED)
     async def job_status(
@@ -304,16 +342,20 @@ def create_app() -> FastAPI:
         session: AsyncSession = Depends(get_session),
     ) -> None:
         REQUEST_COUNTER.inc()
-        if token_agent_id != status_update.agent_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
-        LOGGER.info(
-            "Job status update",
-            job_id=status_update.job_id,
-            agent_id=status_update.agent_id,
-            status=status_update.status,
-        )
-        await db.record_status_update(session, status_update)
-        await session.commit()
+        with TRACER.start_as_current_span("control_plane.job_status") as span:
+            span.set_attribute("nimbus.agent_id", status_update.agent_id)
+            span.set_attribute("nimbus.job_id", str(status_update.job_id))
+            span.set_attribute("nimbus.job_status", status_update.status)
+            if token_agent_id != status_update.agent_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent mismatch")
+            LOGGER.info(
+                "Job status update",
+                job_id=status_update.job_id,
+                agent_id=status_update.agent_id,
+                status=status_update.status,
+            )
+            await db.record_status_update(session, status_update)
+            await session.commit()
 
     @app.get("/api/jobs/recent", response_model=list[JobRecord])
     async def recent_jobs(
@@ -348,45 +390,50 @@ def create_app() -> FastAPI:
         settings: ControlPlaneSettings = Depends(get_settings),
     ) -> AgentTokenResponse:
         REQUEST_COUNTER.inc()
-        if not state.token_rate_limiter.allow(admin_subject):
-            LOGGER.warning(
-                "Agent token request rate limited",
-                agent_id=request_body.agent_id,
-                subject=admin_subject,
-            )
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Agent token rotation rate limited")
-        async with state.session_factory() as session:  # type: ignore[call-arg]
-            version = await db.rotate_agent_token(session, request_body.agent_id, request_body.ttl_seconds)
-            await db.record_agent_token_audit(
-                session,
-                agent_id=request_body.agent_id,
-                rotated_by=admin_subject,
-                token_version=version,
-                ttl_seconds=request_body.ttl_seconds,
-            )
-            await session.commit()
+        with TRACER.start_as_current_span("control_plane.mint_agent_token") as span:
+            span.set_attribute("nimbus.agent_id", request_body.agent_id)
+            span.set_attribute("nimbus.admin_subject", admin_subject)
+            span.set_attribute("nimbus.ttl_seconds", request_body.ttl_seconds)
+            if not state.token_rate_limiter.allow(admin_subject):
+                LOGGER.warning(
+                    "Agent token request rate limited",
+                    agent_id=request_body.agent_id,
+                    subject=admin_subject,
+                )
+                raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Agent token rotation rate limited")
+            async with state.session_factory() as session:  # type: ignore[call-arg]
+                version = await db.rotate_agent_token(session, request_body.agent_id, request_body.ttl_seconds)
+                await db.record_agent_token_audit(
+                    session,
+                    agent_id=request_body.agent_id,
+                    rotated_by=admin_subject,
+                    token_version=version,
+                    ttl_seconds=request_body.ttl_seconds,
+                )
+                await session.commit()
 
-        token = mint_agent_token(
-            agent_id=request_body.agent_id,
-            secret=settings.agent_token_secret,
-            ttl_seconds=request_body.ttl_seconds,
-            version=version,
-        )
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=request_body.ttl_seconds)
-        LOGGER.info(
-            "Minted agent token",
-            agent_id=request_body.agent_id,
-            version=version,
-            ttl=request_body.ttl_seconds,
-            rotated_by=admin_subject,
-        )
-        return AgentTokenResponse(
-            agent_id=request_body.agent_id,
-            token=token,
-            expires_at=expires_at,
-            ttl_seconds=request_body.ttl_seconds,
-            version=version,
-        )
+            token = mint_agent_token(
+                agent_id=request_body.agent_id,
+                secret=settings.agent_token_secret,
+                ttl_seconds=request_body.ttl_seconds,
+                version=version,
+            )
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=request_body.ttl_seconds)
+            LOGGER.info(
+                "Minted agent token",
+                agent_id=request_body.agent_id,
+                version=version,
+                ttl=request_body.ttl_seconds,
+                rotated_by=admin_subject,
+            )
+            span.set_attribute("nimbus.token_version", version)
+            return AgentTokenResponse(
+                agent_id=request_body.agent_id,
+                token=token,
+                expires_at=expires_at,
+                ttl_seconds=request_body.ttl_seconds,
+                version=version,
+            )
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint() -> PlainTextResponse:

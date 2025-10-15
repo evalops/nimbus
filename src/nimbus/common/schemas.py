@@ -1,4 +1,4 @@
-"""Shared data models for the simplified Blacknimbus-like system."""
+"""Shared data models for the simplified Blacksmith-inspired system."""
 
 from __future__ import annotations
 

@@ -9,11 +9,13 @@ from typing import Optional
 
 import httpx
 import jwt
+from opentelemetry import trace
 
 from ..common.schemas import RunnerRegistrationToken
 from ..common.settings import ControlPlaneSettings
 
 GITHUB_API_BASE = "https://api.github.com"
+TRACER = trace.get_tracer("nimbus.github_client")
 
 
 def _utc_now() -> datetime:
@@ -53,22 +55,23 @@ class GitHubAppClient:
         self._cached_installation_token: Optional[InstallationToken] = None
 
     async def _exchange_installation_token(self) -> InstallationToken:
-        jwt_token = build_app_jwt(self._settings)
-        url = (
-            f"{GITHUB_API_BASE}/app/installations/"
-            f"{self._settings.github_app_installation_id}/access_tokens"
-        )
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github+json",
-        }
-        response = await self._http.post(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
-        token = InstallationToken(token=data["token"], expires_at=expires_at)
-        self._cached_installation_token = token
-        return token
+        with TRACER.start_as_current_span("github.exchange_installation_token"):
+            jwt_token = build_app_jwt(self._settings)
+            url = (
+                f"{GITHUB_API_BASE}/app/installations/"
+                f"{self._settings.github_app_installation_id}/access_tokens"
+            )
+            headers = {
+                "Authorization": f"Bearer {jwt_token}",
+                "Accept": "application/vnd.github+json",
+            }
+            response = await self._http.post(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+            token = InstallationToken(token=data["token"], expires_at=expires_at)
+            self._cached_installation_token = token
+            return token
 
     async def _get_installation_token(self) -> InstallationToken:
         if self._cached_installation_token and self._cached_installation_token.is_valid:
@@ -85,10 +88,11 @@ class GitHubAppClient:
     async def create_runner_registration_token(
         self, repo_full_name: str
     ) -> RunnerRegistrationToken:
-        url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/actions/runners/registration-token"
-        headers = await self._installation_headers()
-        response = await self._http.post(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
-        return RunnerRegistrationToken(token=data["token"], expires_at=expires_at)
+        with TRACER.start_as_current_span("github.create_runner_token", attributes={"nimbus.repo": repo_full_name}):
+            url = f"{GITHUB_API_BASE}/repos/{repo_full_name}/actions/runners/registration-token"
+            headers = await self._installation_headers()
+            response = await self._http.post(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+            return RunnerRegistrationToken(token=data["token"], expires_at=expires_at)

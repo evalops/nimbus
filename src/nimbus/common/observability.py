@@ -10,6 +10,7 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
@@ -20,6 +21,7 @@ from structlog.contextvars import bind_contextvars
 
 _logging_configured = False
 _tracer_configured = False
+_httpx_instrumented = False
 
 
 def _log_level(level: str | int | None) -> int:
@@ -107,6 +109,11 @@ def configure_tracing(
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
     _tracer_configured = True
+
+    global _httpx_instrumented
+    if not _httpx_instrumented:
+        HTTPXClientInstrumentor().instrument()
+        _httpx_instrumented = True
 
 
 def instrument_fastapi_app(app) -> None:

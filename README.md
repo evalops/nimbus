@@ -1,6 +1,6 @@
 # Nimbus
 
-Nimbus is an experimental platform that mirrors key ideas from Blacknimbus.sh: an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation.
+Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](https://blacksmith.sh): an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation while crediting the original Blacksmith team for the inspiration.
 
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.

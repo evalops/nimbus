@@ -14,6 +14,7 @@ import boto3
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 import structlog
+from opentelemetry import trace
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
@@ -268,6 +269,7 @@ CACHE_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
         description="Cache proxy request latency",
     )
 )
+TRACER = trace.get_tracer("nimbus.cache_proxy")
 
 
 class CacheMetrics:
@@ -450,15 +452,17 @@ def create_app() -> FastAPI:
         if cache_token.scope not in {"write", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks write scope")
         REQUEST_COUNTER.inc()
-        await state.backend.write(cache_key, request.stream())
-        bytes_written = await state.backend.head(cache_key)
-        state.metrics.record_hit(cache_key, bytes_written)
-        BYTES_WRITTEN_COUNTER.inc(bytes_written)
-        HIT_COUNTER.inc()
-        TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
-        state.logger.info("cache_write", cache_key=cache_key, bytes=bytes_written)
-        state.enforce_storage_limit()
-        return Response(status_code=status.HTTP_201_CREATED)
+        with TRACER.start_as_current_span("cache_proxy.put", attributes={"nimbus.cache_key": cache_key}) as span:
+            await state.backend.write(cache_key, request.stream())
+            bytes_written = await state.backend.head(cache_key)
+            state.metrics.record_hit(cache_key, bytes_written)
+            BYTES_WRITTEN_COUNTER.inc(bytes_written)
+            HIT_COUNTER.inc()
+            TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
+            state.logger.info("cache_write", cache_key=cache_key, bytes=bytes_written)
+            state.enforce_storage_limit()
+            span.set_attribute("nimbus.bytes_written", bytes_written)
+            return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key:path}")
     async def head_cache(
@@ -469,20 +473,22 @@ def create_app() -> FastAPI:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
         REQUEST_COUNTER.inc()
-        try:
-            size = await state.backend.head(cache_key)
-            state.metrics.record_hit(cache_key, size)
-            HIT_COUNTER.inc()
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_404_NOT_FOUND:
-                state.metrics.record_miss(cache_key)
-                MISS_COUNTER.inc()
-                state.logger.info("cache_miss", cache_key=cache_key)
-            raise
-        state.logger.info("cache_head", cache_key=cache_key, bytes=size)
-        response = Response(status_code=status.HTTP_200_OK)
-        response.headers["Content-Length"] = str(size)
-        return response
+        with TRACER.start_as_current_span("cache_proxy.head", attributes={"nimbus.cache_key": cache_key}) as span:
+            try:
+                size = await state.backend.head(cache_key)
+                state.metrics.record_hit(cache_key, size)
+                HIT_COUNTER.inc()
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    state.metrics.record_miss(cache_key)
+                    MISS_COUNTER.inc()
+                    state.logger.info("cache_miss", cache_key=cache_key)
+                raise
+            state.logger.info("cache_head", cache_key=cache_key, bytes=size)
+            response = Response(status_code=status.HTTP_200_OK)
+            response.headers["Content-Length"] = str(size)
+            span.set_attribute("nimbus.bytes", size)
+            return response
 
     @app.get("/cache/{cache_key:path}")
     async def get_cache(
@@ -493,32 +499,35 @@ def create_app() -> FastAPI:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
         REQUEST_COUNTER.inc()
-        try:
-            data = await state.backend.read(cache_key)
-            state.metrics.record_hit(cache_key, len(data))
-            HIT_COUNTER.inc()
-            BYTES_READ_COUNTER.inc(len(data))
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_404_NOT_FOUND:
-                state.metrics.record_miss(cache_key)
-                MISS_COUNTER.inc()
-                state.logger.info("cache_miss", cache_key=cache_key)
-            raise
-        state.logger.info("cache_hit", cache_key=cache_key, bytes=len(data))
-        return StreamingResponse(iter([data]), media_type="application/octet-stream")
+        with TRACER.start_as_current_span("cache_proxy.get", attributes={"nimbus.cache_key": cache_key}) as span:
+            try:
+                data = await state.backend.read(cache_key)
+                state.metrics.record_hit(cache_key, len(data))
+                HIT_COUNTER.inc()
+                BYTES_READ_COUNTER.inc(len(data))
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    state.metrics.record_miss(cache_key)
+                    MISS_COUNTER.inc()
+                    state.logger.info("cache_miss", cache_key=cache_key)
+                raise
+            state.logger.info("cache_hit", cache_key=cache_key, bytes=len(data))
+            span.set_attribute("nimbus.bytes", len(data))
+            return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
     @app.get("/status")
     async def status_probe(state: CacheProxyState = Depends(get_state)) -> JSONResponse:
-        status_payload = state.backend.status()
-        status_payload.update(
-            {
-                "total_entries": state.metrics.total_entries(),
-                "top_entries": state.metrics.top_entries(),
-                "max_storage_bytes": state.settings.max_storage_bytes,
-            }
-        )
-        TOTAL_ENTRIES_GAUGE.set(float(status_payload["total_entries"]))
-        return JSONResponse(status_payload)
+        with TRACER.start_as_current_span("cache_proxy.status"):
+            status_payload = state.backend.status()
+            status_payload.update(
+                {
+                    "total_entries": state.metrics.total_entries(),
+                    "top_entries": state.metrics.top_entries(),
+                    "max_storage_bytes": state.settings.max_storage_bytes,
+                }
+            )
+            TOTAL_ENTRIES_GAUGE.set(float(status_payload["total_entries"]))
+            return JSONResponse(status_payload)
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics_endpoint(state: CacheProxyState = Depends(get_state)) -> PlainTextResponse:

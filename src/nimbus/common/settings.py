@@ -32,6 +32,10 @@ class ControlPlaneSettings(BaseSettings):
     agent_token_rate_limit: int = env_field(15, "NIMBUS_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "NIMBUS_AGENT_TOKEN_RATE_INTERVAL")
     admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_SUBJECTS")
+    admin_allowed_ips: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_IPS")
+    admin_rate_limit: int = env_field(60, "NIMBUS_ADMIN_RATE_LIMIT")
+    admin_rate_interval_seconds: int = env_field(60, "NIMBUS_ADMIN_RATE_INTERVAL")
+    require_https: bool = env_field(False, "NIMBUS_REQUIRE_HTTPS")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
@@ -40,6 +44,13 @@ class ControlPlaneSettings(BaseSettings):
     @field_validator("admin_allowed_subjects", mode="before")
     @classmethod
     def _split_admin_subjects(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("admin_allowed_ips", mode="before")
+    @classmethod
+    def _split_admin_ips(cls, value):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
