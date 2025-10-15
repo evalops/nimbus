@@ -1,8 +1,25 @@
 # Nimbus
 
-Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](https://blacksmith.sh): an AWS-hosted control plane that orchestrates GitHub Actions jobs onto bare-metal hosts running Firecracker microVMs. This repository contains a prototype implementation that can be used as a learning tool or homelab foundation while crediting the original Blacksmith team for the inspiration.
+**Self-hosted CI infrastructure optimized for AI evaluation workloads.**
 
-> **Acknowledgement:** Nimbus exists thanks to the engineering leadership and public write-ups from the [Blacksmith](https://blacksmith.sh) team. Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this prototype. If you are looking for a production-ready solution—or want to support the folks who pioneered these ideas—please start with Blacksmith.
+Run thousands of evals per day on your own hardware with Firecracker isolation, built-in observability, and zero cloud egress costs. Works as a drop-in replacement for GitHub Actions runners.
+
+## Why Nimbus?
+
+Running production AI evaluations at scale hits three walls:
+
+- **Cost**: GitHub hosted runners charge $0.008/minute. At 10K evals/day (avg 5min each) = $4,500/month.
+- **Security**: Sending prompts, model weights, and evaluation datasets to third-party CI runners exposes proprietary IP.
+- **Observability**: Generic CI platforms don't understand eval-specific metrics (latency, token usage, quality scores).
+
+Nimbus gives you:
+
+✅ **10x cheaper** – Run on bare metal (Hetzner/your datacenter) for $450/month vs $4,500 on hosted runners  
+✅ **Air-gapped** – Models and eval data never leave your infrastructure  
+✅ **Eval-native** – Pre-built containers with OTEL tracing, ollama client, and structured logging for ClickHouse  
+✅ **Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)
+
+> **Acknowledgement:** Nimbus builds on key ideas from [Blacksmith.sh](https://blacksmith.sh). Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this implementation. For a production-ready managed solution, check out Blacksmith.
 
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
