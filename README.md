@@ -14,6 +14,34 @@ Nimbus is an experimental platform that mirrors key ideas from [Blacksmith.sh](h
 - **Docker Layer Cache Registry:** Implements a minimal OCI-compatible blob/manifest store to accelerate container builds.
 - **Web Dashboard:** React + Vite single-page app for monitoring jobs, agents, logs, and configuration status.
 
+## Pre-built Job Runners
+
+Nimbus provides container images for common use cases. These images can be used directly in job submissions without needing to build your own.
+
+### AI Evaluation Runner (`nimbus/ai-eval-runner`)
+
+A container for running AI model evaluations with built-in observability.
+
+- **Contents:** Node.js 20, `eval2otel`, and the `ollama` client.
+- **Purpose:** Use this runner to execute evaluation scripts that call an AI model, process the results with `eval2otel`, and automatically export traces and metrics to the OpenTelemetry endpoint configured in your Nimbus environment.
+
+**Example Usage:**
+
+To use this runner, reference the `nimbus/ai-eval-runner` image when submitting a job. Your job's command would be the Node.js script to execute.
+
+A hypothetical job submission might look like this:
+
+```bash
+nimbus-cli jobs submit \
+  --image nimbus/ai-eval-runner:latest \
+  --cmd "node /path/to/your/eval_script.js" \
+  --env OTEL_SERVICE_NAME=my-text-generation-eval \
+  --env NIMBUS_OTEL_EXPORTER_ENDPOINT=http://your-otel-collector:4317 \
+  --env OLLAMA_HOST=http://your-ollama-host:11434 \
+  --env MODEL=gemma:2b \
+  --env PROMPT="What is the airspeed velocity of an unladen swallow?"
+```
+
 ## Using Nimbus with GitHub Actions
 
 Once your Nimbus infrastructure is configured and running, you can use it to execute GitHub Actions workflows by specifying `runs-on: nimbus` in your workflow files:

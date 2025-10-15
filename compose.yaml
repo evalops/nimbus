@@ -131,6 +131,11 @@ services:
       - agent
     privileged: true
 
+  ai-eval-runner:
+    build:
+      context: ./containers/ai-eval-runner
+    image: nimbus/ai-eval-runner
+
 volumes:
   clickhouse-data:
   control-data:

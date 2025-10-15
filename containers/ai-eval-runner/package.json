@@ -1,0 +1,16 @@
+{
+  "name": "nimbus-ai-eval-runner",
+  "version": "1.0.0",
+  "description": "A pre-built container for running AI evaluation jobs on the Nimbus platform with Eval2Otel.",
+  "main": "run_eval.js",
+  "private": true,
+  "scripts": {
+    "start": "node run_eval.js"
+  },
+  "dependencies": {
+    "eval2otel": "^0.1.0",
+    "ollama": "^0.5.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
