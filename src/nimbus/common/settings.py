@@ -130,3 +130,18 @@ class LoggingIngestSettings(BaseSettings):
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
 
+
+class DockerCacheSettings(BaseSettings):
+    """Configuration for the Docker layer cache registry service."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    storage_path: Path = env_field(Path("./docker-cache"), "NIMBUS_DOCKER_CACHE_STORAGE_PATH")
+    uploads_path: Path = env_field(Path("./docker-cache/uploads"), "NIMBUS_DOCKER_CACHE_UPLOAD_PATH")
+    metadata_path: Path = env_field(Path("./docker-cache/metadata.db"), "NIMBUS_DOCKER_CACHE_DB_PATH")
+    shared_secret: str = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_CACHE_MAX_BYTES")
+    log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
+    otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
+    otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
+    otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+
