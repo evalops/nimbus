@@ -11,11 +11,12 @@ from typing import AsyncIterator, Optional
 
 import boto3
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
 from ..common.security import verify_cache_token
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 
 
 def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
@@ -137,6 +138,14 @@ class CacheProxyState:
         self.settings = settings
         self.backend = backend
         self.metrics = metrics
+
+
+REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_requests_total", "Total cache proxy requests"))
+HIT_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_hits_total", "Cache hits"))
+MISS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_misses_total", "Cache misses"))
+BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_read_total", "Bytes served from cache"))
+BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_cache_bytes_written_total", "Bytes written to cache"))
+TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("smith_cache_entries", "Number of cache entries"))
 
 
 class CacheMetrics:
@@ -264,9 +273,13 @@ def create_app() -> FastAPI:
     ) -> Response:
         if cache_token.scope not in {"write", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks write scope")
+        REQUEST_COUNTER.inc()
         await state.backend.write(cache_key, request.stream())
         bytes_written = await state.backend.head(cache_key)
         state.metrics.record_hit(cache_key, bytes_written)
+        BYTES_WRITTEN_COUNTER.inc(bytes_written)
+        HIT_COUNTER.inc()
+        TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
         return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key}")
@@ -277,12 +290,15 @@ def create_app() -> FastAPI:
     ) -> Response:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
+        REQUEST_COUNTER.inc()
         try:
             size = await state.backend.head(cache_key)
             state.metrics.record_hit(cache_key, size)
+            HIT_COUNTER.inc()
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 state.metrics.record_miss(cache_key)
+                MISS_COUNTER.inc()
             raise
         response = Response(status_code=status.HTTP_200_OK)
         response.headers["Content-Length"] = str(size)
@@ -296,12 +312,16 @@ def create_app() -> FastAPI:
     ) -> StreamingResponse:
         if cache_token.scope not in {"read", "read_write"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks read scope")
+        REQUEST_COUNTER.inc()
         try:
             data = await state.backend.read(cache_key)
             state.metrics.record_hit(cache_key, len(data))
+            HIT_COUNTER.inc()
+            BYTES_READ_COUNTER.inc(len(data))
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 state.metrics.record_miss(cache_key)
+                MISS_COUNTER.inc()
             raise
         return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
@@ -314,8 +334,12 @@ def create_app() -> FastAPI:
                 "top_entries": state.metrics.top_entries(),
             }
         )
+        TOTAL_ENTRIES_GAUGE.set(float(status_payload["total_entries"]))
         return JSONResponse(status_payload)
 
-    return app
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics_endpoint(state: CacheProxyState = Depends(get_state)) -> PlainTextResponse:
+        TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
+        return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     return app

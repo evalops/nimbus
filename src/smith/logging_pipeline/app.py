@@ -9,9 +9,19 @@ from typing import Iterable, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 
 from ..common.schemas import LogIngestRequest
 from ..common.settings import LoggingIngestSettings
+from ..common.metrics import GLOBAL_REGISTRY, Counter
+INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_ingest_requests_total", "Total log ingest requests"))
+INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
+DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_rows_dropped_total", "Log rows dropped due to size limits"))
+BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_batches_total", "Batches flushed to ClickHouse"))
+BATCH_BYTES_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_batch_bytes_total", "Bytes sent to ClickHouse"))
+CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_clickhouse_errors_total", "ClickHouse request errors"))
+QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_requests_total", "Log query requests"))
+QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_logging_query_errors_total", "Log query failures"))
 
 LOGGER = logging.getLogger("smith.logging_pipeline")
 
@@ -42,6 +52,7 @@ class PipelineState:
             auth=self._auth,
         )
         if response.is_error:
+            CLICKHOUSE_ERRORS_COUNTER.inc()
             LOGGER.error(
                 "ClickHouse insert failed",
                 extra={
@@ -50,6 +61,8 @@ class PipelineState:
                 },
             )
             raise HTTPException(status_code=502, detail="ClickHouse insert failed")
+        BATCH_COUNTER.inc()
+        BATCH_BYTES_COUNTER.inc(len(data))
 
     async def query_logs(
         self,
@@ -91,6 +104,8 @@ class PipelineState:
             auth=self._auth,
         )
         if response.is_error:
+            CLICKHOUSE_ERRORS_COUNTER.inc()
+            QUERY_ERRORS_COUNTER.inc()
             LOGGER.error(
                 "ClickHouse query failed",
                 extra={"status": response.status_code, "body": response.text[:2000]},
@@ -133,6 +148,7 @@ def create_app() -> FastAPI:
 
     @app.post("/logs", status_code=status.HTTP_202_ACCEPTED)
     async def ingest_logs(request: LogIngestRequest, state: PipelineState = Depends(get_state)) -> None:
+        INGEST_REQUEST_COUNTER.inc()
         entries = request.entries
         if not entries:
             return
@@ -144,6 +160,7 @@ def create_app() -> FastAPI:
             serialized = json.dumps(entry.model_dump(mode="json"))
             encoded = serialized.encode("utf-8")
             if len(encoded) > MAX_BYTES_PER_BATCH:
+                DROPPED_ROWS_COUNTER.inc()
                 LOGGER.warning("Dropping oversize log entry", extra={"bytes": len(encoded)})
                 continue
 
@@ -155,6 +172,7 @@ def create_app() -> FastAPI:
 
             batch.append(encoded)
             batch_len += len(encoded) + (1 if len(batch) > 1 else 0)
+            INGESTED_ROWS_COUNTER.inc()
 
         if batch:
             await state.write_batch(batch)
@@ -173,6 +191,11 @@ def create_app() -> FastAPI:
         limit: int = 100,
         state: PipelineState = Depends(get_state),
     ) -> list[dict[str, object]]:
+        QUERY_REQUEST_COUNTER.inc()
         return await state.query_logs(job_id=job_id, contains=contains, limit=limit)
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics_endpoint() -> PlainTextResponse:
+        return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     return app

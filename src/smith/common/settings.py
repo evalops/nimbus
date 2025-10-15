@@ -39,6 +39,8 @@ class HostAgentSettings(BaseSettings):
     cache_token_secret: Optional[str] = Field(None, env="SMITH_CACHE_TOKEN_SECRET")
     cache_token_value: Optional[str] = Field(None, env="SMITH_CACHE_TOKEN_VALUE")
     log_sink_url: Optional[HttpUrl] = Field(None, env="SMITH_LOG_SINK_URL")
+    metrics_host: str = Field("0.0.0.0", env="SMITH_AGENT_METRICS_HOST")
+    metrics_port: int = Field(9460, env="SMITH_AGENT_METRICS_PORT")
 
     firecracker_bin_path: str = Field("/usr/local/bin/firecracker", env="SMITH_FC_BIN")
     kernel_image_path: str = Field(..., env="SMITH_KERNEL_IMAGE")

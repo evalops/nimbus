@@ -13,9 +13,20 @@ import httpx
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
 from ..common.security import verify_cache_token
+from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult
 
 LOGGER = logging.getLogger("smith.host_agent")
+
+LEASE_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_requests_total", "Lease requests issued to control plane"))
+LEASE_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_lease_errors_total", "Lease request errors"))
+LEASE_EMPTY_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_empty_leases_total", "Lease responses with no work"))
+JOB_STARTED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_started_total", "Jobs started"))
+JOB_SUCCEEDED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_succeeded_total", "Jobs succeeded"))
+JOB_FAILED_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_jobs_failed_total", "Jobs failed"))
+LOG_BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_batches_total", "Log batches emitted"))
+LOG_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_rows_total", "Log rows emitted"))
+LOG_ERROR_COUNTER = GLOBAL_REGISTRY.register(Counter("smith_host_agent_log_errors_total", "Log emission errors"))
 
 
 class HostAgent:
@@ -30,18 +41,26 @@ class HostAgent:
         if settings.log_sink_url:
             self._log_http = httpx.AsyncClient(timeout=timeout)
         self._running = False
+        self._metrics_server: Optional[asyncio.AbstractServer] = None
+        self._active_jobs = 0
+        self._active_jobs_gauge = GLOBAL_REGISTRY.register(
+            Gauge("smith_host_agent_active_jobs", "Jobs currently being processed", supplier=lambda: float(self._active_jobs))
+        )
 
     async def run(self) -> None:
         self._running = True
+        await self._ensure_metrics_server()
         while self._running:
             try:
                 response = await self._lease_job()
             except httpx.HTTPError as exc:
                 LOGGER.error("Lease request failed", exc_info=exc)
+                LEASE_ERROR_COUNTER.inc()
                 await asyncio.sleep(5)
                 continue
 
             if response.job is None:
+                LEASE_EMPTY_COUNTER.inc()
                 await asyncio.sleep(response.backoff_seconds)
                 continue
 
@@ -53,6 +72,10 @@ class HostAgent:
         await self._http.aclose()
         if self._log_http:
             await self._log_http.aclose()
+        if self._metrics_server:
+            self._metrics_server.close()
+            await self._metrics_server.wait_closed()
+            self._metrics_server = None
 
     async def _lease_job(self) -> JobLeaseResponse:
         request = JobLeaseRequest(
@@ -60,6 +83,7 @@ class HostAgent:
             agent_version="0.1.0",
             capabilities=["firecracker"],
         )
+        LEASE_REQUEST_COUNTER.inc()
         resp = await self._http.post(
             f"{self._settings.control_plane_base_url}/api/jobs/lease",
             headers=self._auth_headers(),
@@ -70,6 +94,8 @@ class HostAgent:
 
     async def _process_job(self, assignment: JobAssignment) -> None:
         LOGGER.info("Starting job", extra={"job_id": assignment.job_id})
+        JOB_STARTED_COUNTER.inc()
+        self._active_jobs += 1
         await self._submit_status(assignment, "starting")
 
         if (
@@ -90,16 +116,21 @@ class HostAgent:
             await self._emit_logs(assignment, exc.result)
             LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
             await self._submit_status(assignment, "failed", message=str(exc))
+            JOB_FAILED_COUNTER.inc()
             return
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Job failed", extra={"job_id": assignment.job_id})
             await self._emit_logs(assignment, None)
             await self._submit_status(assignment, "failed", message=str(exc))
+            JOB_FAILED_COUNTER.inc()
             return
-
-        await self._emit_logs(assignment, result)
-        LOGGER.info("Job succeeded", extra={"job_id": assignment.job_id})
-        await self._submit_status(assignment, "succeeded")
+        else:
+            await self._emit_logs(assignment, result)
+            LOGGER.info("Job succeeded", extra={"job_id": assignment.job_id})
+            await self._submit_status(assignment, "succeeded")
+            JOB_SUCCEEDED_COUNTER.inc()
+        finally:
+            self._active_jobs = max(0, self._active_jobs - 1)
 
     async def _submit_status(
         self, assignment: JobAssignment, status: str, *, message: Optional[str] = None
@@ -166,12 +197,56 @@ class HostAgent:
             try:
                 response = await self._log_http.post(url, json=chunk)
                 response.raise_for_status()
+                LOG_BATCH_COUNTER.inc()
+                LOG_ROWS_COUNTER.inc(len(chunk["entries"]))
             except httpx.HTTPError as exc:  # pragma: no cover - network dependent
                 LOGGER.warning(
                     "Failed to emit logs",
                     extra={"job_id": assignment.job_id, "error": str(exc)},
                 )
+                LOG_ERROR_COUNTER.inc()
                 break
+
+    async def _ensure_metrics_server(self) -> None:
+        if self._metrics_server is not None:
+            return
+
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except asyncio.IncompleteReadError:
+                writer.close()
+                await writer.wait_closed()
+                return
+            body = GLOBAL_REGISTRY.render().encode("utf-8")
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain; version=0.0.4\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            writer.write(headers.encode("utf-8") + body)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        try:
+            self._metrics_server = await asyncio.start_server(
+                handler,
+                host=self._settings.metrics_host,
+                port=self._settings.metrics_port,
+            )
+        except OSError as exc:  # pragma: no cover - depends on environment
+            LOGGER.warning(
+                "Failed to start metrics server",
+                extra={"host": self._settings.metrics_host, "port": self._settings.metrics_port, "error": str(exc)},
+            )
+            self._metrics_server = None
+            return
+        LOGGER.info(
+            "Host agent metrics server listening",
+            extra={"host": self._settings.metrics_host, "port": self._settings.metrics_port},
+        )
 
 
 @asynccontextmanager
