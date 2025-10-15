@@ -5,6 +5,7 @@ Smith is an experimental platform that mirrors key ideas from Blacksmith.sh: an 
 ## Components
 - **Control Plane (FastAPI):** Receives GitHub webhooks (with signature verification), issues runner registration tokens, and queues jobs in Redis.
 - **Host Agent:** Polls the control plane for work, manages Firecracker microVMs, and forwards Firecracker logs to the logging pipeline when configured.
+- Ensure host agents have permissions to create tap devices and bridges (requires `ip`/`iproute2`).
 - **Cache Proxy:** Provides a simple artifact cache API backed by the filesystem with HMAC-signed tokens; drop-in replacement for a future MinIO/Ceph proxy.
 - **Logging Pipeline:** Streams job logs into ClickHouse using JSONEachRow inserts.
 - **Optional SSH/DNS Helpers:** Command snippets for exposing live SSH sessions and registering VM hostnames.

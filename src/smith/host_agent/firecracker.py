@@ -77,6 +77,7 @@ class FirecrackerLauncher:
 
             try:
                 await self._ensure_tap_device(tap_name)
+                await self._configure_network(tap_name)
                 tap_created = True
                 process = await self._spawn_firecracker(api_socket, log_path, metrics_path)
                 await self._configure_vm(api_socket, vm_config, metadata)
@@ -105,6 +106,7 @@ class FirecrackerLauncher:
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
                 if tap_created:
+                    await self._teardown_network(tap_name)
                     await self._teardown_tap_device(tap_name)
 
     def _allocate_tap_name(self, job_id: int) -> str:
@@ -211,6 +213,22 @@ class FirecrackerLauncher:
             return
         await process.communicate()
 
+    async def _configure_network(self, tap_name: str) -> None:
+        LOGGER.debug("Configuring network for tap", extra={"tap": tap_name})
+        bridge = f"{tap_name}-br"
+        await self._run_command("ip", "link", "del", bridge, skip_fail=True)
+        await self._run_command("ip", "link", "add", bridge, "type", "bridge")
+        await self._run_command("ip", "link", "set", bridge, "up")
+        await self._run_command("ip", "link", "set", tap_name, "master", bridge)
+        await self._run_command("ip", "link", "set", tap_name, "up")
+
+    async def _teardown_network(self, tap_name: str) -> None:
+        bridge = f"{tap_name}-br"
+        LOGGER.debug("Tearing down network", extra={"tap": tap_name, "bridge": bridge})
+        await self._run_command("ip", "link", "set", tap_name, "nomaster", skip_fail=True)
+        await self._run_command("ip", "link", "set", tap_name, "down", skip_fail=True)
+        await self._run_command("ip", "link", "del", bridge, skip_fail=True)
+
     async def _spawn_firecracker(
         self,
         api_socket: Path,
@@ -316,3 +334,26 @@ class FirecrackerLauncher:
             log_lines=log_lines,
             metrics=metrics_data,
         )
+
+    async def _run_command(
+        self,
+        *args: str,
+        skip_fail: bool = False,
+    ) -> None:
+        LOGGER.debug("Executing command", extra={"args": args})
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            if skip_fail:
+                return
+            raise FirecrackerError(f"Command not found: {args[0]}")
+
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0 and not skip_fail:
+            raise FirecrackerError(
+                f"Command {' '.join(args)} failed: {stderr.decode().strip() or stdout.decode().strip()}"
+            )
