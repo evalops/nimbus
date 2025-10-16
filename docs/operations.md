@@ -72,10 +72,10 @@ Generate operational snapshots from the CLI:
 
 ## Production Checklist
 
-Consult `docs/PRE_PILOT_READINESS.md` for the current security status. Highlights:
+Nimbus tracks major hardening milestones in the project backlog. Highlights:
 
 - Lease fencing, idempotent cleanup, distributed rate limiting, and org-scoped boundaries are implemented.
-- Webhook timestamp validation, scoped cache tokens, and capability hardening require config updates to stay effective.
+- Webhook timestamp validation, scoped cache tokens, and capability hardening require correct configuration to stay effective.
 - Rootfs attestation, jailer rollout, and performance tuning remain ongoing.
 
 ### Multi-Tenant Configuration

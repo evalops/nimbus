@@ -54,6 +54,6 @@ Nimbus publishes curated container images, such as `nimbus/ai-eval-runner` (Node
 
 ## Contributing
 
-Nimbus is ready for pilot deployments; active readiness tracking lives in [docs/PRE_PILOT_READINESS.md](docs/PRE_PILOT_READINESS.md). Contributions improving security, observability, and distributed test coverage are welcome.
+Nimbus is ready for pilot deployments; major readiness items are summarized in the [Operations Guide](docs/operations.md). Contributions improving security, observability, and distributed test coverage are welcome.
 - Performance optimization
 - Additional eval-specific runners
