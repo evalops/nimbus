@@ -37,7 +37,7 @@ def scim_list_response(total: int, resources: list[dict]) -> dict:
 def format_scim_user(record: dict) -> dict:
     return {
         "schemas": [SCIM_USER_SCHEMA],
-        "id": str(record["id"]),
+        "id": str(record.get("scim_id") or record["id"]),
         "userName": record.get("email") or record.get("external_id"),
         "name": {
             "formatted": record.get("display_name") or record.get("email"),
