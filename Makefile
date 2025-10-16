@@ -34,4 +34,4 @@ audit:
 	./scripts/dependency_audit.sh
 
 coverage:
-	uv tool run --from pytest-cov pytest --cov=src --cov-report=term-missing --cov-fail-under=85
+	uv run --with pytest-cov pytest --cov=src --cov-report=term-missing --cov-fail-under=85
