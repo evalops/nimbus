@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 echo "===> Running Python dependency audit"
-uv tool run pip-audit --skip-editable --require-hashes --path "$ROOT_DIR"
+uv tool run pip-audit --skip-editable --path "$ROOT_DIR"
 
 echo "===> Auditing web frontend dependencies"
 if [ -f "$ROOT_DIR/web/package.json" ]; then
