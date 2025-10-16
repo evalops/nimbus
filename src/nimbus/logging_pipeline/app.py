@@ -6,7 +6,7 @@ import inspect
 import json
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Iterable, Optional
 
 import httpx
@@ -222,7 +222,7 @@ def require_cache_token(
         return CacheToken(
             token=shared_secret,
             organization_id=0,
-            expires_at=datetime.utcnow() + timedelta(hours=1),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
             scope="read_write",
         )
     token = authorization.split(" ", 1)[1]

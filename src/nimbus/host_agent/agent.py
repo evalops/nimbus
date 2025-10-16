@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -472,7 +472,7 @@ class HostAgent:
             return
 
         entries = []
-        timestamp = datetime.utcnow().isoformat() + "Z"
+        timestamp = datetime.now(UTC).isoformat()
         # Note: GitHub repository.id is the repo ID, not org ID
         # Using repo_id as proxy for org_id until we extract actual org from owner
         repo_id = assignment.repository.id

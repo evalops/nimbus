@@ -55,7 +55,9 @@ jobs:
 
       - name: Install Dockle
         run: |
-          curl -sSfL https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.tar.gz | tar -xz dockle
+          curl -sSfL https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.tar.gz -o dockle.tar.gz
+          echo "8bfc9183d1d3d67800edb45bea4bb63ddf1d28bec5f89944075a07007d79caad  dockle.tar.gz" | sha256sum --check
+          tar -xz -f dockle.tar.gz dockle
           sudo mv dockle /usr/local/bin/
 
       - name: Run Dockle audit

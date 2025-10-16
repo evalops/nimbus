@@ -566,10 +566,13 @@ async def validate_lease_fence(
     row = result.first()
     if not row:
         return False
+    expires_at = row.lease_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     return (
         row.version == fence_token
         and row.agent_id == agent_id
-        and row.lease_expires_at > now
+        and expires_at > now
     )
 
 

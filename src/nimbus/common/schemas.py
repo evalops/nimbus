@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -67,7 +67,7 @@ class JobAssignment(BaseModel):
     labels: list[str]
     runner_registration: RunnerRegistrationToken
     cache_token: Optional[CacheToken] = None
-    payload_received_at: datetime = Field(default_factory=datetime.utcnow)
+    payload_received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class JobLeaseRequest(BaseModel):
@@ -95,7 +95,7 @@ class JobStatusUpdate(BaseModel):
     status: Literal["starting", "running", "succeeded", "failed", "cancelled"]
     message: Optional[str] = None
     fence_token: Optional[int] = None
-    reported_at: datetime = Field(default_factory=datetime.utcnow)
+    reported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class JobRecord(BaseModel):
@@ -126,7 +126,7 @@ class LogEntry(BaseModel):
     repo_id: Optional[int] = None
     level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     message: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class LogIngestRequest(BaseModel):

@@ -159,7 +159,9 @@ async def test_try_acquire_and_release_job_lease(session, monkeypatch):
     class NaiveDatetime:
         @staticmethod
         def now(tz=None):  # noqa: ANN001
-            return datetime.utcnow()
+            if tz is None:
+                return datetime.now(timezone.utc)
+            return datetime.now(tz)
 
     monkeypatch.setattr(db, "datetime", NaiveDatetime)
 

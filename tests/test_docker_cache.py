@@ -15,7 +15,8 @@ from nimbus.docker_cache.app import create_app
 async def _create_client(app):
     lifespan = app.router.lifespan_context(app)
     await lifespan.__aenter__()
-    client = httpx.AsyncClient(app=app, base_url="http://testserver")
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
     return client, lifespan
 
 
