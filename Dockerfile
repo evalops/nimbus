@@ -39,6 +39,13 @@ RUN dnf update -y \
     && update-crypto-policies --set FIPS \
     && dnf clean all
 
+RUN set -eux; \
+    find /usr/bin /usr/sbin /usr/libexec -perm /6000 -type f \
+        -not -path '/usr/bin/sudo' \
+        -not -path '/usr/bin/chmod' \
+        -not -path '/usr/bin/chown' \
+        -exec rm -f {} + || true
+
 RUN useradd --no-log-init --create-home --home-dir /var/lib/nimbus nimbus
 
 COPY pyproject.toml uv.lock ./
@@ -58,4 +65,4 @@ USER nimbus
 
 CMD ["uvicorn", "nimbus.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:8000/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)" || exit 1

@@ -1,0 +1,62 @@
+name: Security Scans
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: "1"
+      TRIVY_EXIT_CODE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen
+
+      - name: Scan Docker images
+        run: |
+          make scan-images SBOM_OUTPUT=1 TRIVY_SEVERITY="CRITICAL,HIGH,MEDIUM" KEEP_IMAGES=1
+          docker save nimbus-control-plane:ci -o nimbus-control-plane_ci.tar
+          docker save nimbus-ai-runner:ci -o nimbus-ai-runner_ci.tar
+
+      - name: Install Dockle
+        run: |
+          curl -sSfL https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.tar.gz -o dockle.tar.gz
+          echo "8bfc9183d1d3d67800edb45bea4bb63ddf1d28bec5f89944075a07007d79caad  dockle.tar.gz" | sha256sum --check
+          tar -xz -f dockle.tar.gz dockle
+          sudo mv dockle /usr/local/bin/
+
+      - name: Run Dockle audit
+        run: |
+          docker load < nimbus-control-plane_ci.tar
+          docker load < nimbus-ai-runner_ci.tar
+          dockle --exit-code 1 -af settings.py nimbus-control-plane:ci
+          dockle --exit-code 1 -af settings.py nimbus-ai-runner:ci
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom

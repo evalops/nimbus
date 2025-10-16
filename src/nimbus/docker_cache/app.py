@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -426,6 +427,7 @@ def create_app() -> FastAPI:
     metrics = DockerCacheMetrics(settings.metadata_database_url)
     state = DockerCacheState(settings, metrics)
 
+    @asynccontextmanager
     async def lifespan(app: FastAPI):
         state.storage_path.mkdir(parents=True, exist_ok=True)
         instrument_fastapi_app(app)
