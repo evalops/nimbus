@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = "==3.12.*"
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "aiodocker"
 version = "0.21.0"
@@ -704,11 +701,11 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.19,<0.0.20" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "redis", specifier = ">=5.0,<5.1" },
-    { name = "signxml", specifier = ">=3.2,<4" },
+    { name = "signxml", specifier = ">=4.0.4,<4.3" },
     { name = "sigstore", specifier = ">=2.1.5,<3" },
     { name = "spdx-tools", specifier = ">=0.7,<0.8" },
     { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
-    { name = "starlette", specifier = ">=0.40,<0.41" },
+    { name = "starlette", specifier = ">=0.47.2,<0.48" },
     { name = "structlog", specifier = ">=24.1,<26" },
     { name = "structlog", marker = "extra == 'host'", specifier = ">=24.1,<26" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<0.32" },
@@ -1249,17 +1246,16 @@ wheels = [
 
 [[package]]
 name = "signxml"
-version = "3.2.2"
+version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
     { name = "cryptography" },
     { name = "lxml" },
-    { name = "pyopenssl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/9b/e5a48081db1d7013e077d8df67cef3e1d289b7109f617e24d9354a7270c0/signxml-3.2.2.tar.gz", hash = "sha256:94adaf2fcbe8d19f919b035280b7d7a3a0f4aa683ed6a276ce823f2c2d7b7bd3", size = 59709, upload-time = "2024-01-29T00:35:31.274Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/3d/9dd719fda38bb2a472fb9e59a5e75e220c52ce5365303222a3bb88962832/signxml-4.2.0.tar.gz", hash = "sha256:5317b71f682d6b9ebd4a827d564eb43fe8f6edf98030fc30eb629621045441c6", size = 1610974, upload-time = "2025-08-20T05:28:45.186Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/e3/f207fab197b8beeb1fd4496e3c165373579723b018b0e56516039a2db231/signxml-3.2.2-py3-none-any.whl", hash = "sha256:9201fefe0e6657d2b94a8d7682245a6397644fc6d71694c7b9420dbfc58be2e1", size = 58164, upload-time = "2024-01-29T00:35:28.799Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/94/47217366b261dddfda44888608b139287c66276c931ca885db2c7d5f3712/signxml-4.2.0-py3-none-any.whl", hash = "sha256:ac66cbf8d52adaaba2dbeb734ca5a9c85177dc1558fad1255340b52d144f14b5", size = 59212, upload-time = "2025-08-20T05:28:43.467Z" },
 ]
 
 [[package]]
@@ -1368,14 +1364,15 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "0.40.0"
+version = "0.47.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/cb/244daf0d7be4508099ad5bca3cdfe8b8b5538acd719c5f397f614e569fff/starlette-0.40.0.tar.gz", hash = "sha256:1a3139688fb298ce5e2d661d37046a66ad996ce94be4d4983be019a23a04ea35", size = 2573611, upload-time = "2024-10-15T06:52:34.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/b9/cc3017f9a9c9b6e27c5106cc10cc7904653c3eec0729793aec10479dd669/starlette-0.47.3.tar.gz", hash = "sha256:6bc94f839cc176c4858894f1f8908f0ab79dfec1a6b8402f6da9be26ebea52e9", size = 2584144, upload-time = "2025-08-24T13:36:42.122Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/0f/64baf7a06492e8c12f5c4b49db286787a7255195df496fc21f5fd9eecffa/starlette-0.40.0-py3-none-any.whl", hash = "sha256:c494a22fae73805376ea6bf88439783ecfba9aac88a43911b48c653437e784c4", size = 73303, upload-time = "2024-10-15T06:52:32.486Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/fd/901cfa59aaa5b30a99e16876f11abe38b59a1a2c51ffb3d7142bb6089069/starlette-0.47.3-py3-none-any.whl", hash = "sha256:89c0778ca62a76b826101e7c709e70680a1699ca7da6b44d38eb0a7e61fe4b51", size = 72991, upload-time = "2025-08-24T13:36:40.887Z" },
 ]
 
 [[package]]
