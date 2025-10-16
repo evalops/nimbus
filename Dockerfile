@@ -5,9 +5,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 COPY web/package.json web/package-lock.json ./
-RUN microdnf update -y \
-    && npm ci \
-    && microdnf clean all
+RUN npm ci
 
 COPY web ./
 RUN npm run build
