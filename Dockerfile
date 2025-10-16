@@ -36,7 +36,6 @@ RUN dnf update -y \
         shadow-utils \
         tar \
         gzip \
-    && dnf remove -y nodejs npm || true \
     && update-crypto-policies --set FIPS \
     && dnf clean all
 
@@ -47,8 +46,7 @@ COPY src ./src
 
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir . \
-    && find /usr -maxdepth 4 -path "*node_modules*" -exec rm -rf {} + \
-    && rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
+    && if command -v npm >/dev/null 2>&1; then npm install -g npm@10.9.0 && npm cache clean --force; fi
 
 COPY README.md ./
 COPY --from=web-build /app/dist ./web/dist
