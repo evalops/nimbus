@@ -47,7 +47,8 @@ COPY src ./src
 
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir . \
-    && rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
+    && find /usr -maxdepth 4 -path "*node_modules*" -exec rm -rf {} + \
+    && rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
 
 COPY README.md ./
 COPY --from=web-build /app/dist ./web/dist
