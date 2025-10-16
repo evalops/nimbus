@@ -1,27 +1,16 @@
 # Nimbus
 
-**Self-hosted CI infrastructure optimized for AI evaluation workloads.**
+Nimbus is a self-hosted CI platform designed around Firecracker microVMs, org-scoped storage, and built-in observability for AI evaluation pipelines. It can replace GitHub-hosted runners while keeping workloads on infrastructure you control.
 
-Run thousands of evals per day on your own hardware with Firecracker isolation, built-in observability, and zero cloud egress costs. Works as a drop-in replacement for GitHub Actions runners.
+## Key Capabilities
 
-## Why Nimbus?
+- Self-managed runners using Firecracker microVMs with lease fencing and crash recovery
+- Multi-tenant isolation for cache artifacts, Docker layers, and log ingestion
+- GitHub webhook integration with signature verification, replay protection, and per-org rate limits
+- Structured logging and optional OpenTelemetry export for end-to-end tracing
+- Optional S3 cache backend and ClickHouse-compatible logging pipeline
 
-Running production AI evaluations at scale hits three walls:
-
-- **Cost**: GitHub hosted runners charge $0.008/minute. At 10K evals/day (avg 5min each) = $4,500/month.
-- **Security**: Sending prompts, model weights, and evaluation datasets to third-party CI runners exposes proprietary IP.
-- **Observability**: Generic CI platforms don't understand eval-specific metrics (latency, token usage, quality scores).
-
-Nimbus gives you:
-
-**10x cheaper** – Run on bare metal (Hetzner/your datacenter) for $450/month vs $4,500 on hosted runners  
-**Air-gapped** – Models and eval data never leave your infrastructure  
-**Eval-native** – Pre-built containers with OTEL tracing, ollama client, and structured logging for ClickHouse  
-**Firecracker isolation** – Each eval runs in a secure microVM (100ms spin-up, kernel-level isolation)  
-**Multi-tenant** – Org-scoped isolation for cache, logs, and artifacts with comprehensive access controls  
-**Production-ready** – Lease fencing, automatic cleanup, replay protection, and per-org rate limiting
-
-> **Acknowledgement:** Nimbus builds on key ideas from [Blacksmith.sh](https://blacksmith.sh). Their transparency around architecture, security posture, and operational trade-offs set the blueprint for this implementation. For a production-ready managed solution, check out Blacksmith.
+> **Acknowledgement:** Nimbus builds on key ideas from [Blacksmith.sh](https://blacksmith.sh). Their documentation on architecture, security posture, and operational trade-offs heavily influenced this implementation.
 
 ## Components
 
@@ -119,30 +108,29 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
    uvicorn nimbus.logging_pipeline.main:app --reload --port 8002
    python -m nimbus.host_agent.main
    ```
-5. Inspect recent jobs from the command line (example):
-   ```bash
-   python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --limit 10
-   ```
-6. Check overall queue health:
-   ```bash
-   python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET
-   ```
-7. Query logs for a job:
-   ```bash
-   python -m nimbus.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
-   ```
-8. Mint a cache token for testing:
-   ```bash
-   python -m nimbus.cli.cache --secret $NIMBUS_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
-   ```
-9. Mint an agent token for a host:
-   ```bash
-   python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
-   ```
-10. Run the unit and integration test suite:
+5. Run the unit and integration test suite:
     ```bash
     uv run pytest
     ```
+
+### Useful CLI commands
+
+```bash
+# Recent jobs
+python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --limit 10
+
+# Queue health
+python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET
+
+# Logs for a job
+python -m nimbus.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
+
+# Mint cache token
+python -m nimbus.cli.cache --secret $NIMBUS_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
+
+# Mint agent token
+python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
+```
 
 ## Environment Variables
 
