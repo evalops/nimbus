@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import os
 import platform
 import shutil
@@ -44,6 +45,25 @@ class MicroVMNetwork:
     cidr: int = 24
 
 
+@dataclass
+class FirecrackerContext:
+    api_socket_host: Path
+    api_socket_guest: str
+    log_path_host: Path
+    log_path_guest: str
+    metrics_path_host: Path
+    metrics_path_guest: str
+    rootfs_guest_path: str
+    kernel_guest_path: str
+    rootfs_hash: str
+    snapshot_state_host: Optional[Path] = None
+    snapshot_state_guest: Optional[str] = None
+    snapshot_memory_host: Optional[Path] = None
+    snapshot_memory_guest: Optional[str] = None
+    jailer_chroot: Optional[Path] = None
+    vm_id: Optional[str] = None
+
+
 class FirecrackerError(RuntimeError):
     """Raised when Firecracker orchestration fails."""
 
@@ -68,6 +88,10 @@ class FirecrackerLauncher:
     def __init__(self, settings: HostAgentSettings, config: Optional[MicroVMConfig] = None) -> None:
         self._settings = settings
         self._config = config or MicroVMConfig()
+        self._snapshot_state = Path(settings.snapshot_state_path) if settings.snapshot_state_path else None
+        self._snapshot_memory = Path(settings.snapshot_memory_path) if settings.snapshot_memory_path else None
+        self._snapshot_enabled = self._snapshot_state is not None and self._snapshot_memory is not None
+        self._snapshot_enable_diff = settings.snapshot_enable_diff
 
     async def execute_job(
         self,
@@ -87,23 +111,54 @@ class FirecrackerLauncher:
 
             tap_name = network.tap_name if network else self._allocate_tap_name(assignment.job_id)
             network = network or self._derive_network(tap_name)
-            rootfs_copy = self._prepare_rootfs(workdir_path)
+            rootfs_copy, rootfs_hash = self._prepare_rootfs(workdir_path)
+            LOGGER.info(
+                "Rootfs prepared",
+                job_id=assignment.job_id,
+                checksum=rootfs_hash,
+                image=Path(self._settings.rootfs_image_path).name,
+            )
 
-            vm_config = self._build_vm_config(rootfs_copy, tap_name)
-            metadata = self._build_metadata(assignment, network)
+            metadata = self._build_metadata(assignment, network, rootfs_hash=rootfs_hash)
 
             tap_created = False
             process: Optional[asyncio.subprocess.Process] = None
             exit_code = -1
             collected: Optional[FirecrackerResult] = None
+            spawn_context: Optional[FirecrackerContext] = None
 
             try:
                 await self._ensure_tap_device(tap_name)
                 await self._configure_network(network)
                 tap_created = True
-                process = await self._spawn_firecracker(api_socket, log_path, metrics_path)
-                await self._configure_vm(api_socket, vm_config, metadata)
-                await self._start_instance(api_socket)
+                process, spawn_context = await self._spawn_firecracker(
+                    api_socket,
+                    log_path,
+                    metrics_path,
+                    rootfs_copy,
+                    rootfs_hash,
+                )
+
+                self._apply_cpu_affinity(process, assignment.job_id)
+
+                if spawn_context.rootfs_hash != rootfs_hash:
+                    metadata = self._build_metadata(
+                        assignment,
+                        network,
+                        rootfs_hash=spawn_context.rootfs_hash,
+                    )
+
+                if self._snapshot_enabled:
+                    await self._restore_snapshot(spawn_context)
+                    await self._configure_mmds(spawn_context.api_socket_host, metadata)
+                else:
+                    vm_config = self._build_vm_config(
+                        rootfs_path=spawn_context.rootfs_guest_path,
+                        kernel_path=spawn_context.kernel_guest_path,
+                        tap_name=tap_name,
+                    )
+                    await self._configure_vm(spawn_context.api_socket_host, vm_config, metadata)
+                await self._start_instance(spawn_context.api_socket_host)
                 try:
                     if timeout_seconds is not None:
                         await asyncio.wait_for(self._wait_for_completion(process), timeout_seconds)
@@ -117,16 +172,16 @@ class FirecrackerLauncher:
                     collected = self._collect_artifacts(
                         job_id=assignment.job_id,
                         exit_code=-1,
-                        log_path=log_path,
-                        metrics_path=metrics_path,
+                        log_path=spawn_context.log_path_host if spawn_context else log_path,
+                        metrics_path=spawn_context.metrics_path_host if spawn_context else metrics_path,
                     )
                     raise FirecrackerError("Job timed out", result=collected) from exc
                 exit_code = process.returncode or 0
                 collected = self._collect_artifacts(
                     job_id=assignment.job_id,
                     exit_code=exit_code,
-                    log_path=log_path,
-                    metrics_path=metrics_path,
+                    log_path=spawn_context.log_path_host if spawn_context else log_path,
+                    metrics_path=spawn_context.metrics_path_host if spawn_context else metrics_path,
                 )
                 return collected
             except Exception as exc:  # noqa: BLE001
@@ -138,13 +193,15 @@ class FirecrackerLauncher:
                     collected = self._collect_artifacts(
                         job_id=assignment.job_id,
                         exit_code=exit_code,
-                        log_path=log_path,
-                        metrics_path=metrics_path,
+                        log_path=spawn_context.log_path_host if spawn_context else log_path,
+                        metrics_path=spawn_context.metrics_path_host if spawn_context else metrics_path,
                     )
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
                 if tap_created:
                     await self.cleanup_network(network)
+                if spawn_context and spawn_context.jailer_chroot:
+                    shutil.rmtree(spawn_context.jailer_chroot, ignore_errors=True)
 
     def _allocate_tap_name(self, job_id: int) -> str:
         suffix = job_id % 10000
@@ -162,7 +219,7 @@ class FirecrackerLauncher:
         tap_name = self._allocate_tap_name(job_id)
         return self._derive_network(tap_name)
 
-    def _prepare_rootfs(self, workdir: Path) -> Path:
+    def _prepare_rootfs(self, workdir: Path) -> tuple[Path, str]:
         source = Path(self._settings.rootfs_image_path)
         destination = workdir / source.name
         LOGGER.debug("Preparing rootfs", source=str(source), dest=str(destination))
@@ -172,18 +229,19 @@ class FirecrackerLauncher:
             shutil.copy2(source, destination)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise FirecrackerError(f"Failed to copy rootfs: {exc}") from exc
-        return destination
+        checksum = self._compute_checksum(destination)
+        return destination, checksum
 
-    def _build_vm_config(self, rootfs_path: Path, tap_name: str) -> dict:
+    def _build_vm_config(self, rootfs_path: str, kernel_path: str, tap_name: str) -> dict:
         config = {
             "boot-source": {
-                "kernel_image_path": self._settings.kernel_image_path,
+                "kernel_image_path": kernel_path,
                 "boot_args": self._config.kernel_args,
             },
             "drives": [
                 {
                     "drive_id": "rootfs",
-                    "path_on_host": str(rootfs_path),
+                    "path_on_host": rootfs_path,
                     "is_root_device": True,
                     "is_read_only": False,
                 }
@@ -206,7 +264,13 @@ class FirecrackerLauncher:
 
         return config
 
-    def _build_metadata(self, assignment: JobAssignment, network: Optional[MicroVMNetwork]) -> dict:
+    def _build_metadata(
+        self,
+        assignment: JobAssignment,
+        network: Optional[MicroVMNetwork],
+        *,
+        rootfs_hash: Optional[str] = None,
+    ) -> dict:
         cache_section = None
         if assignment.cache_token:
             cache_section = assignment.cache_token.model_dump()
@@ -233,6 +297,12 @@ class FirecrackerLauncher:
             }
             if self._settings.ssh_authorized_key:
                 payload["network"]["authorized_key"] = self._settings.ssh_authorized_key
+
+        if rootfs_hash:
+            payload["rootfs"] = {
+                "checksum_sha256": rootfs_hash,
+                "image": Path(self._settings.rootfs_image_path).name,
+            }
         return payload
 
     async def _ensure_tap_device(self, tap_name: str) -> None:
@@ -286,17 +356,25 @@ class FirecrackerLauncher:
         api_socket: Path,
         log_path: Path,
         metrics_path: Path,
-    ) -> asyncio.subprocess.Process:
+        rootfs_path: Path,
+        rootfs_hash: str,
+    ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         if self._settings.jailer_bin_path:
-            return await self._spawn_firecracker_with_jailer(api_socket, log_path, metrics_path)
-        return await self._spawn_firecracker_direct(api_socket, log_path, metrics_path)
+            return await self._spawn_firecracker_with_jailer(
+                api_socket, log_path, metrics_path, rootfs_path, rootfs_hash
+            )
+        return await self._spawn_firecracker_direct(
+            api_socket, log_path, metrics_path, rootfs_path, rootfs_hash
+        )
 
     async def _spawn_firecracker_direct(
         self,
         api_socket: Path,
         log_path: Path,
         metrics_path: Path,
-    ) -> asyncio.subprocess.Process:
+        rootfs_path: Path,
+        rootfs_hash: str,
+    ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         LOGGER.warning("Running Firecracker without jailer - not recommended for production")
         process = await asyncio.create_subprocess_exec(
             self._settings.firecracker_bin_path,
@@ -317,14 +395,36 @@ class FirecrackerLauncher:
             raise FirecrackerError(
                 f"Firecracker exited prematurely: {stderr.decode().strip() or stdout.decode().strip()}"
             )
-        return process
+        snapshot_state_host = self._snapshot_state if self._snapshot_enabled else None
+        snapshot_memory_host = self._snapshot_memory if self._snapshot_enabled else None
+        snapshot_state_guest = str(snapshot_state_host) if snapshot_state_host else None
+        snapshot_memory_guest = str(snapshot_memory_host) if snapshot_memory_host else None
+
+        context = FirecrackerContext(
+            api_socket_host=api_socket,
+            api_socket_guest=str(api_socket),
+            log_path_host=log_path,
+            log_path_guest=str(log_path),
+            metrics_path_host=metrics_path,
+            metrics_path_guest=str(metrics_path),
+            rootfs_guest_path=str(rootfs_path),
+            kernel_guest_path=self._settings.kernel_image_path,
+            rootfs_hash=rootfs_hash,
+            snapshot_state_host=snapshot_state_host,
+            snapshot_state_guest=snapshot_state_guest,
+            snapshot_memory_host=snapshot_memory_host,
+            snapshot_memory_guest=snapshot_memory_guest,
+        )
+        return process, context
 
     async def _spawn_firecracker_with_jailer(
         self,
         api_socket: Path,
         log_path: Path,
         metrics_path: Path,
-    ) -> asyncio.subprocess.Process:
+        rootfs_path: Path,
+        rootfs_hash: str,
+    ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         if platform.system().lower() != "linux":
             raise FirecrackerError("Jailer is only supported on Linux systems")
 
@@ -336,9 +436,45 @@ class FirecrackerLauncher:
         (jailer_chroot / "root").mkdir(parents=True, exist_ok=True)
         (jailer_chroot / "root" / "run").mkdir(exist_ok=True)
 
+        # Prepare runtime resources inside chroot
+        kernel_src = Path(self._settings.kernel_image_path)
+        kernel_dest_dir = jailer_chroot / "root" / "kernel"
+        kernel_dest_dir.mkdir(exist_ok=True)
+        kernel_dest = kernel_dest_dir / kernel_src.name
+        shutil.copy2(kernel_src, kernel_dest)
+
+        rootfs_dest_dir = jailer_chroot / "root" / "rootfs"
+        rootfs_dest_dir.mkdir(exist_ok=True)
+        rootfs_dest = rootfs_dest_dir / rootfs_path.name
+        shutil.copy2(rootfs_path, rootfs_dest)
+
+        snapshot_state_host = None
+        snapshot_state_guest = None
+        snapshot_memory_host = None
+        snapshot_memory_guest = None
+        if self._snapshot_enabled:
+            if not self._snapshot_state or not self._snapshot_memory:
+                raise FirecrackerError("Snapshot paths not configured correctly")
+            if not self._snapshot_state.exists() or not self._snapshot_memory.exists():
+                raise FirecrackerError("Snapshot files not found for snapshot boot")
+            snapshot_dir = jailer_chroot / "root" / "snapshots"
+            snapshot_dir.mkdir(exist_ok=True)
+            state_dest = snapshot_dir / self._snapshot_state.name
+            mem_dest = snapshot_dir / self._snapshot_memory.name
+            shutil.copy2(self._snapshot_state, state_dest)
+            shutil.copy2(self._snapshot_memory, mem_dest)
+            snapshot_state_host = state_dest
+            snapshot_state_guest = f"/snapshots/{state_dest.name}"
+            snapshot_memory_host = mem_dest
+            snapshot_memory_guest = f"/snapshots/{mem_dest.name}"
+
         fc_in_chroot = jailer_chroot / "firecracker"
         shutil.copy2(self._settings.firecracker_bin_path, fc_in_chroot)
         fc_in_chroot.chmod(0o755)
+
+        api_socket_host = jailer_chroot / "root" / "run" / "firecracker.sock"
+        log_path_host = jailer_chroot / "root" / "run" / "firecracker.log"
+        metrics_path_host = jailer_chroot / "root" / "run" / "firecracker.metrics"
 
         cmd = [
             self._settings.jailer_bin_path,
@@ -369,11 +505,11 @@ class FirecrackerLauncher:
                 "--api-sock",
                 "/run/firecracker.sock",
                 "--log-path",
-                str(log_path),
+                "/run/firecracker.log",
                 "--level",
                 "Info",
                 "--metrics-path",
-                str(metrics_path),
+                "/run/firecracker.metrics",
             ]
         )
 
@@ -400,7 +536,52 @@ class FirecrackerLauncher:
                 f"Jailer/Firecracker exited prematurely: {stderr.decode().strip() or stdout.decode().strip()}"
             )
 
-        return process
+        context = FirecrackerContext(
+            api_socket_host=api_socket_host,
+            api_socket_guest="/run/firecracker.sock",
+            log_path_host=log_path_host,
+            log_path_guest="/run/firecracker.log",
+            metrics_path_host=metrics_path_host,
+            metrics_path_guest="/run/firecracker.metrics",
+            rootfs_guest_path=f"/rootfs/{rootfs_dest.name}",
+            kernel_guest_path=f"/kernel/{kernel_dest.name}",
+            rootfs_hash=rootfs_hash,
+            snapshot_state_host=snapshot_state_host,
+            snapshot_state_guest=snapshot_state_guest,
+            snapshot_memory_host=snapshot_memory_host,
+            snapshot_memory_guest=snapshot_memory_guest,
+            jailer_chroot=jailer_chroot,
+            vm_id=vm_id,
+        )
+
+        return process, context
+
+    def _select_affinity_set(self, job_id: int) -> set[int]:
+        mask = getattr(self._settings, "cpu_affinity", [])
+        if not mask:
+            return set()
+        vcpus = max(1, self._config.vcpu_count)
+        count = len(mask)
+        selected: set[int] = set()
+        start = job_id % count
+        for offset in range(min(vcpus, count)):
+            selected.add(mask[(start + offset) % count])
+        return selected
+
+    def _apply_cpu_affinity(self, process: asyncio.subprocess.Process, job_id: int) -> None:
+        if not hasattr(os, "sched_setaffinity"):
+            return
+        pid = process.pid
+        if pid is None:
+            return
+        cpus = self._select_affinity_set(job_id)
+        if not cpus:
+            return
+        try:
+            os.sched_setaffinity(pid, cpus)
+            LOGGER.info("Applied CPU affinity", pid=pid, cpus=sorted(cpus))
+        except OSError as exc:  # pragma: no cover - platform dependent
+            LOGGER.warning("Failed to apply CPU affinity", error=str(exc))
 
     async def _configure_vm(self, api_socket: Path, config: dict, metadata: dict) -> None:
         transport = httpx.AsyncHTTPTransport(uds=str(api_socket))
@@ -414,9 +595,28 @@ class FirecrackerLauncher:
             for netif in config.get("network-interfaces", []):
                 await self._put(client, f"/network-interfaces/{netif['iface_id']}", netif)
 
-            # Enable MMDS so the runner inside the VM can fetch metadata.
+        await self._configure_mmds(api_socket, metadata)
+
+    async def _configure_mmds(self, api_socket: Path, metadata: dict) -> None:
+        transport = httpx.AsyncHTTPTransport(uds=str(api_socket))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             await self._put(client, "/mmds/config", {"network_interfaces": ["eth0"]})
             await self._put(client, "/mmds", metadata)
+
+    async def _restore_snapshot(self, context: FirecrackerContext) -> None:
+        if not context.snapshot_state_guest or not context.snapshot_memory_guest:
+            raise FirecrackerError("Snapshot paths missing for snapshot boot")
+        transport = httpx.AsyncHTTPTransport(uds=str(context.api_socket_host))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            await self._put(
+                client,
+                "/snapshot/load",
+                {
+                    "snapshot_path": context.snapshot_state_guest,
+                    "memory_file_path": context.snapshot_memory_guest,
+                    "enable_diff_snapshots": self._snapshot_enable_diff,
+                },
+            )
 
     async def _start_instance(self, api_socket: Path) -> None:
         transport = httpx.AsyncHTTPTransport(uds=str(api_socket))
@@ -450,6 +650,13 @@ class FirecrackerLauncher:
             raise FirecrackerError(
                 f"Firecracker API {path} failed: {response.status_code} {response.text.strip()}"
             )
+
+    def _compute_checksum(self, path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
     def _collect_artifacts(
         self,

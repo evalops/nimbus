@@ -54,3 +54,12 @@ def test_agent_token_expired() -> None:
     token = mint_agent_token(agent_id="agent-3", secret=secret, ttl_seconds=1)
     time.sleep(2)
     assert decode_agent_token(secret, token) is None
+
+
+def test_agent_token_rotation_with_key_id() -> None:
+    primary = "primary-secret"
+    fallback = "fallback-secret"
+    token = mint_agent_token(agent_id="runner", secret=primary, ttl_seconds=60, version=2)
+    decoded = decode_agent_token_payload([fallback, primary], token)
+    assert decoded == ("runner", 2)
+    assert decode_agent_token_payload([fallback], token) is None

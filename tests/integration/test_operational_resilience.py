@@ -39,6 +39,7 @@ async def test_cache_status_reports_cold_entries(monkeypatch, tmp_path: Path):
         "NIMBUS_CACHE_STORAGE_PATH": str(storage),
         "NIMBUS_CACHE_SHARED_SECRET": "local-cache-secret",
         "NIMBUS_CACHE_METRICS_DB": str(metrics_db),
+        "NIMBUS_CACHE_METRICS_TOKEN": "metrics-secret",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -47,6 +48,8 @@ async def test_cache_status_reports_cold_entries(monkeypatch, tmp_path: Path):
     async with app_client(app) as client:
         token = mint_cache_token(secret="local-cache-secret", organization_id=1, ttl_seconds=60)
         headers = {"Authorization": f"Bearer {token.token}"}
+        metrics_headers = {"Authorization": "Bearer metrics-secret"}
+        metrics_headers = {"Authorization": "Bearer metrics-secret"}
 
         put_response = await client.put("/cache/hot/item", content=b"payload", headers=headers)
         assert put_response.status_code == 201
@@ -78,6 +81,7 @@ async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
         "NIMBUS_CACHE_STORAGE_PATH": str(storage),
         "NIMBUS_CACHE_SHARED_SECRET": "local-cache-secret",
         "NIMBUS_CACHE_METRICS_DB": str(metrics_db),
+        "NIMBUS_CACHE_METRICS_TOKEN": "metrics-secret",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -86,13 +90,14 @@ async def test_cache_latency_histogram_accumulates(monkeypatch, tmp_path: Path):
     async with app_client(app) as client:
         token = mint_cache_token(secret="local-cache-secret", organization_id=1, ttl_seconds=60)
         headers = {"Authorization": f"Bearer {token.token}"}
+        metrics_headers = {"Authorization": "Bearer metrics-secret"}
 
         for idx in range(20):
             path = f"/cache/key-{idx}"
             await client.put(path, content=b"payload", headers=headers)
             await client.get(path, headers=headers)
 
-        metrics_response = await client.get("/metrics")
+        metrics_response = await client.get("/metrics", headers=metrics_headers)
         assert metrics_response.status_code == 200
         metrics_text = metrics_response.text
         assert "nimbus_cache_proxy_request_latency_seconds_count" in metrics_text
@@ -174,6 +179,7 @@ async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path:
         "NIMBUS_CLICKHOUSE_DATABASE": "nimbus",
         "NIMBUS_CLICKHOUSE_TABLE": "ci_logs",
         "NIMBUS_LOG_LEVEL": "INFO",
+        "NIMBUS_LOGGING_METRICS_TOKEN": "metrics-secret",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -190,6 +196,7 @@ async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path:
 
     app = create_logging_app()
     async with app_client(app) as client:
+        metrics_headers = {"Authorization": "Bearer metrics-secret"}
         payload = {
             "entries": [
                 {
@@ -204,7 +211,7 @@ async def test_logging_ingest_handles_clickhouse_failures(monkeypatch, tmp_path:
         ingest_response = await client.post("/logs", json=payload)
         assert ingest_response.status_code == 502
 
-        metrics_response = await client.get("/metrics")
+        metrics_response = await client.get("/metrics", headers=metrics_headers)
         assert metrics_response.status_code == 200
         metrics_text = metrics_response.text
 

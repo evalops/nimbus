@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+import hmac
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
@@ -14,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 import structlog
 from opentelemetry import trace
+from ipaddress import ip_address
 
 from ..common.schemas import CacheToken, LogIngestRequest
 from ..common.security import verify_cache_token, validate_cache_scope
@@ -41,6 +43,24 @@ TRACER = trace.get_tracer("nimbus.logging_pipeline")
 
 MAX_ROWS_PER_BATCH = 500
 MAX_BYTES_PER_BATCH = 4 * 1024 * 1024  # 4 MiB
+
+
+def _require_metrics_access(request: Request, token: Optional[str]) -> None:
+    if token:
+        expected = f"Bearer {token}"
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not hmac.compare_digest(auth_header, expected):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
+        return
+
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied")
+    try:
+        if not ip_address(client_host).is_loopback:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access restricted to localhost")
+    except ValueError as exc:  # pragma: no cover - platform dependent
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied") from exc
 
 
 class PipelineState:
@@ -320,7 +340,16 @@ def create_app() -> FastAPI:
         return await state.query_logs(**{k: v for k, v in query_kwargs.items() if k in signature.parameters})
 
     @app.get("/metrics", response_class=PlainTextResponse)
-    async def metrics_endpoint() -> PlainTextResponse:
+    async def metrics_endpoint(
+        request: Request,
+        settings: LoggingIngestSettings = Depends(get_settings),
+    ) -> PlainTextResponse:
+        token = (
+            settings.metrics_token.get_secret_value()
+            if settings.metrics_token
+            else None
+        )
+        _require_metrics_access(request, token)
         return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     @app.get("/healthz", status_code=status.HTTP_200_OK)

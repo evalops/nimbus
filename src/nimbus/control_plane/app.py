@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from ipaddress import ip_address
 from typing import Optional
 from uuid import uuid4
 
@@ -40,7 +41,7 @@ from ..common.schemas import (
     SSHSessionCloseRequest,
 )
 from ..common.settings import ControlPlaneSettings
-from ..common.security import decode_agent_token_payload, mint_agent_token
+from ..common.security import decode_agent_token_payload, mint_agent_token, key_id_from_secret
 from ..common.ratelimit import RateLimiter as DistributedRateLimiter, InMemoryRateLimiter
 from . import db
 from .github import GitHubAppClient
@@ -62,6 +63,28 @@ REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 
 LOGGER = structlog.get_logger("nimbus.control_plane")
 TRACER = trace.get_tracer("nimbus.control_plane")
+
+
+def _default_cache_scope(org_id: int) -> str:
+    return f"pull:org-{org_id},push:org-{org_id}"
+
+
+def _require_metrics_access(request: Request, token: Optional[str]) -> None:
+    if token:
+        auth_header = request.headers.get("authorization")
+        expected = f"Bearer {token}"
+        if not auth_header or not hmac.compare_digest(auth_header, expected):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
+        return
+
+    host = request.client.host if request.client else None
+    if not host:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied")
+    try:
+        if not ip_address(host).is_loopback:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access restricted to localhost")
+    except ValueError as exc:  # pragma: no cover - depends on network stack
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied") from exc
 
 
 def get_client_ip(request: Request, trusted_proxies: list[str]) -> str:
@@ -206,7 +229,7 @@ async def verify_agent_token(
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    decoded = decode_agent_token_payload(settings.agent_token_secret.get_secret_value(), token)
+    decoded = decode_agent_token_payload(settings.agent_token_secrets, token)
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
     agent_id, version = decoded
@@ -228,12 +251,15 @@ def verify_admin_token(
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    jwt_secret = (
-        settings.jwt_secret.get_secret_value()
-        if hasattr(settings.jwt_secret, "get_secret_value")
-        else settings.jwt_secret
-    )
-    decoded = decode_agent_token_payload(jwt_secret, token)
+    jwt_secrets = getattr(settings, "jwt_secrets", None)
+    if jwt_secrets is None:
+        jwt_secret_value = getattr(settings, "jwt_secret", None)
+        if jwt_secret_value is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="JWT secret not configured")
+        if hasattr(jwt_secret_value, "get_secret_value"):
+            jwt_secret_value = jwt_secret_value.get_secret_value()
+        jwt_secrets = [jwt_secret_value]
+    decoded = decode_agent_token_payload(jwt_secrets, token)
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
     subject, _ = decoded
@@ -244,6 +270,14 @@ def verify_admin_token(
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
 
     trusted_proxy_cidrs = getattr(settings, "trusted_proxy_cidrs", [])
+
+    if not trusted_proxy_cidrs:
+        if request.headers.get("x-forwarded-for") or request.headers.get("x-forwarded-proto"):
+            LOGGER.warning(
+                "Admin request rejected: forwarded headers without trusted proxies",
+                path=request.url.path,
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Forwarded headers not allowed")
 
     if settings.require_https:
         # Only trust X-Forwarded-Proto from configured proxies
@@ -380,11 +414,36 @@ def create_app() -> FastAPI:
             raw_body = await request.body()
             signature = request.headers.get("x-hub-signature-256")
             delivery_id = request.headers.get("x-github-delivery")
+            signature_ts = request.headers.get("x-hub-signature-timestamp")
             
             # Verify signature
             if not _verify_github_signature(settings.github_webhook_secret.get_secret_value(), raw_body, signature):
                 LOGGER.warning("Webhook signature verification failed")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature")
+
+            # Enforce timestamp freshness to mitigate replay attacks
+            if not signature_ts:
+                LOGGER.warning("Webhook missing signature timestamp")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing signature timestamp")
+
+            try:
+                signature_ts_int = int(signature_ts)
+            except ValueError as exc:
+                LOGGER.warning("Invalid webhook signature timestamp", raw_value=signature_ts)
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid signature timestamp") from exc
+
+            tolerance = max(0, settings.webhook_timestamp_tolerance_seconds)
+            now = int(time.time())
+            if tolerance and (signature_ts_int < now - tolerance or signature_ts_int > now + tolerance):
+                LOGGER.warning(
+                    "Webhook timestamp outside tolerance",
+                    delivery_id=delivery_id,
+                    timestamp=signature_ts_int,
+                    now=now,
+                    tolerance=tolerance,
+                )
+                WEBHOOK_REPLAY_COUNTER.inc()
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale webhook delivery")
             
             # Check for replay attack via delivery ID (nonce)
             if delivery_id:
@@ -457,6 +516,7 @@ def create_app() -> FastAPI:
                 secret=settings.cache_shared_secret.get_secret_value(),
                 organization_id=repo.id,
                 ttl_seconds=settings.cache_token_ttl_seconds,
+                scope=_default_cache_scope(repo.id),
             )
             assignment = JobAssignment(
                 job_id=payload.workflow_job.id,
@@ -520,6 +580,7 @@ def create_app() -> FastAPI:
                     secret=state.settings.cache_shared_secret.get_secret_value(),
                     organization_id=assignment.repository.id,
                     ttl_seconds=state.settings.cache_token_ttl_seconds,
+                    scope=_default_cache_scope(assignment.repository.id),
                 )
                 assignment.cache_token = cache_token
             
@@ -661,11 +722,13 @@ def create_app() -> FastAPI:
                 )
                 await session.commit()
 
+            primary_secret = settings.agent_token_secret.get_secret_value()
             token = mint_agent_token(
                 agent_id=request_body.agent_id,
-                secret=settings.agent_token_secret.get_secret_value(),
+                secret=primary_secret,
                 ttl_seconds=request_body.ttl_seconds,
                 version=version,
+                key_id=key_id_from_secret(primary_secret),
             )
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=request_body.ttl_seconds)
             LOGGER.info(
@@ -853,8 +916,25 @@ def create_app() -> FastAPI:
         return ssh_session
 
     @app.get("/metrics", response_class=PlainTextResponse)
-    async def metrics_endpoint() -> PlainTextResponse:
+    async def metrics_endpoint(
+        request: Request,
+        settings: ControlPlaneSettings = Depends(get_settings),
+    ) -> PlainTextResponse:
+        token = settings.metrics_token.get_secret_value() if settings.metrics_token else None
+        _require_metrics_access(request, token)
         return PlainTextResponse(GLOBAL_REGISTRY.render())
+
+    @app.get("/api/keys", response_model=dict[str, list[str]])
+    async def list_key_material(
+        _: str = Depends(verify_admin_token),
+        settings: ControlPlaneSettings = Depends(get_settings),
+    ) -> dict[str, list[str]]:
+        agent_kids = [key_id_from_secret(secret) for secret in settings.agent_token_secrets]
+        jwt_kids = [key_id_from_secret(secret) for secret in settings.jwt_secrets]
+        return {
+            "agent_token_keys": agent_kids,
+            "admin_token_keys": jwt_kids,
+        }
 
     @app.get("/api/agents", response_model=list[AgentTokenRecord])
     async def list_agent_tokens(

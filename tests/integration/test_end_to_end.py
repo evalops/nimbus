@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import os
+import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -138,6 +139,9 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         "NIMBUS_CLICKHOUSE_URL": "http://clickhouse",
         "NIMBUS_CLICKHOUSE_DATABASE": "nimbus",
         "NIMBUS_CLICKHOUSE_TABLE": "ci_logs",
+        "NIMBUS_METRICS_TOKEN": "metrics-secret",
+        "NIMBUS_CACHE_METRICS_TOKEN": "metrics-secret",
+        "NIMBUS_LOGGING_METRICS_TOKEN": "metrics-secret",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -156,6 +160,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
     cache_client, cache_lifespan = await _create_client(cache_app)
 
     try:
+        metrics_headers = {"Authorization": "Bearer metrics-secret"}
         payload = {
             "action": "queued",
             "repository": {
@@ -177,7 +182,11 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         response = await control_client.post(
             "/webhooks/github",
             content=body,
-            headers={"x-hub-signature-256": signature, "content-type": "application/json"},
+            headers={
+                "x-hub-signature-256": signature,
+                "x-hub-signature-timestamp": str(int(time.time())),
+                "content-type": "application/json",
+            },
         )
         assert response.status_code == 202
 
@@ -291,7 +300,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         agent_record = next(item for item in token_inventory if item["agent_id"] == "agent-1")
         assert agent_record["token_version"] == rotated_payload["version"]
 
-        metrics_response = await control_client.get("/metrics")
+        metrics_response = await control_client.get("/metrics", headers=metrics_headers)
         assert metrics_response.status_code == 200
         assert "nimbus_control_plane_request_latency_seconds_count" in metrics_response.text
 
@@ -302,7 +311,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         )
         assert rate_limited.status_code == 429
 
-        cache_metrics = await cache_client.get("/metrics")
+        cache_metrics = await cache_client.get("/metrics", headers=metrics_headers)
         assert cache_metrics.status_code == 200
         assert "nimbus_cache_proxy_request_latency_seconds_count" in cache_metrics.text
 
@@ -310,13 +319,13 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         assert head_response.status_code == 200
         assert head_response.headers["content-length"] == "5"
 
-        metrics_control = await control_client.get("/metrics")
+        metrics_control = await control_client.get("/metrics", headers=metrics_headers)
         assert "nimbus_control_plane_requests_total" in metrics_control.text
 
-        metrics_logging = await logging_client.get("/metrics")
+        metrics_logging = await logging_client.get("/metrics", headers=metrics_headers)
         assert "nimbus_logging_rows_ingested_total" in metrics_logging.text
 
-        metrics_cache = await cache_client.get("/metrics", headers=cache_headers)
+        metrics_cache = await cache_client.get("/metrics", headers=metrics_headers)
         assert "nimbus_cache_hits_total" in metrics_cache.text
     finally:
         if control_client is not None:

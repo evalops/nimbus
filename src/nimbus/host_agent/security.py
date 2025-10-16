@@ -16,12 +16,9 @@ def check_capabilities() -> None:
     try:
         # Check if running as root
         if hasattr(os, "geteuid") and os.geteuid() == 0:
-            LOGGER.warning(
-                "Running as root without capability dropping - NOT RECOMMENDED",
-                uid=os.geteuid(),
-                recommendation="Use privileged-setup.sh to drop to CAP_NET_ADMIN only",
+            raise RuntimeError(
+                "Host agent must not run as root; invoke scripts/nimbus-privileged-setup.sh"
             )
-            return
         
         # Try to import prctl to check capabilities
         try:
@@ -35,24 +32,30 @@ def check_capabilities() -> None:
             
             if has_sys_admin:
                 LOGGER.warning(
-                    "Process has CAP_SYS_ADMIN - SECURITY RISK",
-                    recommendation="Use privileged-setup.sh to drop unnecessary capabilities",
+                    "Process has CAP_SYS_ADMIN - attempting automatic drop",
+                    recommendation="Ensure privileged wrapper is used",
                 )
+                try:
+                    drop_capabilities()
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError("Failed to drop CAP_SYS_ADMIN automatically") from exc
+                has_sys_admin = prctl.cap_effective.sys_admin
+                if has_sys_admin:
+                    raise RuntimeError("CAP_SYS_ADMIN still present after drop attempt")
             
             if not has_net_admin:
-                LOGGER.warning(
-                    "Process lacks CAP_NET_ADMIN - tap device creation may fail",
-                    recommendation="Run with CAP_NET_ADMIN or use privileged helper",
+                raise RuntimeError(
+                    "Process lacks CAP_NET_ADMIN - run via privileged wrapper to grant CAP_NET_ADMIN"
                 )
             
-            if has_net_admin and not has_sys_admin:
-                LOGGER.info("Running with minimal capabilities", caps="CAP_NET_ADMIN only")
+            LOGGER.info("Running with minimal capabilities", caps="CAP_NET_ADMIN only")
                 
         except ImportError:
             LOGGER.debug("prctl module not available, skipping capability check")
             
     except Exception as exc:
-        LOGGER.debug("Capability check failed", error=str(exc))
+        LOGGER.error("Capability verification failed", error=str(exc))
+        raise
 
 
 def drop_capabilities() -> None:

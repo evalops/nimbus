@@ -25,15 +25,25 @@ class ControlPlaneSettings(BaseSettings):
     redis_url: RedisDsn = env_field(..., "NIMBUS_REDIS_URL")
     database_url: str = env_field(..., "NIMBUS_DATABASE_URL")
     jwt_secret: SecretStr = env_field(..., "NIMBUS_JWT_SECRET")
+    jwt_secret_fallbacks: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_JWT_SECRET_FALLBACKS",
+    )
     public_base_url: HttpUrl = env_field(..., "NIMBUS_PUBLIC_BASE_URL")
     cache_token_ttl_seconds: int = env_field(3600, "NIMBUS_CACHE_TOKEN_TTL")
     cache_shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
     agent_token_secret: SecretStr = env_field(..., "NIMBUS_AGENT_TOKEN_SECRET")
+    agent_token_secret_fallbacks: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_AGENT_TOKEN_SECRET_FALLBACKS",
+    )
     agent_token_rate_limit: int = env_field(15, "NIMBUS_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "NIMBUS_AGENT_TOKEN_RATE_INTERVAL")
+    webhook_timestamp_tolerance_seconds: int = env_field(300, "NIMBUS_WEBHOOK_TIMESTAMP_TOLERANCE")
     org_job_rate_limit: int = env_field(100, "NIMBUS_ORG_JOB_RATE_LIMIT")
     org_rate_interval_seconds: int = env_field(60, "NIMBUS_ORG_RATE_INTERVAL")
     job_lease_ttl_seconds: int = env_field(300, "NIMBUS_JOB_LEASE_TTL")
+    metrics_token: Optional[SecretStr] = env_field(None, "NIMBUS_METRICS_TOKEN")
     admin_allowed_subjects: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_SUBJECTS")
     admin_allowed_ips: list[str] = Field(default_factory=list, validation_alias="NIMBUS_ADMIN_ALLOWED_IPS")
     trusted_proxy_cidrs: list[str] = Field(default_factory=list, validation_alias="NIMBUS_TRUSTED_PROXY_CIDRS")
@@ -69,6 +79,33 @@ class ControlPlaneSettings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("agent_token_secret_fallbacks", mode="before")
+    @classmethod
+    def _split_agent_token_fallbacks(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("jwt_secret_fallbacks", mode="before")
+    @classmethod
+    def _split_jwt_fallbacks(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @property
+    def agent_token_secrets(self) -> list[str]:
+        return [self.agent_token_secret.get_secret_value(), *self.agent_token_secret_fallbacks]
+
+    @property
+    def jwt_secrets(self) -> list[str]:
+        primary = (
+            self.jwt_secret.get_secret_value()
+            if hasattr(self.jwt_secret, "get_secret_value")
+            else str(self.jwt_secret)
+        )
+        return [primary, *self.jwt_secret_fallbacks]
+
 
 class HostAgentSettings(BaseSettings):
     """Configuration for the host agent daemon."""
@@ -95,7 +132,11 @@ class HostAgentSettings(BaseSettings):
     seccomp_filter_path: Optional[Path] = env_field(None, "NIMBUS_SECCOMP_FILTER")
     kernel_image_path: str = env_field(..., "NIMBUS_KERNEL_IMAGE")
     rootfs_image_path: str = env_field(..., "NIMBUS_ROOTFS_IMAGE")
+    snapshot_state_path: Optional[str] = env_field(None, "NIMBUS_SNAPSHOT_STATE_PATH")
+    snapshot_memory_path: Optional[str] = env_field(None, "NIMBUS_SNAPSHOT_MEMORY_PATH")
+    snapshot_enable_diff: bool = env_field(False, "NIMBUS_SNAPSHOT_ENABLE_DIFF")
     tap_device_prefix: str = env_field("nimbus", "NIMBUS_TAP_PREFIX")
+    cpu_affinity: list[int] = Field(default_factory=list, validation_alias="NIMBUS_CPU_AFFINITY")
     job_timeout_seconds: int = env_field(3600, "NIMBUS_JOB_TIMEOUT")
     vm_shutdown_grace_seconds: int = env_field(30, "NIMBUS_VM_SHUTDOWN_GRACE")
     lease_retry_attempts: int = env_field(3, "NIMBUS_AGENT_LEASE_RETRIES")
@@ -109,6 +150,19 @@ class HostAgentSettings(BaseSettings):
     ssh_poll_interval_seconds: float = env_field(5.0, "NIMBUS_SSH_POLL_INTERVAL")
     ssh_authorized_key: Optional[str] = env_field(None, "NIMBUS_SSH_AUTHORIZED_KEY")
 
+    @field_validator("cpu_affinity", mode="before")
+    @classmethod
+    def _split_cpu_affinity(cls, value):
+        if isinstance(value, str):
+            entries = []
+            for item in value.split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                entries.append(int(item))
+            return entries
+        return value
+
 
 class CacheProxySettings(BaseSettings):
     """Configuration for the cache proxy service."""
@@ -116,6 +170,7 @@ class CacheProxySettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", populate_by_name=True)
     storage_path: Path = env_field(Path("./cache"), "NIMBUS_CACHE_STORAGE_PATH")
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
+    metrics_token: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_METRICS_TOKEN")
     s3_endpoint_url: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_REGION")
@@ -157,6 +212,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
+    metrics_token: Optional[SecretStr] = env_field(None, "NIMBUS_LOGGING_METRICS_TOKEN")
     log_query_max_hours: int = env_field(168, "NIMBUS_LOG_QUERY_MAX_HOURS")  # 7 days default
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")

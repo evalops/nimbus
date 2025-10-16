@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import time
@@ -13,6 +14,8 @@ import time
 import jwt
 
 from .schemas import CacheToken
+def key_id_from_secret(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
 def _utc_now() -> datetime:
@@ -92,7 +95,7 @@ def verify_cache_token(secret: str, token: str) -> Optional[CacheToken]:
 
 
 def mint_agent_token(
-    *, agent_id: str, secret: str, ttl_seconds: int = 3600, version: int = 1
+    *, agent_id: str, secret: str, ttl_seconds: int = 3600, version: int = 1, key_id: Optional[str] = None
 ) -> str:
     now = int(time.time())
     payload = {
@@ -101,21 +104,19 @@ def mint_agent_token(
         "exp": now + ttl_seconds,
         "ver": version,
     }
-    return jwt.encode(payload, secret, algorithm="HS256")
+    headers = {"kid": key_id or key_id_from_secret(secret)}
+    return jwt.encode(payload, secret, algorithm="HS256", headers=headers)
 
 
 def decode_agent_token(secret: str, token: str) -> Optional[str]:
-    try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
-    except jwt.PyJWTError:
+    result = decode_agent_token_payload([secret], token)
+    if result is None:
         return None
-    subject = payload.get("sub")
-    if not isinstance(subject, str):
-        return None
+    subject, _ = result
     return subject
 
 
-def decode_agent_token_payload(secret: str, token: str) -> Optional[Tuple[str, int]]:
+def _decode_agent_token_with_secret(secret: str, token: str) -> Optional[Tuple[str, int]]:
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
     except jwt.PyJWTError:
@@ -129,6 +130,36 @@ def decode_agent_token_payload(secret: str, token: str) -> Optional[Tuple[str, i
     if isinstance(version, str) and version.isdigit():
         return subject, int(version)
     return subject, 0
+
+
+def decode_agent_token_payload(
+    secrets: str | Sequence[str], token: str
+) -> Optional[Tuple[str, int]]:
+    secret_list: list[str]
+    if isinstance(secrets, str):
+        secret_list = [secrets]
+    else:
+        secret_list = list(secrets)
+    if not secret_list:
+        return None
+
+    preferred: list[str] = secret_list
+    try:
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+    except jwt.PyJWTError:
+        kid = None
+
+    if kid:
+        keyed = [secret for secret in secret_list if key_id_from_secret(secret) == kid]
+        if keyed:
+            preferred = keyed + [secret for secret in secret_list if secret not in keyed]
+
+    for secret in preferred:
+        result = _decode_agent_token_with_secret(secret, token)
+        if result is not None:
+            return result
+    return None
 
 
 def _encode(payload: bytes, signature: str) -> str:

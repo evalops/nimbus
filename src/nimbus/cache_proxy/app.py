@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 import re
 import time
@@ -17,12 +18,31 @@ from opentelemetry import trace
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
+from ipaddress import ip_address
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
 from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
+
+
+def _require_metrics_access(request: Request, token: Optional[str]) -> None:
+    if token:
+        expected = f"Bearer {token}"
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not hmac.compare_digest(auth_header, expected):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
+        return
+
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied")
+    try:
+        if not ip_address(client_host).is_loopback:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access restricted to localhost")
+    except ValueError as exc:  # pragma: no cover - platform dependent
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied") from exc
 
 
 def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
@@ -581,7 +601,16 @@ def create_app() -> FastAPI:
             return JSONResponse(status_payload)
 
     @app.get("/metrics", response_class=PlainTextResponse)
-    async def metrics_endpoint(state: CacheProxyState = Depends(get_state)) -> PlainTextResponse:
+    async def metrics_endpoint(
+        request: Request,
+        state: CacheProxyState = Depends(get_state),
+    ) -> PlainTextResponse:
+        token = (
+            state.settings.metrics_token.get_secret_value()
+            if state.settings.metrics_token
+            else None
+        )
+        _require_metrics_access(request, token)
         TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
         return PlainTextResponse(GLOBAL_REGISTRY.render())
 
