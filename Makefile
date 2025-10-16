@@ -45,18 +45,18 @@ coverage:
 scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then mkdir -p $(SBOM_DIR); fi
 	@if docker buildx version >/dev/null 2>&1; then \
-		CONTROL_PLANE_SBOM_ARGS=""; \
-		if [ "$(SBOM_OUTPUT)" = "1" ]; then CONTROL_PLANE_SBOM_ARGS="--attest type=sbom,dest=$(SBOM_DIR)/nimbus-control-plane.spdx.json"; fi; \
-		docker buildx build --load -t nimbus-control-plane:ci $$CONTROL_PLANE_SBOM_ARGS .; \
+		CONTROL_PLANE_CMD="docker buildx build --load --platform=linux/amd64"; \
+		if [ "$(SBOM_OUTPUT)" = "1" ]; then CONTROL_PLANE_CMD="$$CONTROL_PLANE_CMD --attest type=sbom,dest=$(SBOM_DIR)/nimbus-control-plane.spdx.json"; fi; \
+		$$CONTROL_PLANE_CMD -t nimbus-control-plane:ci .; \
 	else \
 		echo "docker buildx not available; falling back to docker build (SBOM disabled)"; \
 		docker build -t nimbus-control-plane:ci .; \
 	fi
 	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-control-plane:ci
 	@if docker buildx version >/dev/null 2>&1; then \
-		AI_RUNNER_SBOM_ARGS=""; \
-		if [ "$(SBOM_OUTPUT)" = "1" ]; then AI_RUNNER_SBOM_ARGS="--attest type=sbom,dest=$(SBOM_DIR)/nimbus-ai-runner.spdx.json"; fi; \
-		docker buildx build --load -t nimbus-ai-runner:ci $$AI_RUNNER_SBOM_ARGS containers/ai-eval-runner; \
+		AI_RUNNER_CMD="docker buildx build --load --platform=linux/amd64"; \
+		if [ "$(SBOM_OUTPUT)" = "1" ]; then AI_RUNNER_CMD="$$AI_RUNNER_CMD --attest type=sbom,dest=$(SBOM_DIR)/nimbus-ai-runner.spdx.json"; fi; \
+		$$AI_RUNNER_CMD -t nimbus-ai-runner:ci containers/ai-eval-runner; \
 	else \
 		echo "docker buildx not available; falling back to docker build (SBOM disabled)"; \
 		docker build -t nimbus-ai-runner:ci containers/ai-eval-runner; \
