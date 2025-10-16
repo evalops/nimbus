@@ -13,6 +13,7 @@ compose-logs:
 	docker compose logs --follow
 
 test:
+	uv pip install pytest pytest-asyncio
 	uv run pytest
 
 test-integration:
@@ -34,7 +35,7 @@ audit:
 	./scripts/dependency_audit.sh
 
 coverage:
-	uv pip install pytest-cov
+	uv pip install pytest pytest-asyncio pytest-cov
 	uv run --no-sync python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=66
 
 scan-images:
