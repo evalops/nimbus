@@ -4,6 +4,8 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
+USER 0
+
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
