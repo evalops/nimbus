@@ -36,6 +36,7 @@ RUN dnf update -y \
         shadow-utils \
         tar \
         gzip \
+    && dnf remove -y nodejs npm || true \
     && update-crypto-policies --set FIPS \
     && dnf clean all
 
