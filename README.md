@@ -391,21 +391,12 @@ Configure S3-specific variables when delegating storage to a remote backend.
 
 ### Pre-Pilot Checklist
 
-Before deploying to production, review [docs/PRE_PILOT_GAPS.md](docs/PRE_PILOT_GAPS.md) for the complete security and reliability assessment.
+Before deploying to production, review [docs/PRE_PILOT_READINESS.md](docs/PRE_PILOT_READINESS.md) for the current security and reliability status.
 
-**Critical items (all implemented):**
-- Lease fencing with fence tokens and heartbeat renewal
-- Idempotent teardown and startup reaper for crash recovery
-- Multi-tenant isolation (cache, logs, Docker registry)
-- Secret masking with Pydantic SecretStr
-- Webhook replay protection via delivery ID tracking
-- Per-org rate limiting on job submissions
-- SSH port allocation with unique constraints
-
-**Recommended for scale:**
-- Alembic migrations (currently using ensure_schema)
-- Comprehensive integration test suite
-- Health check endpoints (/healthz) for K8s readiness probes
+**Highlights:**
+- Lease fencing, idempotent teardown, distributed rate limiting, and org-scoped cache/log boundaries are implemented and verified in the codebase.
+- Webhook replay protection still needs timestamp validation, cache token issuance remains broad (`read_write`), and capability/jailer hardening requires an operational wrapper.
+- Firecracker jailer/seccomp rollout, rootfs attestation, and performance tuning remain planned enhancements for post-pilot hardening.
 
 ### Multi-Tenant Configuration
 
@@ -497,7 +488,7 @@ PARTITION BY toYYYYMM(ts);
 
 ## Contributing
 
-Nimbus is production-ready for pilot deployments. See [docs/SELF_REVIEW.md](docs/SELF_REVIEW.md) for current status and [docs/PRE_PILOT_GAPS.md](docs/PRE_PILOT_GAPS.md) for completed security work.
+Nimbus is production-ready for pilot deployments. Track current readiness and outstanding hardening items in [docs/PRE_PILOT_READINESS.md](docs/PRE_PILOT_READINESS.md).
 
 Contributions welcome! Key areas:
 - Integration test coverage
