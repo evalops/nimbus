@@ -35,7 +35,7 @@ audit:
 
 coverage:
 	uv pip install pytest-cov
-	uv run --no-sync python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=65
+	uv run --no-sync python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=66
 
 scan-images:
 	docker build -t nimbus-control-plane:ci .
