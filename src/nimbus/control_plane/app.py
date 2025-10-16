@@ -13,10 +13,13 @@ from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from typing import Optional
 from uuid import uuid4
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse
+import jwt
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis, from_url as redis_from_url
 import structlog
@@ -49,6 +52,48 @@ from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job, lease_job_with_fence
 from ..common.security import mint_cache_token
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
+from ..common.networking import (
+    MetadataEndpointDenylist,
+    EgressPolicyPack,
+    OfflineEgressEnforcer,
+    create_guarded_async_client,
+    load_allowed_registries,
+)
+from .identity_store import (
+    ensure_schema as ensure_identity_schema,
+    load_rbac_policy,
+    upsert_programs,
+    upsert_user,
+    replace_roles,
+    get_user_by_external_id,
+    get_user_by_scim_id,
+    list_users as list_identity_users,
+    assign_roles,
+    revoke_user,
+    create_service_account,
+    get_service_account_by_name,
+    get_service_account,
+    mint_service_account_token,
+    get_service_account_token,
+    validate_service_account_token,
+    list_service_account_tokens,
+    revoke_service_account_token,
+    update_service_account_roles,
+    get_permissions_for_roles,
+    RBACPolicy,
+    get_program_permissions_for_service_account,
+)
+from .saml import SamlAuthenticator, SamlSettings
+from .scim import validate_scim_token as scim_validate_token, scim_list_response, format_scim_user, parse_patch_operations
+from .compliance import (
+    load_control_matrix,
+    ensure_schema as ensure_compliance_schema,
+    record_export_event,
+    list_export_events,
+    prune_export_events,
+    enforce_residency,
+    ControlMatrix,
+)
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_requests_total", "Total control plane requests"))
 JOB_LEASE_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_control_plane_job_leases_total", "Total leased jobs"))
 QUEUE_LENGTH_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_control_plane_queue_length", "Current queue length"))
@@ -64,6 +109,25 @@ REQUEST_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
 
 LOGGER = structlog.get_logger("nimbus.control_plane")
 TRACER = trace.get_tracer("nimbus.control_plane")
+
+SESSION_TOKEN_TTL_SECONDS = 3600
+
+
+class ServiceAccountCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    roles: list[str] = Field(default_factory=list)
+
+
+class ServiceAccountTokenRequest(BaseModel):
+    ttl_seconds: Optional[int] = Field(default=None, ge=300, le=86400)
+
+
+class ExportLogRequest(BaseModel):
+    program_id: str
+    data_classification: str
+    destination_region: str
+    justification: str
 
 
 def _default_cache_scope(org_id: int) -> str:
@@ -184,6 +248,15 @@ class AppState:
         token_rate_limiter: RateLimiter,
         admin_rate_limiter: RateLimiter,
         distributed_limiter: Optional[DistributedRateLimiter] = None,
+        session_secret: Optional[str] = None,
+        scim_token: Optional[str] = None,
+        saml_authenticator: Optional[SamlAuthenticator] = None,
+        rbac_policy: Optional[RBACPolicy] = None,
+        control_matrix: Optional[ControlMatrix] = None,
+        service_account_default_ttl: int = 3600,
+        itar_regions: Optional[list[str]] = None,
+        compliance_retention_days: int = 365,
+        egress_enforcer: Optional[OfflineEgressEnforcer] = None,
     ) -> None:
         self.settings = settings
         self.redis = redis
@@ -196,6 +269,15 @@ class AppState:
         if distributed_limiter is None:
             distributed_limiter = _NoopDistributedLimiter()
         self.distributed_limiter = distributed_limiter
+        self.session_secret = session_secret
+        self.scim_token = scim_token
+        self.saml_authenticator = saml_authenticator
+        self.rbac_policy = rbac_policy or RBACPolicy(programs={})
+        self.control_matrix = control_matrix or ControlMatrix(raw={})
+        self.service_account_default_ttl = service_account_default_ttl
+        self.itar_regions = itar_regions or []
+        self.compliance_retention_days = compliance_retention_days
+        self.egress_enforcer = egress_enforcer
 
 
 def _get_state(request: Request) -> AppState:
@@ -327,11 +409,36 @@ async def lifespan(app: FastAPI):
     )
     instrument_fastapi_app(app)
     redis = redis_from_url(str(settings.redis_url), decode_responses=False)
-    http_client = httpx.AsyncClient(timeout=20)
+    metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
+    policy_pack = EgressPolicyPack.from_file(settings.egress_policy_pack)
+    allowed_hosts = load_allowed_registries(settings.allowed_artifact_registries)
+    public_host = urlparse(str(settings.public_base_url)).hostname
+    if public_host:
+        allowed_hosts.append(public_host)
+    egress_enforcer = OfflineEgressEnforcer(
+        offline_mode=settings.offline_mode,
+        metadata_denylist=metadata_denylist,
+        policy_pack=policy_pack,
+        allowed_registries=allowed_hosts,
+    )
+    ca_bundle = settings.ca_bundle_path.as_posix() if settings.ca_bundle_path else None
+    http_client = create_guarded_async_client(
+        enforcer=egress_enforcer,
+        timeout=20.0,
+        ca_bundle=ca_bundle,
+    )
     github_client = GitHubAppClient(settings=settings, http_client=http_client)
     engine = db.create_engine(settings.database_url)
     await db.ensure_schema(engine)
+    await ensure_identity_schema(engine)
+    await ensure_compliance_schema(engine)
     session_factory = db.session_factory(engine)
+    rbac_policy = load_rbac_policy(settings.program_policy_path)
+    async with session_factory() as session:  # type: ignore[call-arg]
+        await upsert_programs(session, rbac_policy)
+        await session.commit()
+        await prune_export_events(session, retention_days=settings.itar_export_log_retention_days)
+        await session.commit()
     rate_limiter = RateLimiter(
         limit=settings.agent_token_rate_limit,
         interval=float(settings.agent_token_rate_interval_seconds),
@@ -341,6 +448,33 @@ async def lifespan(app: FastAPI):
         interval=float(settings.admin_rate_interval_seconds),
     )
     distributed_limiter = DistributedRateLimiter(redis)
+    saml_authenticator = None
+    if (
+        settings.saml_sp_entity_id
+        and settings.saml_assertion_consumer_service_url
+        and settings.saml_idp_metadata_path
+        and settings.saml_idp_metadata_path.exists()
+    ):
+        saml_authenticator = SamlAuthenticator(
+            SamlSettings(
+                entity_id=settings.saml_sp_entity_id,
+                acs_url=str(settings.saml_assertion_consumer_service_url),
+                metadata_path=settings.saml_idp_metadata_path,
+                sp_certificate=settings.saml_sp_certificate_path,
+                sp_private_key=settings.saml_sp_private_key_path,
+            )
+        )
+    control_matrix = load_control_matrix(settings.compliance_matrix_path)
+    session_secret = (
+        settings.sso_session_secret.get_secret_value()
+        if settings.sso_session_secret
+        else None
+    )
+    scim_token = (
+        settings.scim_token.get_secret_value()
+        if settings.scim_token
+        else None
+    )
     container = AppState(
         settings=settings,
         redis=redis,
@@ -350,6 +484,15 @@ async def lifespan(app: FastAPI):
         token_rate_limiter=rate_limiter,
         admin_rate_limiter=admin_rate_limiter,
         distributed_limiter=distributed_limiter,
+        session_secret=session_secret,
+        scim_token=scim_token,
+        saml_authenticator=saml_authenticator,
+        rbac_policy=rbac_policy,
+        control_matrix=control_matrix,
+        service_account_default_ttl=settings.service_account_default_ttl_seconds,
+        itar_regions=settings.itar_permitted_regions,
+        compliance_retention_days=settings.itar_export_log_retention_days,
+        egress_enforcer=egress_enforcer,
     )
     app.state.container = container
     
@@ -401,6 +544,380 @@ def create_app() -> FastAPI:
                 status=getattr(response, "status_code", None),
                 duration_ms=round(duration * 1000, 2),
             )
+
+    @app.get("/sso/metadata")
+    async def saml_metadata(state: AppState = Depends(_get_state)) -> Response:
+        if not state.saml_authenticator:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SAML not configured")
+        xml = state.saml_authenticator.metadata_xml()
+        return PlainTextResponse(xml, media_type="application/samlmetadata+xml")
+
+    @app.get("/sso/login")
+    async def saml_login(
+        relay_state: Optional[str] = None,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        if not state.saml_authenticator:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SAML not configured")
+        location, parameters = state.saml_authenticator.prepare_redirect(relay_state=relay_state)
+        return {"redirect": location, "parameters": parameters}
+
+    @app.post("/sso/acs")
+    async def saml_acs(request: Request, state: AppState = Depends(_get_state)) -> dict:
+        if not state.saml_authenticator or not state.session_secret:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SAML not configured")
+        form = await request.form()
+        saml_response = form.get("SAMLResponse")
+        if not saml_response:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing SAML response")
+        parsed = state.saml_authenticator.parse_assertion(saml_response)
+        attributes: dict[str, list[str]] = {key: value for key, value in parsed["attributes"].items()}
+
+        def _get_attr(name: str) -> Optional[str]:
+            values = attributes.get(name)
+            if not values:
+                return None
+            value = values[0]
+            return value.strip() if isinstance(value, str) else value
+
+        def _get_many(*names: str) -> list[str]:
+            for candidate in names:
+                values = attributes.get(candidate)
+                if values:
+                    return [str(item) for item in values if item]
+            return []
+
+        external_id = (
+            _get_attr("http://schemas.microsoft.com/identity/claims/objectidentifier")
+            or parsed.get("name_id")
+        )
+        if not external_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing external identifier")
+        email = _get_attr("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress") or external_id
+        display_name = _get_attr("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name")
+        program_id = (
+            _get_attr("nimbusProgram")
+            or _get_attr("program_id")
+            or state.settings.saml_default_program_id
+            or "default"
+        )
+        roles = _get_many(
+            "nimbusRoles",
+            "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+        )
+        if not roles:
+            roles = ["operator"]
+
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await upsert_user(
+                session,
+                external_id=external_id,
+                email=email,
+                display_name=display_name,
+                active=True,
+                primary_program=program_id,
+                metadata={"assertion": {key: value for key, value in attributes.items()}},
+            )
+            await replace_roles(session, user_id=record["id"], program_id=program_id, roles=roles)
+            await session.commit()
+
+        token = _mint_session_token(
+            state.session_secret,
+            subject=external_id,
+            email=email,
+            program_roles={program_id: roles},
+        )
+        return {
+            "token": token,
+            "program_id": program_id,
+            "roles": roles,
+            "expires_in": SESSION_TOKEN_TTL_SECONDS,
+        }
+
+    @app.get("/scim/v2/Users")
+    async def scim_list_users(
+        request: Request,
+        state: AppState = Depends(_get_state),
+        startIndex: int = 1,
+        count: int = 100,
+    ) -> dict:
+        token = _extract_bearer_token(request)
+        scim_validate_token(token, state.scim_token)
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            total, users = await list_identity_users(session, start=startIndex, count=count)
+        resources = [format_scim_user(user) for user in users]
+        return scim_list_response(total, resources)
+
+    @app.get("/scim/v2/Users/{scim_id}")
+    async def scim_get_user(
+        scim_id: str,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        token = _extract_bearer_token(request)
+        scim_validate_token(token, state.scim_token)
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await get_user_by_scim_id(session, scim_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return format_scim_user(record)
+
+    @app.post("/scim/v2/Users", status_code=status.HTTP_201_CREATED)
+    async def scim_create_user(
+        payload: dict,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        token = _extract_bearer_token(request)
+        scim_validate_token(token, state.scim_token)
+        scim_id = payload.get("id") or uuid4().hex
+        external_id = payload.get("externalId") or payload.get("userName")
+        if not external_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="externalId is required")
+        email = payload.get("userName")
+        if not email:
+            emails = payload.get("emails") or []
+            if emails:
+                email = emails[0].get("value")
+        email = email or external_id
+        name_data = payload.get("name") or {}
+        display_name = name_data.get("formatted")
+        active = payload.get("active", True)
+        primary_program = payload.get("NimbusProgram") or state.settings.saml_default_program_id or "default"
+        roles = payload.get("NimbusRoles") or []
+        if isinstance(roles, str):
+            roles = [roles]
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await upsert_user(
+                session,
+                external_id=external_id,
+                email=email,
+                display_name=display_name,
+                active=active,
+                primary_program=primary_program,
+                metadata={"scim": payload},
+                scim_id=scim_id,
+            )
+            if roles:
+                await replace_roles(session, user_id=record["id"], program_id=primary_program, roles=roles)
+            await session.commit()
+        return format_scim_user(record)
+
+    @app.patch("/scim/v2/Users/{scim_id}")
+    async def scim_patch_user(
+        scim_id: str,
+        payload: dict,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        token = _extract_bearer_token(request)
+        scim_validate_token(token, state.scim_token)
+        operations = parse_patch_operations(payload)
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await get_user_by_scim_id(session, scim_id)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            active = record.get("active", True)
+            roles_update: Optional[list[str]] = None
+            for op in operations:
+                op_name = str(op.get("op", "")).lower()
+                path = str(op.get("path", "")).lower()
+                value = op.get("value")
+                if op_name == "replace" and path == "active":
+                    active = bool(value)
+                elif op_name == "replace" and "roles" in path:
+                    if isinstance(value, list):
+                        roles_update = [str(item) for item in value]
+                    elif isinstance(value, dict):
+                        extracted = value.get("value")
+                        if isinstance(extracted, list):
+                            roles_update = [str(item) for item in extracted]
+                        elif isinstance(extracted, str):
+                            roles_update = [extracted]
+                    elif isinstance(value, str):
+                        roles_update = [value]
+            updated = await upsert_user(
+                session,
+                external_id=record["external_id"],
+                email=record.get("email"),
+                display_name=record.get("display_name"),
+                active=active,
+                primary_program=record.get("primary_program"),
+                metadata=record.get("metadata"),
+                scim_id=scim_id,
+            )
+            if roles_update is not None:
+                program_id = record.get("primary_program") or state.settings.saml_default_program_id or "default"
+                await replace_roles(session, user_id=updated["id"], program_id=program_id, roles=roles_update)
+            await session.commit()
+        return format_scim_user(updated)
+
+    @app.delete("/scim/v2/Users/{scim_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def scim_delete_user(
+        scim_id: str,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> Response:
+        token = _extract_bearer_token(request)
+        scim_validate_token(token, state.scim_token)
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            record = await get_user_by_scim_id(session, scim_id)
+            if not record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            await revoke_user(session, user_id=record["id"])
+            await session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post("/api/programs/{program_id}/service-accounts", status_code=status.HTTP_201_CREATED)
+    async def create_service_account_endpoint(
+        program_id: str,
+        payload: ServiceAccountCreateRequest,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        principal = await _authorize_program_request(request, state, program_id=program_id, permission="iam.manage")
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            existing = await get_service_account_by_name(session, program_id=program_id, name=payload.name)
+            if existing:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Service account already exists")
+            account = await create_service_account(
+                session,
+                program_id=program_id,
+                name=payload.name,
+                description=payload.description,
+                created_by=str(principal.get("subject") or principal.get("kind") or "unknown"),
+            )
+            if payload.roles:
+                await update_service_account_roles(
+                    session,
+                    service_account_id=account["id"],
+                    program_id=program_id,
+                    roles=payload.roles,
+                    description=payload.description,
+                )
+            await session.commit()
+        return {"service_account": account}
+
+    @app.get("/api/service-accounts/{service_account_id}/tokens")
+    async def list_service_account_tokens_endpoint(
+        service_account_id: int,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            account = await get_service_account(session, service_account_id=service_account_id)
+            if not account:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service account not found")
+        await _authorize_program_request(request, state, program_id=account["program_id"], permission="iam.token")
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            tokens = await list_service_account_tokens(session, service_account_id=service_account_id)
+        return {"tokens": tokens}
+
+    @app.post("/api/service-accounts/{service_account_id}/tokens", status_code=status.HTTP_201_CREATED)
+    async def mint_service_account_token_endpoint(
+        service_account_id: int,
+        payload: ServiceAccountTokenRequest,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            account = await get_service_account(session, service_account_id=service_account_id)
+            if not account:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service account not found")
+        principal = await _authorize_program_request(request, state, program_id=account["program_id"], permission="iam.token")
+        ttl = payload.ttl_seconds or state.service_account_default_ttl
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            token_value, record = await mint_service_account_token(
+                session,
+                service_account_id=service_account_id,
+                ttl_seconds=ttl,
+                created_by=str(principal.get("subject") or principal.get("kind") or "unknown"),
+            )
+            await session.commit()
+        return {
+            "token": token_value,
+            "expires_at": record.get("expires_at"),
+            "token_id": record.get("id"),
+        }
+
+    @app.delete("/api/service-account-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def revoke_service_account_token_endpoint(
+        token_id: int,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> Response:
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            token_record = await get_service_account_token(session, token_id=token_id)
+            if not token_record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+            account = await get_service_account(session, service_account_id=token_record["service_account_id"])
+            if not account:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service account missing")
+        await _authorize_program_request(request, state, program_id=account["program_id"], permission="iam.token")
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            await revoke_service_account_token(session, token_id=token_id)
+            await session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/compliance/matrix")
+    async def get_compliance_matrix(
+        framework: Optional[str] = None,
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        if framework:
+            controls = state.control_matrix.controls_for(framework)
+        else:
+            controls = state.control_matrix.raw
+        return {
+            "framework": framework or "all",
+            "controls": controls,
+        }
+
+    @app.post("/api/compliance/export-log", status_code=status.HTTP_201_CREATED)
+    async def record_export_log(
+        payload: ExportLogRequest,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        enforce_residency(payload.destination_region, state.itar_regions)
+        principal = await _authorize_program_request(
+            request,
+            state,
+            program_id=payload.program_id,
+            permission="compliance.export",
+        )
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            event = await record_export_event(
+                session,
+                program_id=payload.program_id,
+                actor=str(principal.get("subject") or principal.get("kind") or "unknown"),
+                data_classification=payload.data_classification,
+                destination_region=payload.destination_region,
+                justification=payload.justification,
+            )
+            await session.commit()
+        return {"event": event}
+
+    @app.get("/api/compliance/export-log")
+    async def list_all_export_events(
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            events = await list_export_events(session)
+        return {"events": events}
+
+    @app.get("/api/programs/{program_id}/compliance/export-log")
+    async def list_program_export_events(
+        program_id: str,
+        request: Request,
+        state: AppState = Depends(_get_state),
+    ) -> dict:
+        await _authorize_program_request(request, state, program_id=program_id, permission="compliance.view")
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            events = await list_export_events(session, program_id=program_id)
+        return {"events": events}
 
     @app.post("/webhooks/github")
     async def github_webhook(
@@ -1008,3 +1525,91 @@ def _verify_github_signature(secret: str, body: bytes, signature: str | None) ->
     provided = signature.split("=", 1)[1]
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(provided, digest)
+
+
+def _mint_session_token(
+    secret: str,
+    *,
+    subject: str,
+    email: str,
+    program_roles: dict[str, list[str]],
+) -> str:
+    issued_at = datetime.now(timezone.utc)
+    payload = {
+        "sub": subject,
+        "email": email,
+        "roles": program_roles,
+        "iat": int(issued_at.timestamp()),
+        "exp": int((issued_at + timedelta(seconds=SESSION_TOKEN_TTL_SECONDS)).timestamp()),
+        "type": "user",
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _decode_session_token(secret: Optional[str], token: str) -> Optional[dict]:
+    if not secret:
+        return None
+    try:
+        return jwt.decode(token, secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    return auth_header.split(" ", 1)[1]
+
+
+async def _resolve_permissions(
+    state: AppState,
+    *,
+    program_id: str,
+    roles: list[str],
+) -> list[str]:
+    if not roles:
+        return []
+    async with state.session_factory() as session:  # type: ignore[call-arg]
+        permissions = await get_permissions_for_roles(session, program_id=program_id, roles=roles)
+    return permissions
+
+
+async def _authorize_program_request(
+    request: Request,
+    state: AppState,
+    *,
+    program_id: str,
+    permission: str,
+) -> dict:
+    token = _extract_bearer_token(request)
+    payload = _decode_session_token(state.session_secret, token)
+    if payload and payload.get("type") == "user":
+        roles = payload.get("roles", {}).get(program_id, [])
+        permissions = await _resolve_permissions(state, program_id=program_id, roles=list(map(str, roles)))
+        if permission not in permissions:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient privileges")
+        return {
+            "kind": "user",
+            "subject": payload.get("sub"),
+            "email": payload.get("email"),
+            "roles": roles,
+        }
+
+    async with state.session_factory() as session:  # type: ignore[call-arg]
+        record = await validate_service_account_token(session, token)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid credentials")
+        permissions = await get_program_permissions_for_service_account(
+            session,
+            service_account_id=record["service_account_id"],
+        )
+    if permission not in permissions:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient privileges")
+    account = record["service_account"]
+    return {
+        "kind": "service_account",
+        "subject": account.get("name"),
+        "program_id": account.get("program_id"),
+        "permissions": permissions,
+    }

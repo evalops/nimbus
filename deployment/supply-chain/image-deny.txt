@@ -1,0 +1,2 @@
+# Known-bad images denied at launch time
+docker.io/library/ubuntu:latest

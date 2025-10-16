@@ -1,0 +1,7 @@
+policies:
+  - effect: allow
+    pattern: "^https://registry\.internal\.example\.com"
+  - effect: allow
+    pattern: "^https://model-registry\.internal\.example\.com"
+  - effect: deny
+    pattern: "^https://"

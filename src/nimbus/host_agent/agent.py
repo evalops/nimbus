@@ -6,7 +6,9 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -15,6 +17,17 @@ from opentelemetry import trace
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
+from ..common.networking import (
+    MetadataEndpointDenylist,
+    EgressPolicyPack,
+    OfflineEgressEnforcer,
+    create_guarded_async_client,
+)
+from ..common.supply_chain import (
+    ImagePolicy,
+    ensure_provenance,
+    generate_spdx_sbom,
+)
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
@@ -43,11 +56,28 @@ class HostAgent:
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
         self._launcher = FirecrackerLauncher(settings)
-        timeout = httpx.Timeout(30.0)
-        self._http = httpx.AsyncClient(timeout=timeout)
+        allowed_registries = list(settings.artifact_registry_allow_list)
+        parsed = urlparse(str(settings.control_plane_base_url))
+        if parsed.hostname:
+            allowed_registries.append(parsed.hostname)
+        metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
+        policy_pack = EgressPolicyPack.from_file(settings.egress_policy_pack)
+        self._egress_enforcer = OfflineEgressEnforcer(
+            offline_mode=settings.offline_mode,
+            metadata_denylist=metadata_denylist,
+            policy_pack=policy_pack,
+            allowed_registries=allowed_registries,
+        )
+        self._http = create_guarded_async_client(
+            enforcer=self._egress_enforcer,
+            timeout=30.0,
+        )
         self._log_http: Optional[httpx.AsyncClient] = None
         if settings.log_sink_url:
-            self._log_http = httpx.AsyncClient(timeout=timeout)
+            self._log_http = create_guarded_async_client(
+                enforcer=self._egress_enforcer,
+                timeout=30.0,
+            )
         self._running = False
         self._metrics_server: Optional[asyncio.AbstractServer] = None
         self._active_jobs = 0
@@ -59,12 +89,23 @@ class HostAgent:
         self._enable_ssh = settings.enable_ssh
         self._last_ssh_sync = 0.0
         self._state_store = AgentStateStore(settings.state_database_url)
+        self._image_policy = ImagePolicy.from_paths(settings.image_allow_list_path, settings.image_deny_list_path)
+        self._cosign_key = settings.cosign_certificate_authority
+        self._require_provenance = settings.provenance_required
+        self._sbom_output_path = settings.sbom_output_path
 
     async def run(self) -> None:
         self._running = True
         await self._state_store.open()
         await self._recover_state()
         await self._ensure_metrics_server()
+
+        if self._sbom_output_path:
+            try:
+                root = Path(self._settings.rootfs_image_path).resolve().parent
+                generate_spdx_sbom(root, self._sbom_output_path)
+            except Exception as exc:  # noqa: BLE001 - logging for visibility
+                LOGGER.warning("SBOM generation failed", error=str(exc))
         
         # Run reaper on startup to clean up stale resources from previous crashes
         try:
@@ -230,6 +271,21 @@ class HostAgent:
             await self._submit_status(assignment, "starting", **status_kwargs)
             network = self._launcher.network_for_job(assignment.job_id)
             self._job_networks[assignment.job_id] = network
+            try:
+                ensure_provenance(
+                    self._settings.rootfs_image_path,
+                    self._image_policy,
+                    public_key_path=self._cosign_key,
+                    require_provenance=self._require_provenance,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.error("Runner image provenance verification failed", error=str(exc))
+                status_kwargs = {"message": "runner provenance validation failed"}
+                if fence_token is not None:
+                    status_kwargs["fence_token"] = fence_token
+                await self._submit_status(assignment, "failed", **status_kwargs)
+                JOB_FAILED_COUNTER.inc()
+                return
             try:
                 await self._state_store.record_job(
                     StoredJobNetwork(

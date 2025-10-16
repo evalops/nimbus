@@ -57,10 +57,61 @@ class ControlPlaneSettings(BaseSettings):
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+    offline_mode: bool = env_field(False, "NIMBUS_OFFLINE_MODE")
+    allowed_artifact_registries: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_ALLOWED_ARTIFACT_REGISTRIES",
+    )
+    metadata_endpoint_denylist: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_METADATA_DENYLIST",
+    )
+    egress_policy_pack: Optional[Path] = env_field(None, "NIMBUS_EGRESS_POLICY_PACK")
+    saml_sp_entity_id: Optional[str] = env_field(None, "NIMBUS_SAML_SP_ENTITY_ID")
+    saml_assertion_consumer_service_url: Optional[HttpUrl] = env_field(
+        None,
+        "NIMBUS_SAML_ACS_URL",
+    )
+    saml_idp_metadata_path: Optional[Path] = env_field(None, "NIMBUS_SAML_IDP_METADATA")
+    saml_sp_certificate_path: Optional[Path] = env_field(None, "NIMBUS_SAML_SP_CERT")
+    saml_sp_private_key_path: Optional[Path] = env_field(None, "NIMBUS_SAML_SP_KEY")
+    saml_default_program_id: Optional[str] = env_field(None, "NIMBUS_SAML_DEFAULT_PROGRAM")
+    sso_session_secret: Optional[SecretStr] = env_field(None, "NIMBUS_SSO_SESSION_SECRET")
+    scim_token: Optional[SecretStr] = env_field(None, "NIMBUS_SCIM_TOKEN")
+    program_policy_path: Optional[Path] = env_field(None, "NIMBUS_PROGRAM_POLICY_PATH")
+    service_account_default_ttl_seconds: int = env_field(3600, "NIMBUS_SERVICE_ACCOUNT_TTL")
+    compliance_matrix_path: Optional[Path] = env_field(None, "NIMBUS_COMPLIANCE_MATRIX")
+    itar_permitted_regions: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_ITAR_REGIONS",
+    )
+    itar_export_log_retention_days: int = env_field(365, "NIMBUS_ITAR_EXPORT_LOG_RETENTION")
+    ca_bundle_path: Optional[Path] = env_field(None, "NIMBUS_CA_BUNDLE")
 
     @field_validator("admin_allowed_subjects", mode="before")
     @classmethod
     def _split_admin_subjects(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("allowed_artifact_registries", mode="before")
+    @classmethod
+    def _split_allowed_registries(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("metadata_endpoint_denylist", mode="before")
+    @classmethod
+    def _split_metadata_denylist(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("itar_permitted_regions", mode="before")
+    @classmethod
+    def _split_itar_regions(cls, value):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
@@ -149,6 +200,25 @@ class HostAgentSettings(BaseSettings):
     enable_ssh: bool = env_field(False, "NIMBUS_SSH_ENABLE")
     ssh_poll_interval_seconds: float = env_field(5.0, "NIMBUS_SSH_POLL_INTERVAL")
     ssh_authorized_key: Optional[str] = env_field(None, "NIMBUS_SSH_AUTHORIZED_KEY")
+    offline_mode: bool = env_field(False, "NIMBUS_AGENT_OFFLINE_MODE")
+    metadata_endpoint_denylist: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_AGENT_METADATA_DENYLIST",
+    )
+    artifact_registry_allow_list: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_AGENT_REGISTRY_ALLOW",
+    )
+    artifact_registry_deny_list: list[str] = Field(
+        default_factory=list,
+        validation_alias="NIMBUS_AGENT_REGISTRY_DENY",
+    )
+    egress_policy_pack: Optional[Path] = env_field(None, "NIMBUS_AGENT_EGRESS_POLICY_PACK")
+    image_allow_list_path: Optional[Path] = env_field(None, "NIMBUS_AGENT_IMAGE_ALLOW_LIST")
+    image_deny_list_path: Optional[Path] = env_field(None, "NIMBUS_AGENT_IMAGE_DENY_LIST")
+    sbom_output_path: Optional[Path] = env_field(None, "NIMBUS_AGENT_SBOM_OUTPUT")
+    cosign_certificate_authority: Optional[Path] = env_field(None, "NIMBUS_AGENT_COSIGN_CA")
+    provenance_required: bool = env_field(True, "NIMBUS_AGENT_PROVENANCE_REQUIRED")
 
     @field_validator("cpu_affinity", mode="before")
     @classmethod
@@ -161,6 +231,27 @@ class HostAgentSettings(BaseSettings):
                     continue
                 entries.append(int(item))
             return entries
+        return value
+
+    @field_validator("metadata_endpoint_denylist", mode="before")
+    @classmethod
+    def _split_metadata_denylist(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("artifact_registry_allow_list", mode="before")
+    @classmethod
+    def _split_registry_allow(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("artifact_registry_deny_list", mode="before")
+    @classmethod
+    def _split_registry_deny(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
 

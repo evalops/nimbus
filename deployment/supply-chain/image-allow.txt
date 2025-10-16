@@ -1,0 +1,2 @@
+# Allowed runner images
+internal.registry.example.com/nimbus/runner:stable

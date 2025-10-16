@@ -1,0 +1,188 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nimbus
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: nimbus-restricted
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: false
+allowedCapabilities: []
+fsGroup:
+  type: MustRunAs
+  ranges:
+    - min: 1000
+      max: 1000
+runAsUser:
+  type: MustRunAs
+  uid: 1000
+seLinuxContext:
+  type: MustRunAs
+  seLinuxOptions:
+    level: s0:c123,c456
+supplementalGroups:
+  type: MustRunAs
+  ranges:
+    - min: 1000
+      max: 1000
+readOnlyRootFilesystem: true
+volumes:
+  - configMap
+  - projected
+  - secret
+  - persistentVolumeClaim
+users:
+  - system:serviceaccount:nimbus:nimbus-control-plane
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nimbus-control-plane
+  namespace: nimbus
+secrets:
+  - name: nimbus-control-plane-secrets
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nimbus-control-plane-config
+  namespace: nimbus
+data:
+  NIMBUS_REQUIRE_HTTPS: "true"
+  NIMBUS_OFFLINE_MODE: "true"
+  NIMBUS_ALLOWED_ARTIFACT_REGISTRIES: "registry.internal.example.com,model-registry.internal.example.com"
+  NIMBUS_METADATA_DENYLIST: "169.254.169.254,metadata.google.internal"
+  NIMBUS_EGRESS_POLICY_PACK: "/etc/nimbus/egress-policies.yaml"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nimbus-egress-policies
+  namespace: nimbus
+data:
+  egress-policies.yaml: |
+    policies:
+      - effect: allow
+        pattern: "^https://registry\\.internal\\.example\\.com"
+      - effect: allow
+        pattern: "^https://model-registry\\.internal\\.example\\.com"
+      - effect: deny
+        pattern: "^https://"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nimbus-control-plane-secrets
+  namespace: nimbus
+type: Opaque
+stringData:
+  NIMBUS_JWT_SECRET: "changeme"
+  NIMBUS_AGENT_TOKEN_SECRET: "changeme"
+  NIMBUS_CACHE_SHARED_SECRET: "changeme"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nimbus-control-plane
+  namespace: nimbus
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nimbus-control-plane
+  template:
+    metadata:
+      labels:
+        app: nimbus-control-plane
+    spec:
+      serviceAccountName: nimbus-control-plane
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          image: "${NIMBUS_IMAGE}"
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seLinuxOptions:
+              type: container_t
+          envFrom:
+            - secretRef:
+                name: nimbus-control-plane-secrets
+            - configMapRef:
+                name: nimbus-control-plane-config
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: runtime-state
+              mountPath: /var/lib/nimbus
+            - name: egress-policies
+              mountPath: /etc/nimbus
+              readOnly: true
+      volumes:
+        - name: runtime-state
+          persistentVolumeClaim:
+            claimName: nimbus-state
+        - name: egress-policies
+          configMap:
+            name: nimbus-egress-policies
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nimbus-state
+  namespace: nimbus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nimbus-control-plane
+  namespace: nimbus
+spec:
+  selector:
+    app: nimbus-control-plane
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: nimbus
+  namespace: nimbus
+spec:
+  to:
+    kind: Service
+    name: nimbus-control-plane
+  tls:
+    termination: reencrypt

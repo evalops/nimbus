@@ -1,0 +1,14 @@
+;; Nimbus SELinux policy module to confine application writable paths
+
+(block nimbus
+  (type nimbus_var_lib_t)
+  (roletype object_r nimbus_var_lib_t)
+  (typeattribute nimbus_var_lib_t file_type)
+
+  ;; Allow Nimbus container domain access to /var/lib/nimbus tree
+  (allow container_t nimbus_var_lib_t (dir (add_name remove_name search getattr setattr open create write read)))
+  (allow container_t nimbus_var_lib_t (file (create read write getattr setattr open append rename unlink)))
+)
+
+;; Context assignment for persistent state directory
+(filecon "/var/lib/nimbus(/.*)?" object_r nimbus_var_lib_t)
