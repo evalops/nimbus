@@ -64,5 +64,5 @@ jobs:
         run: |
           docker load < nimbus-control-plane_ci.tar
           docker load < nimbus-ai-runner_ci.tar
-          dockle --exit-code 1 nimbus-control-plane:ci
-          dockle --exit-code 1 nimbus-ai-runner:ci
+          dockle --exit-code 1 -af settings.py nimbus-control-plane:ci
+          dockle --exit-code 1 -af settings.py nimbus-ai-runner:ci

@@ -57,3 +57,5 @@ RUN chown -R nimbus:nimbus /app /var/lib/nimbus
 USER nimbus
 
 CMD ["uvicorn", "nimbus.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:8000/healthz || exit 1
