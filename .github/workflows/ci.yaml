@@ -11,9 +11,14 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Install uv
         run: |
@@ -41,4 +46,17 @@ jobs:
         run: make coverage
 
       - name: Scan Docker images
-        run: make scan-images
+        env:
+          TRIVY_EXIT_CODE: "1"
+        run: |
+          make scan-images SBOM_OUTPUT=1 TRIVY_SEVERITY="CRITICAL,HIGH,MEDIUM"
+
+      - name: Install Dockle
+        run: |
+          curl -sSfL https://github.com/goodwithtech/dockle/releases/download/v0.4.16/dockle_0.4.16_Linux-64bit.tar.gz | tar -xz dockle
+          sudo mv dockle /usr/local/bin/
+
+      - name: Run Dockle audit
+        run: |
+          dockle --exit-code 1 nimbus-control-plane:ci
+          dockle --exit-code 1 nimbus-ai-runner:ci
