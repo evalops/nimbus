@@ -45,7 +45,8 @@ COPY pyproject.toml uv.lock ./
 COPY src ./src
 
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir . \
+    && rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
 
 COPY README.md ./
 COPY --from=web-build /app/dist ./web/dist
