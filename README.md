@@ -26,10 +26,10 @@ Nimbus gives you:
 ## Components
 
 - **Control Plane (FastAPI):** Receives GitHub webhooks with signature verification and replay protection, manages job leases with fence tokens, enforces per-org rate limits, and coordinates runner registration.
-- **Host Agent:** Polls for work with lease renewal heartbeats, manages Firecracker microVMs with automatic cleanup on crash, handles network isolation with tap devices and bridges.
-- **Cache Proxy:** Org-scoped artifact cache with pull/push permissions, backed by filesystem or S3-compatible storage with circuit breaker resilience.
+- **Host Agent:** Polls for work with lease renewal heartbeats, manages Firecracker microVMs with automatic cleanup on crash, and persists active job state in Postgres.
+- **Cache Proxy:** Org-scoped artifact cache with pull/push permissions, backed by filesystem or S3-compatible storage with circuit breaker resilience and Postgres-backed metrics.
 - **Logging Pipeline:** Authenticated log ingestion to ClickHouse with org/repo boundaries enforced on all queries.
-- **Docker Layer Cache Registry:** OCI-compatible registry with org-prefixed repositories and blob ownership validation.
+- **Docker Layer Cache Registry:** OCI-compatible registry with org-prefixed repositories and blob ownership validation backed by Postgres metadata.
 - **Web Dashboard:** React + Vite SPA for monitoring jobs, agents, logs, and system health.
 - **Optional SSH/DNS Helpers:** Secure SSH access to running VMs with port allocation and automatic session expiry.
 
@@ -104,15 +104,21 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
    uv venv .venv
    uv pip install -e .
    ```
-2. Define environment variables for the control plane, host agent, cache proxy, and logging pipeline services (see inline comments in the settings classes for required keys, including `NIMBUS_GITHUB_WEBHOOK_SECRET`, `NIMBUS_AGENT_TOKEN_SECRET`, and `NIMBUS_CACHE_SHARED_SECRET`).
-3. Launch services with uvicorn (example):
+2. Provision PostgreSQL databases (or schemas) for the control plane, host agent state, cache metrics, and Docker metadata. Example DSNs:
+   ```
+   export NIMBUS_DATABASE_URL="postgresql+asyncpg://<user>:<password>@db/nimbus_control"
+   export NIMBUS_AGENT_STATE_DATABASE_URL="postgresql+asyncpg://<user>:<password>@db/nimbus_agent_state"
+   export NIMBUS_CACHE_METRICS_DB="postgresql+psycopg://<user>:<password>@db/nimbus_cache_metrics"
+   export NIMBUS_DOCKER_CACHE_DB_PATH="postgresql+psycopg://<user>:<password>@db/nimbus_docker_cache"
+   ```
+3. Define the remaining environment variables for the control plane, host agent, cache proxy, and logging pipeline (see [Environment Variables](#environment-variables) for required keys such as `NIMBUS_GITHUB_WEBHOOK_SECRET`, `NIMBUS_AGENT_TOKEN_SECRET`, and `NIMBUS_CACHE_SHARED_SECRET`).
+4. Launch services with uvicorn (example):
    ```bash
    uvicorn nimbus.control_plane.main:app --reload
    uvicorn nimbus.cache_proxy.main:app --reload --port 8001
    uvicorn nimbus.logging_pipeline.main:app --reload --port 8002
    python -m nimbus.host_agent.main
    ```
-4. Optionally provide a fallback cache token to hosts via `NIMBUS_CACHE_TOKEN_SECRET` and `NIMBUS_CACHE_TOKEN_VALUE` when experimenting without live control-plane minted tokens.
 5. Inspect recent jobs from the command line (example):
    ```bash
    python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --limit 10
@@ -149,7 +155,7 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
 | `NIMBUS_GITHUB_APP_INSTALLATION_ID` | Installation ID for the GitHub App. | required |
 | `NIMBUS_GITHUB_WEBHOOK_SECRET` | Shared secret for validating webhook signatures. | required |
 | `NIMBUS_REDIS_URL` | Redis connection string (e.g. `redis://localhost:6379/0`). | required |
-| `NIMBUS_DATABASE_URL` | SQLAlchemy async database URL (e.g. `sqlite+aiosqlite:///./nimbus.db`). | required |
+| `NIMBUS_DATABASE_URL` | Async SQLAlchemy database URL (e.g. `postgresql+asyncpg://user:pass@host/nimbus_control`). | required |
 | `NIMBUS_JWT_SECRET` | Secret used to mint control-plane JWTs for CLI access. | required |
 | `NIMBUS_PUBLIC_BASE_URL` | Public URL base returned to GitHub for runner callbacks. | required |
 | `NIMBUS_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
@@ -168,8 +174,7 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
 | `NIMBUS_CONTROL_PLANE_TOKEN` | Bearer token issued by the control plane. | required |
 | `NIMBUS_AGENT_REDIS_URL` | Optional Redis URL for local coordination/caching. | optional |
 | `NIMBUS_CACHE_PROXY_URL` | Cache proxy base URL for artifact downloads. | optional |
-| `NIMBUS_CACHE_TOKEN_SECRET` | Fallback cache token verification secret (lab/dev). | optional |
-| `NIMBUS_CACHE_TOKEN_VALUE` | Pre-minted cache token when bypassing control plane. | optional |
+| `NIMBUS_AGENT_STATE_DATABASE_URL` | Async SQLAlchemy URL for host agent state store. | `postgresql+asyncpg://localhost/nimbus_agent_state` |
 | `NIMBUS_LOG_SINK_URL` | Logging pipeline ingest endpoint. | optional |
 | `NIMBUS_AGENT_METRICS_HOST` | Prometheus metrics listener host. | `0.0.0.0` |
 | `NIMBUS_AGENT_METRICS_PORT` | Prometheus metrics listener port. | `9460` |
@@ -192,7 +197,7 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
 | `NIMBUS_CACHE_S3_ENDPOINT` | S3-compatible endpoint URL (enable remote backend). | optional |
 | `NIMBUS_CACHE_S3_BUCKET` | S3 bucket/key prefix for remote storage. | optional |
 | `NIMBUS_CACHE_S3_REGION` | AWS region for the S3 endpoint. | optional |
-| `NIMBUS_CACHE_METRICS_DB` | SQLite database used for cache metrics. | `./cache/cache_metrics.db` |
+| `NIMBUS_CACHE_METRICS_DB` | SQLAlchemy database URL for cache metrics (Postgres recommended). | `postgresql+psycopg://localhost/nimbus_cache_metrics` |
 | `NIMBUS_CACHE_S3_MAX_RETRIES` | Retry attempts for S3 operations. | `3` |
 | `NIMBUS_CACHE_S3_RETRY_BASE` | Base backoff (seconds) for retries. | `0.2` |
 | `NIMBUS_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
@@ -208,7 +213,7 @@ Jobs without the `nimbus` label are ignored by the control plane, allowing you t
 | `NIMBUS_CACHE_SHARED_SECRET` | Shared secret reused for validating cache tokens. | required |
 | `NIMBUS_DOCKER_CACHE_STORAGE_PATH` | Root directory for blob content. | `./docker-cache/blobs` |
 | `NIMBUS_DOCKER_CACHE_UPLOAD_PATH` | Temporary upload staging directory. | `./docker-cache/uploads` |
-| `NIMBUS_DOCKER_CACHE_DB_PATH` | SQLite metadata database path. | `./docker-cache/metadata.db` |
+| `NIMBUS_DOCKER_CACHE_DB_PATH` | SQLAlchemy database URL for Docker cache metadata (Postgres recommended). | `postgresql+psycopg://localhost/nimbus_docker_cache` |
 | `NIMBUS_DOCKER_CACHE_MAX_BYTES` | Optional byte limit for on-disk blobs (0 disables). | `0` |
 
 ### Web Dashboard (`web/`)
