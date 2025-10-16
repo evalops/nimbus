@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import httpx
 import structlog
-from pyroute2 import IPRoute, NetlinkError
+from pyroute2 import IPRoute, NetNS, NetlinkError, netns
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
@@ -43,6 +43,11 @@ class MicroVMNetwork:
     host_ip: str
     guest_ip: str
     cidr: int = 24
+    netns_name: Optional[str] = None
+    netns_bridge: Optional[str] = None
+    host_veth: Optional[str] = None
+    ns_veth: Optional[str] = None
+    netns_path: Optional[Path] = None
 
 
 @dataclass
@@ -62,6 +67,7 @@ class FirecrackerContext:
     snapshot_memory_guest: Optional[str] = None
     jailer_chroot: Optional[Path] = None
     vm_id: Optional[str] = None
+    netns_path: Optional[Path] = None
 
 
 class FirecrackerError(RuntimeError):
@@ -121,22 +127,26 @@ class FirecrackerLauncher:
 
             metadata = self._build_metadata(assignment, network, rootfs_hash=rootfs_hash)
 
-            tap_created = False
+            network_prepared = False
             process: Optional[asyncio.subprocess.Process] = None
             exit_code = -1
             collected: Optional[FirecrackerResult] = None
             spawn_context: Optional[FirecrackerContext] = None
 
             try:
-                await self._ensure_tap_device(tap_name)
-                await self._configure_network(network)
-                tap_created = True
+                try:
+                    await self._prepare_network_resources(network)
+                except Exception:
+                    await self.cleanup_network(network)
+                    raise
+                network_prepared = True
                 process, spawn_context = await self._spawn_firecracker(
                     api_socket,
                     log_path,
                     metrics_path,
                     rootfs_copy,
                     rootfs_hash,
+                    network,
                 )
 
                 self._apply_cpu_affinity(process, assignment.job_id)
@@ -198,7 +208,7 @@ class FirecrackerLauncher:
                     )
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
-                if tap_created:
+                if network_prepared:
                     await self.cleanup_network(network)
                 if spawn_context and spawn_context.jailer_chroot:
                     shutil.rmtree(spawn_context.jailer_chroot, ignore_errors=True)
@@ -229,6 +239,10 @@ class FirecrackerLauncher:
             shutil.copy2(source, destination)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise FirecrackerError(f"Failed to copy rootfs: {exc}") from exc
+        try:
+            destination.chmod(0o444)
+        except OSError as exc:
+            LOGGER.warning("Unable to mark rootfs copy read-only", path=str(destination), error=str(exc))
         checksum = self._compute_checksum(destination)
         return destination, checksum
 
@@ -243,7 +257,7 @@ class FirecrackerLauncher:
                     "drive_id": "rootfs",
                     "path_on_host": rootfs_path,
                     "is_root_device": True,
-                    "is_read_only": False,
+                    "is_read_only": True,
                 }
             ],
             "machine-config": {
@@ -253,14 +267,30 @@ class FirecrackerLauncher:
             },
         }
 
+        kernel_args_tokens = self._config.kernel_args.split()
+        if "ro" not in kernel_args_tokens:
+            kernel_args_tokens.append("ro")
+        config["boot-source"]["boot_args"] = " ".join(kernel_args_tokens)
+
         if tap_name:
-            config["network-interfaces"] = [
-                {
-                    "iface_id": "eth0",
-                    "host_dev_name": tap_name,
-                    "guest_mac": self._guest_mac_for_tap(tap_name),
-                }
-            ]
+            interface: dict[str, object] = {
+                "iface_id": "eth0",
+                "host_dev_name": tap_name,
+                "guest_mac": self._guest_mac_for_tap(tap_name),
+            }
+            rx_limiter = self._build_rate_limiter(
+                self._settings.net_rate_limit_rx_bytes_per_sec,
+                self._settings.net_rate_limit_burst_bytes,
+            )
+            tx_limiter = self._build_rate_limiter(
+                self._settings.net_rate_limit_tx_bytes_per_sec,
+                self._settings.net_rate_limit_burst_bytes,
+            )
+            if rx_limiter:
+                interface["rx_rate_limiter"] = rx_limiter
+            if tx_limiter:
+                interface["tx_rate_limiter"] = tx_limiter
+            config["network-interfaces"] = [interface]
 
         return config
 
@@ -305,6 +335,85 @@ class FirecrackerLauncher:
             }
         return payload
 
+    async def _prepare_network_resources(self, network: MicroVMNetwork) -> None:
+        if self._settings.enable_network_namespaces:
+            await self._setup_network_namespace(network)
+        else:
+            await self._ensure_tap_device(network.tap_name)
+        await self._configure_network(network)
+
+    async def _setup_network_namespace(self, network: MicroVMNetwork) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() != 0:  # pragma: no cover - platform specific
+            raise FirecrackerError("Host agent requires root privileges to manage network namespaces")
+        if not network.tap_name:
+            raise FirecrackerError("Tap name is required to configure network namespace")
+
+        network.netns_name = network.netns_name or f"{network.tap_name}-ns"
+        network.netns_bridge = network.netns_bridge or f"{network.tap_name}-nsbr"
+        network.host_veth = network.host_veth or f"{network.tap_name}-hv"
+        network.ns_veth = network.ns_veth or f"{network.tap_name}-nv"
+        network.netns_path = Path("/var/run/netns") / network.netns_name
+
+        LOGGER.debug(
+            "Creating network namespace",
+            tap=network.tap_name,
+            namespace=network.netns_name,
+            host_veth=network.host_veth,
+            ns_veth=network.ns_veth,
+        )
+
+        try:
+            await asyncio.to_thread(self._create_network_namespace, network)
+        except (OSError, NetlinkError) as exc:
+            await self._teardown_namespace(network)
+            raise FirecrackerError(f"Failed to create network namespace {network.netns_name}: {exc}") from exc
+
+
+    def _create_network_namespace(self, network: MicroVMNetwork) -> None:
+        if not network.netns_name or not network.host_veth or not network.ns_veth:
+            raise FirecrackerError("Network namespace details incomplete")
+
+        try:
+            netns.create(network.netns_name)
+        except FileExistsError:
+            raise FirecrackerError(f"Network namespace {network.netns_name} already exists")
+
+        with IPRoute() as ipr:
+            ipr.link(
+                "add",
+                ifname=network.host_veth,
+                kind="veth",
+                peer={"ifname": network.ns_veth},
+            )
+
+            host_idx = ipr.link_lookup(ifname=network.host_veth)
+            ns_idx = ipr.link_lookup(ifname=network.ns_veth)
+            if not host_idx or not ns_idx:
+                raise FirecrackerError("Failed to create veth pair for network namespace")
+
+            ipr.link("set", index=host_idx[0], state="down")
+            ipr.link("set", index=ns_idx[0], net_ns_fd=network.netns_name)
+
+        with NetNS(network.netns_name) as ns:
+            ns.link("add", ifname=network.netns_bridge, kind="bridge")
+            bridge_idx = ns.link_lookup(ifname=network.netns_bridge)
+            if not bridge_idx:
+                raise FirecrackerError("Failed to create namespace bridge")
+            ns.link("set", index=bridge_idx[0], state="up")
+
+            ns_idx = ns.link_lookup(ifname=network.ns_veth)
+            if not ns_idx:
+                raise FirecrackerError("Namespace veth missing after move")
+            ns.link("set", index=ns_idx[0], master=bridge_idx[0])
+            ns.link("set", index=ns_idx[0], state="up")
+
+            ns.link("add", ifname=network.tap_name, kind="tuntap", mode="tap")
+            tap_idx = ns.link_lookup(ifname=network.tap_name)
+            if not tap_idx:
+                raise FirecrackerError("Failed to create tap inside namespace")
+            ns.link("set", index=tap_idx[0], master=bridge_idx[0])
+            ns.link("set", index=tap_idx[0], state="up")
+
     async def _ensure_tap_device(self, tap_name: str) -> None:
         if hasattr(os, "geteuid") and os.geteuid() != 0:  # pragma: no cover - platform specific
             raise FirecrackerError("Host agent requires root privileges to create tap devices")
@@ -325,31 +434,111 @@ class FirecrackerLauncher:
         except NetlinkError as exc:
             LOGGER.debug("Failed to remove tap device", tap=tap_name, error=str(exc))
 
-    async def _configure_network(self, network: MicroVMNetwork) -> None:
-        LOGGER.debug("Configuring network for tap", tap=network.tap_name, bridge=network.bridge)
+    async def _teardown_namespace(self, network: MicroVMNetwork) -> None:
+        if not network.netns_name:
+            return
+        LOGGER.debug("Removing network namespace", namespace=network.netns_name)
         try:
-            await asyncio.to_thread(self._delete_link, network.bridge, True)
-            await asyncio.to_thread(self._add_bridge, network.bridge)
-            await asyncio.to_thread(self._set_link_state, network.bridge, "up", False)
-            await asyncio.to_thread(self._set_master, network.tap_name, network.bridge)
-            await asyncio.to_thread(self._set_link_state, network.tap_name, "up", False)
-            await asyncio.to_thread(self._assign_address, network.bridge, network.host_ip, network.cidr)
+            await asyncio.to_thread(self._remove_network_namespace, network)
+        except (OSError, NetlinkError) as exc:
+            LOGGER.debug("Failed to clean up namespace", namespace=network.netns_name, error=str(exc))
+
+    def _remove_network_namespace(self, network: MicroVMNetwork) -> None:
+        if not network.netns_name:
+            return
+        try:
+            with NetNS(network.netns_name) as ns:
+                for ifname in (network.tap_name, network.ns_veth, network.netns_bridge):
+                    if not ifname:
+                        continue
+                    self._delete_link_ns(ns, ifname)
+        except FileNotFoundError:
+            pass
+        finally:
+            try:
+                netns.remove(network.netns_name)
+            except FileNotFoundError:
+                pass
+
+    def _delete_link_ns(self, ns: NetNS, ifname: str, ignore_missing: bool = True) -> None:
+        indexes = ns.link_lookup(ifname=ifname)
+        if not indexes:
+            if ignore_missing:
+                return
+            raise NetlinkError(errno.ENODEV, os.strerror(errno.ENODEV))
+        ns.link("del", index=indexes[0])
+
+    def _build_rate_limiter(
+        self,
+        bytes_per_sec: Optional[int],
+        burst_bytes: Optional[int],
+    ) -> Optional[dict[str, dict[str, int]]]:
+        if not bytes_per_sec or bytes_per_sec <= 0:
+            return None
+        limiter: dict[str, dict[str, int]] = {
+            "bandwidth": {
+                "size": int(bytes_per_sec),
+                "refill_time": 1_000_000,
+            }
+        }
+        if burst_bytes and burst_bytes > 0:
+            limiter["bandwidth"]["one_time_burst"] = int(burst_bytes)
+        return limiter
+
+    async def _configure_network(self, network: MicroVMNetwork) -> None:
+        LOGGER.debug(
+            "Configuring network for tap",
+            tap=network.tap_name,
+            bridge=network.bridge,
+            namespace=network.netns_name,
+        )
+        try:
+            if network.netns_name:
+                await asyncio.to_thread(self._configure_network_with_namespace, network)
+            else:
+                await asyncio.to_thread(self._configure_network_host_only, network)
         except NetlinkError as exc:
             raise FirecrackerError(f"Failed to configure network {network.tap_name}: {exc}") from exc
+
+    def _configure_network_host_only(self, network: MicroVMNetwork) -> None:
+        self._delete_link(network.bridge, True)
+        self._add_bridge(network.bridge)
+        self._set_link_state(network.bridge, "up", False)
+        self._set_master(network.tap_name, network.bridge)
+        self._set_link_state(network.tap_name, "up", False)
+        self._assign_address(network.bridge, network.host_ip, network.cidr)
+
+    def _configure_network_with_namespace(self, network: MicroVMNetwork) -> None:
+        if not network.host_veth:
+            raise FirecrackerError("Missing host veth for namespace network configuration")
+        self._delete_link(network.bridge, True)
+        self._add_bridge(network.bridge)
+        self._set_link_state(network.bridge, "up", False)
+        self._set_master(network.host_veth, network.bridge)
+        self._set_link_state(network.host_veth, "up", False)
+        self._assign_address(network.bridge, network.host_ip, network.cidr)
 
     async def _teardown_network(self, network: MicroVMNetwork) -> None:
         LOGGER.debug("Tearing down network", tap=network.tap_name, bridge=network.bridge)
         try:
             await asyncio.to_thread(self._remove_address, network.bridge, network.host_ip, network.cidr)
-            await asyncio.to_thread(self._clear_master, network.tap_name)
-            await asyncio.to_thread(self._set_link_state, network.tap_name, "down", True)
+            if network.netns_name and network.host_veth:
+                await asyncio.to_thread(self._clear_master, network.host_veth)
+                await asyncio.to_thread(self._set_link_state, network.host_veth, "down", True)
+                await asyncio.to_thread(self._delete_link, network.host_veth, True)
+            else:
+                await asyncio.to_thread(self._clear_master, network.tap_name)
+                await asyncio.to_thread(self._set_link_state, network.tap_name, "down", True)
             await asyncio.to_thread(self._delete_link, network.bridge, True)
         except NetlinkError as exc:
             LOGGER.debug("Failed to tear down network cleanly", tap=network.tap_name, error=str(exc))
 
     async def cleanup_network(self, network: MicroVMNetwork) -> None:
         await self._teardown_network(network)
-        await self._teardown_tap_device(network.tap_name)
+        if network.netns_name:
+            await self._teardown_namespace(network)
+        else:
+            await self._teardown_tap_device(network.tap_name)
 
     async def _spawn_firecracker(
         self,
@@ -358,13 +547,24 @@ class FirecrackerLauncher:
         metrics_path: Path,
         rootfs_path: Path,
         rootfs_hash: str,
+        network: Optional[MicroVMNetwork],
     ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         if self._settings.jailer_bin_path:
             return await self._spawn_firecracker_with_jailer(
-                api_socket, log_path, metrics_path, rootfs_path, rootfs_hash
+                api_socket,
+                log_path,
+                metrics_path,
+                rootfs_path,
+                rootfs_hash,
+                network,
             )
         return await self._spawn_firecracker_direct(
-            api_socket, log_path, metrics_path, rootfs_path, rootfs_hash
+            api_socket,
+            log_path,
+            metrics_path,
+            rootfs_path,
+            rootfs_hash,
+            network,
         )
 
     async def _spawn_firecracker_direct(
@@ -374,6 +574,7 @@ class FirecrackerLauncher:
         metrics_path: Path,
         rootfs_path: Path,
         rootfs_hash: str,
+        network: Optional[MicroVMNetwork],
     ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         LOGGER.warning("Running Firecracker without jailer - not recommended for production")
         process = await asyncio.create_subprocess_exec(
@@ -414,6 +615,7 @@ class FirecrackerLauncher:
             snapshot_state_guest=snapshot_state_guest,
             snapshot_memory_host=snapshot_memory_host,
             snapshot_memory_guest=snapshot_memory_guest,
+            netns_path=network.netns_path if network else None,
         )
         return process, context
 
@@ -424,6 +626,7 @@ class FirecrackerLauncher:
         metrics_path: Path,
         rootfs_path: Path,
         rootfs_hash: str,
+        network: Optional[MicroVMNetwork],
     ) -> tuple[asyncio.subprocess.Process, FirecrackerContext]:
         if platform.system().lower() != "linux":
             raise FirecrackerError("Jailer is only supported on Linux systems")
@@ -491,6 +694,10 @@ class FirecrackerLauncher:
             "--new-pid-ns",
         ]
 
+        netns_path = network.netns_path if network and network.netns_path else None
+        if netns_path:
+            cmd.extend(["--netns", str(netns_path)])
+
         if self._settings.seccomp_filter_path and self._settings.seccomp_filter_path.exists():
             cmd.extend(["--seccomp-filter", str(self._settings.seccomp_filter_path)])
         elif self._settings.seccomp_filter_path:
@@ -552,6 +759,7 @@ class FirecrackerLauncher:
             snapshot_memory_guest=snapshot_memory_guest,
             jailer_chroot=jailer_chroot,
             vm_id=vm_id,
+            netns_path=netns_path,
         )
 
         return process, context

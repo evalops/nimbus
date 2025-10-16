@@ -12,7 +12,9 @@ This document describes the security hardening measures for Firecracker VMs in N
 
 ✅ **Capability minimisation** – The host agent refuses to run as root and drops to `CAP_NET_ADMIN` only (`src/nimbus/host_agent/security.py`). Helper scripts in `scripts/` set up privileged networking before capabilities are reduced.
 
-⚠️ **Optional hardening** – Per-VM network namespaces and read-only rootfs mounts remain optional enhancements. Guidance is retained below for operators that need the additional isolation.
+✅ **Per-VM network namespaces** – Each launcher invocation now provisions an isolated netns, attaches a veth bridge pair, and runs the jailer with `--netns` (see `_setup_network_namespace`). Cleanup removes both the namespace and link scaffolding.
+
+✅ **Read-only rootfs with deterministic rate limits** – Staged rootfs images are chmodded read-only and Firecracker is configured with `ro` kernel args plus RX/TX bandwidth shapers derived from `NIMBUS_NET_*` settings, further constraining guest impact on the host.
 
 ## Required Security Measures
 
@@ -178,27 +180,7 @@ ExecStart=/usr/local/bin/nimbus-privileged-setup.sh /usr/bin/python -m nimbus.ho
 
 ### 4. Network Namespace Per VM
 
-Isolate VM networking using network namespaces.
-
-```python
-async def create_network_namespace(vm_id: str) -> str:
-    """Create a dedicated network namespace for a VM."""
-    netns_name = f"nimbus-{vm_id}"
-    
-    # Create namespace
-    await asyncio.create_subprocess_exec(
-        "ip", "netns", "add", netns_name
-    )
-    
-    # Move tap device into namespace
-    await asyncio.create_subprocess_exec(
-        "ip", "link", "set", tap_name, "netns", netns_name
-    )
-    
-    return f"/var/run/netns/{netns_name}"
-```
-
-Pass to jailer with `--netns /var/run/netns/nimbus-{vm_id}`.
+The launcher now provisions a dedicated namespace for every job via `_setup_network_namespace`, using `pyroute2` to create veth pairs (`tap-hv`/`tap-nv`), an in-namespace bridge, and a jailed tap. The jailer is invoked with `--netns /var/run/netns/<tap-name>-ns`, ensuring Firecracker never shares a network namespace with other workloads.
 
 ### 5. Tap Device Naming with Unique IDs
 
@@ -231,7 +213,7 @@ jailer \
 
 ### 2. Read-Only Rootfs
 
-Mount rootfs as read-only or with minimal write access.
+Nimbus stages a per-job copy of the rootfs, marks it read-only, and appends `ro` to the Firecracker kernel args before launch. Operators can use the checks below to verify guest expectations when auditing environments.
 
 ```bash
 # In Firecracker boot args
@@ -239,7 +221,7 @@ kernel_args: "console=ttyS0 reboot=k panic=1 pci=off ro"
 ```
 
 **Checklist:**
-- [ ] Rootfs mounted read-only
+- [x] Rootfs mounted read-only
 - [ ] No setuid/setgid binaries in chroot
 - [ ] Minimal binaries in chroot (only Firecracker)
 - [ ] No shared memory access from chroot
@@ -251,11 +233,11 @@ Firecracker's security design minimizes exposed device surface.
 **Enabled by default:**
 - ✅ VirtIO Block (disk)
 - ✅ VirtIO Net (network)
+- ✅ RX/TX rate limiters (token-bucket per `NIMBUS_NET_*` settings)
 
 **Disable unless required:**
 - ❌ vsock (adds syscalls to seccomp profile)
 - ❌ Snapshot/restore (increases complexity)
-- ❌ Rate limiters (only if needed)
 
 **If vsock is required:**
 - Use updated seccomp profile that includes vsock syscalls
@@ -350,9 +332,15 @@ journalctl -u nimbus-agent | grep -i "capability\|setuid\|chroot"
 - Startup checks in `src/nimbus/host_agent/security.py` prevent root execution and drop all capabilities except `CAP_NET_ADMIN`.
 - Helper scripts such as `scripts/nimbus-privileged-setup.sh` run privileged setup (bridge/tap preparation) before control passes to the unprivileged agent.
 
-### Phase 4: Network Namespace Isolation (P1) – ⚠️ Optional/Planned
+### Phase 4: Network Namespace Isolation (P1) – ✅ Complete
 
-- Per-VM network namespaces remain an additional hardening layer that can be adopted where needed. The guidance below is retained for teams that require that isolation boundary.
+- Each job now gets an isolated network namespace; the launcher provisions veth pairs, an internal bridge, and passes `--netns` to the jailer.
+- Teardown removes namespaces and link scaffolding to prevent leakage between workloads.
+
+### Phase 5: Rootfs Hardening & Rate Limiting (P1) – ✅ Complete
+
+- Rootfs snapshots staged per job are chmodded read-only and Firecracker boot args enforce `ro` to prevent guest writes to the base image.
+- RX/TX token-bucket rate limiters are configured through `NIMBUS_NET_*` settings, reducing the blast radius of compromised guests.
 
 ## Example Implementation
 
