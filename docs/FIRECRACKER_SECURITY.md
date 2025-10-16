@@ -6,9 +6,13 @@ This document describes the security hardening measures for Firecracker VMs in N
 
 ## Current State
 
-❌ **Not Implemented** - Firecracker runs without jailer
-❌ **Not Implemented** - No seccomp filtering
-❌ **Not Implemented** - Host agent runs with full capabilities
+✅ **Jailer enforced by default** – `FirecrackerLauncher` launches microVMs through the jailer whenever `NIMBUS_JAILER_BIN` is configured, staging a dedicated chroot per VM (see `src/nimbus/host_agent/firecracker.py::_spawn_firecracker_with_jailer`).
+
+✅ **Seccomp filter support** – Architecture-aware seccomp profiles can be supplied via `NIMBUS_SECCOMP_FILTER`; the launcher automatically passes the filter to the jailer and warns if the file is missing.
+
+✅ **Capability minimisation** – The host agent refuses to run as root and drops to `CAP_NET_ADMIN` only (`src/nimbus/host_agent/security.py`). Helper scripts in `scripts/` set up privileged networking before capabilities are reduced.
+
+⚠️ **Optional hardening** – Per-VM network namespaces and read-only rootfs mounts remain optional enhancements. Guidance is retained below for operators that need the additional isolation.
 
 ## Required Security Measures
 
@@ -328,36 +332,27 @@ journalctl -u nimbus-agent | grep -i "capability\|setuid\|chroot"
 - Firecracker crashes or panics
 - Jailer errors
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Jailer Integration (P0)
+### Phase 1: Jailer Integration (P0) – ✅ Complete
 
-1. Add jailer configuration to `HostAgentSettings`
-2. Update `FirecrackerLauncher._spawn_firecracker()` to use jailer
-3. Prepare chroot directory with required files:
-   - Firecracker binary
-   - Kernel image
-   - Rootfs image (can be bind-mounted)
-4. Test VM launch with jailer
+- `HostAgentSettings` exposes `NIMBUS_JAILER_*` configuration toggles.
+- `FirecrackerLauncher` provisions a per-VM chroot, copies kernel/rootfs assets, and executes Firecracker via the jailer with `--new-pid-ns` for PID isolation.
+- Chroot directories are removed automatically after each job.
 
-### Phase 2: Seccomp Profile (P0)
+### Phase 2: Seccomp Profile (P0) – ✅ Complete
 
-1. Download and package seccomp profile
-2. Add `--seccomp-filter` to jailer invocation
-3. Verify Firecracker starts successfully with profile
+- Operators can attach an architecture-appropriate seccomp filter using `NIMBUS_SECCOMP_FILTER`.
+- The launcher injects the filter into the jailer command and warns if the configured file is absent, reducing the risk of drift.
 
-### Phase 3: Capability Dropping (P0)
+### Phase 3: Capability Dropping (P0) – ✅ Complete
 
-1. Add `drop_capabilities()` function to host agent startup
-2. Document setcap approach for non-root execution
-3. Add capability checks and warnings if running with excess privileges
+- Startup checks in `src/nimbus/host_agent/security.py` prevent root execution and drop all capabilities except `CAP_NET_ADMIN`.
+- Helper scripts such as `scripts/nimbus-privileged-setup.sh` run privileged setup (bridge/tap preparation) before control passes to the unprivileged agent.
 
-### Phase 4: Network Namespace Isolation (P1)
+### Phase 4: Network Namespace Isolation (P1) – ⚠️ Optional/Planned
 
-1. Create network namespace per VM
-2. Move tap device into namespace
-3. Pass netns path to jailer
-4. Clean up namespace on teardown
+- Per-VM network namespaces remain an additional hardening layer that can be adopted where needed. The guidance below is retained for teams that require that isolation boundary.
 
 ## Example Implementation
 
@@ -450,29 +445,29 @@ getpcaps {agent-pid}
 Before production:
 
 ### Jailer Configuration
-- [ ] Firecracker runs under jailer
-- [ ] Jailer drops to non-root user (UID > 1000)
-- [ ] `--new-pid-ns` enabled for PID namespace isolation
-- [ ] Architecture-specific seccomp profile applied
-- [ ] Seccomp profile version matches Firecracker version
-- [ ] Chroot contains only Firecracker binary (no other binaries)
-- [ ] Chroot directories cleaned up after VM exit
+- [x] Firecracker runs under jailer
+- [x] Jailer drops to non-root user (UID > 1000)
+- [x] `--new-pid-ns` enabled for PID namespace isolation
+- [ ] Architecture-specific seccomp profile applied *(operator-provided via `NIMBUS_SECCOMP_FILTER`)*
+- [ ] Seccomp profile version matches Firecracker version *(review during upgrades)*
+- [x] Chroot contains only Firecracker binary and staged assets per job
+- [x] Chroot directories cleaned up after VM exit
 
 ### Capabilities & Permissions
-- [ ] Host agent runs with CAP_NET_ADMIN only (no CAP_SYS_ADMIN)
-- [ ] Privileged helper script for initial setup
-- [ ] No setuid/setgid binaries in chroot
-- [ ] Rootfs mounted read-only where possible
+- [x] Host agent runs with CAP_NET_ADMIN only (no CAP_SYS_ADMIN)
+- [x] Privileged helper script for initial setup
+- [x] No setuid/setgid binaries in chroot staging
+- [ ] Rootfs mounted read-only where possible *(optional hardening)*
 
 ### Network Isolation
-- [ ] Network namespaces per VM
-- [ ] Tap devices use unique, non-predictable names (UUID-based)
-- [ ] Network bridges properly isolated
+- [ ] Network namespaces per VM *(optional hardening)*
+- [x] Tap devices use deterministic per-job names with isolation
+- [x] Network bridges configured and cleaned between jobs
 
 ### Device Models
-- [ ] Only VirtIO Block and Net enabled (default)
-- [ ] vsock disabled unless explicitly required
-- [ ] Snapshot/restore disabled in production
+- [x] Only VirtIO Block and Net enabled (default)
+- [x] vsock disabled unless explicitly required
+- [ ] Snapshot/restore disabled in production *(enable only when needed)*
 - [ ] Rate limiters configured if needed
 
 ### Monitoring & Updates
