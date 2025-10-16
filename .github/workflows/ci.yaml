@@ -25,6 +25,15 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy-archive-keyring.gpg] https://aquasecurity.github.io/trivy-repo/deb stable main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
       - name: Sync Python dependencies
         run: uv sync --frozen
 
@@ -33,3 +42,6 @@ jobs:
 
       - name: Run test coverage
         run: make coverage
+
+      - name: Scan Docker images
+        run: make scan-images

@@ -35,3 +35,10 @@ audit:
 
 coverage:
 	uv run --with pytest-cov pytest --cov=src --cov-report=term-missing --cov-fail-under=85
+
+scan-images:
+	docker build -t nimbus-control-plane:ci .
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress nimbus-control-plane:ci
+	docker build -t nimbus-ai-runner:ci containers/ai-eval-runner
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress nimbus-ai-runner:ci
+	docker image rm -f nimbus-control-plane:ci nimbus-ai-runner:ci >/dev/null 2>&1 || true
