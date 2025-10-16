@@ -133,6 +133,8 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
         "NIMBUS_AGENT_TOKEN_RATE_LIMIT": "2",
         "NIMBUS_AGENT_TOKEN_RATE_INTERVAL": "60",
         "NIMBUS_CACHE_STORAGE_PATH": str(storage_path),
+        "NIMBUS_CACHE_METRICS_DB": f"sqlite+pysqlite:///{(tmp_path / 'cache_metrics.db').as_posix()}",
+        "NIMBUS_DOCKER_CACHE_DB_PATH": f"sqlite+pysqlite:///{(tmp_path / 'docker_metadata.db').as_posix()}",
         "NIMBUS_CLICKHOUSE_URL": "http://clickhouse",
         "NIMBUS_CLICKHOUSE_DATABASE": "nimbus",
         "NIMBUS_CLICKHOUSE_TABLE": "ci_logs",

@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import sqlite3
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -17,6 +15,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import PlainTextResponse, StreamingResponse
 import structlog
 from opentelemetry import trace
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
@@ -105,110 +106,128 @@ class UploadSession:
 
 
 class DockerCacheMetrics:
-    def __init__(self, path: Path):
-        self._path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS blobs (
-                    digest TEXT PRIMARY KEY,
-                    org_id INTEGER,
-                    size INTEGER NOT NULL,
-                    last_access REAL NOT NULL
-                )
-                """
-            )
-            # Migrate existing blobs table if needed
-            try:
-                conn.execute("SELECT org_id FROM blobs LIMIT 1")
-            except sqlite3.OperationalError:
-                conn.execute("ALTER TABLE blobs ADD COLUMN org_id INTEGER")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS manifests (
-                    repository TEXT NOT NULL,
-                    reference TEXT NOT NULL,
-                    digest TEXT NOT NULL,
-                    media_type TEXT,
-                    size INTEGER NOT NULL,
-                    last_access REAL NOT NULL,
-                    PRIMARY KEY(repository, reference)
-                )
-                """
-            )
+    def __init__(self, database_url: str):
+        self._engine = self._create_engine(database_url)
+        self._initialise()
 
-    @contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(self._path)
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+    @staticmethod
+    def _create_engine(database_url: str) -> Engine:
+        url = make_url(database_url)
+        if url.drivername.startswith("sqlite") and url.database:
+            db_path = Path(url.database).expanduser()
+            if not db_path.is_absolute():
+                db_path = (Path.cwd() / db_path).resolve()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            url = url.set(database=db_path.as_posix())
+            database_url = url.render_as_string(hide_password=False)
+        return create_engine(database_url, future=True, pool_pre_ping=True)
+
+    def _initialise(self) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS blobs (
+                        digest TEXT PRIMARY KEY,
+                        org_id INTEGER,
+                        size INTEGER NOT NULL,
+                        last_access DOUBLE PRECISION NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS manifests (
+                        repository TEXT NOT NULL,
+                        reference TEXT NOT NULL,
+                        digest TEXT NOT NULL,
+                        media_type TEXT,
+                        size INTEGER NOT NULL,
+                        last_access DOUBLE PRECISION NOT NULL,
+                        PRIMARY KEY(repository, reference)
+                    )
+                    """
+                )
+            )
 
     def record_blob(self, digest: str, size: int, org_id: Optional[int] = None) -> None:
         now = time.time()
-        with self._connect() as conn:
+        with self._engine.begin() as conn:
             conn.execute(
-                """
-                INSERT INTO blobs (digest, org_id, size, last_access)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(digest) DO UPDATE SET
-                    org_id=excluded.org_id,
-                    size=excluded.size,
-                    last_access=excluded.last_access
-                """,
-                (digest, org_id, size, now),
+                text(
+                    """
+                    INSERT INTO blobs (digest, org_id, size, last_access)
+                    VALUES (:digest, :org_id, :size, :last_access)
+                    ON CONFLICT(digest) DO UPDATE SET
+                        org_id = EXCLUDED.org_id,
+                        size = EXCLUDED.size,
+                        last_access = EXCLUDED.last_access
+                    """
+                ),
+                {"digest": digest, "org_id": org_id, "size": size, "last_access": now},
             )
 
     def touch_blob(self, digest: str) -> None:
         now = time.time()
-        with self._connect() as conn:
-            conn.execute("UPDATE blobs SET last_access=? WHERE digest=?", (now, digest))
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("UPDATE blobs SET last_access=:last_access WHERE digest=:digest"),
+                {"last_access": now, "digest": digest},
+            )
 
     def delete_blob(self, digest: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM blobs WHERE digest=?", (digest,))
+        with self._engine.begin() as conn:
+            conn.execute(text("DELETE FROM blobs WHERE digest=:digest"), {"digest": digest})
 
     def total_blob_bytes(self) -> int:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT COALESCE(SUM(size), 0) FROM blobs")
-            (total,) = cur.fetchone()
-        return int(total)
+        with self._engine.connect() as conn:
+            result = conn.execute(text("SELECT COALESCE(SUM(size), 0) FROM blobs"))
+            total = result.scalar_one()
+        return int(total or 0)
 
     def oldest_blobs(self, limit: int = 10) -> list[tuple[str, int]]:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "SELECT digest, size FROM blobs ORDER BY last_access ASC LIMIT ?",
-                (limit,),
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT digest, size FROM blobs ORDER BY last_access ASC LIMIT :limit"),
+                {"limit": limit},
             )
-            rows = cur.fetchall()
+            rows = result.fetchall()
         return [(row[0], int(row[1])) for row in rows]
 
     def record_manifest(self, repository: str, reference: str, digest: str, media_type: Optional[str], size: int) -> None:
         now = time.time()
-        with self._connect() as conn:
+        with self._engine.begin() as conn:
             conn.execute(
-                """
-                INSERT INTO manifests (repository, reference, digest, media_type, size, last_access)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(repository, reference) DO UPDATE SET
-                    digest=excluded.digest,
-                    media_type=excluded.media_type,
-                    size=excluded.size,
-                    last_access=excluded.last_access
-                """,
-                (repository, reference, digest, media_type, size, now),
+                text(
+                    """
+                    INSERT INTO manifests (repository, reference, digest, media_type, size, last_access)
+                    VALUES (:repository, :reference, :digest, :media_type, :size, :last_access)
+                    ON CONFLICT(repository, reference) DO UPDATE SET
+                        digest = EXCLUDED.digest,
+                        media_type = EXCLUDED.media_type,
+                        size = EXCLUDED.size,
+                        last_access = EXCLUDED.last_access
+                    """
+                ),
+                {
+                    "repository": repository,
+                    "reference": reference,
+                    "digest": digest,
+                    "media_type": media_type,
+                    "size": size,
+                    "last_access": now,
+                },
             )
 
     def resolve_manifest(self, repository: str, reference: str) -> Optional[tuple[str, Optional[str]]]:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "SELECT digest, media_type FROM manifests WHERE repository=? AND reference=?",
-                (repository, reference),
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT digest, media_type FROM manifests WHERE repository=:repository AND reference=:reference"),
+                {"repository": repository, "reference": reference},
             )
-            row = cur.fetchone()
+            row = result.fetchone()
         if not row:
             return None
         digest, media_type = row
@@ -217,17 +236,16 @@ class DockerCacheMetrics:
 
     def touch_manifest(self, repository: str, reference: str) -> None:
         now = time.time()
-        with self._connect() as conn:
+        with self._engine.begin() as conn:
             conn.execute(
-                "UPDATE manifests SET last_access=? WHERE repository=? AND reference=?",
-                (now, repository, reference),
+                text("UPDATE manifests SET last_access=:last_access WHERE repository=:repository AND reference=:reference"),
+                {"last_access": now, "repository": repository, "reference": reference},
             )
 
     def get_blob_org_id(self, digest: str) -> Optional[int]:
-        """Get the organization ID that owns a blob."""
-        with self._connect() as conn:
-            cur = conn.execute("SELECT org_id FROM blobs WHERE digest=?", (digest,))
-            row = cur.fetchone()
+        with self._engine.connect() as conn:
+            result = conn.execute(text("SELECT org_id FROM blobs WHERE digest=:digest"), {"digest": digest})
+            row = result.fetchone()
         return row[0] if row else None
 
 
@@ -405,7 +423,7 @@ def create_app() -> FastAPI:
         sampler_ratio=settings.otel_sampler_ratio,
     )
 
-    metrics = DockerCacheMetrics(settings.metadata_path)
+    metrics = DockerCacheMetrics(settings.metadata_database_url)
     state = DockerCacheState(settings, metrics)
 
     async def lifespan(app: FastAPI):

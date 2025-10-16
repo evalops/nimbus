@@ -119,7 +119,10 @@ class CacheProxySettings(BaseSettings):
     s3_endpoint_url: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_REGION")
-    metrics_database_path: Path = env_field(Path("./cache/cache_metrics.db"), "NIMBUS_CACHE_METRICS_DB")
+    metrics_database_url: str = env_field(
+        "postgresql+psycopg://localhost/nimbus_cache_metrics",
+        "NIMBUS_CACHE_METRICS_DB",
+    )
     s3_max_retries: int = env_field(3, "NIMBUS_CACHE_S3_MAX_RETRIES")
     s3_retry_base_seconds: float = env_field(0.2, "NIMBUS_CACHE_S3_RETRY_BASE")
     s3_retry_max_seconds: float = env_field(2.0, "NIMBUS_CACHE_S3_RETRY_MAX")
@@ -132,6 +135,16 @@ class CacheProxySettings(BaseSettings):
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+
+    @field_validator("metrics_database_url", mode="before")
+    @classmethod
+    def _normalize_metrics_url(cls, value):
+        if isinstance(value, Path):
+            value = str(value)
+        if isinstance(value, str) and "://" not in value:
+            path = Path(value).expanduser().resolve()
+            return f"sqlite+pysqlite:///{path.as_posix()}"
+        return value
 
 
 class LoggingIngestSettings(BaseSettings):
@@ -158,11 +171,24 @@ class DockerCacheSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     storage_path: Path = env_field(Path("./docker-cache"), "NIMBUS_DOCKER_CACHE_STORAGE_PATH")
     uploads_path: Path = env_field(Path("./docker-cache/uploads"), "NIMBUS_DOCKER_CACHE_UPLOAD_PATH")
-    metadata_path: Path = env_field(Path("./docker-cache/metadata.db"), "NIMBUS_DOCKER_CACHE_DB_PATH")
+    metadata_database_url: str = env_field(
+        "postgresql+psycopg://localhost/nimbus_docker_cache",
+        "NIMBUS_DOCKER_CACHE_DB_PATH",
+    )
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_CACHE_MAX_BYTES")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+
+    @field_validator("metadata_database_url", mode="before")
+    @classmethod
+    def _normalize_metadata_url(cls, value):
+        if isinstance(value, Path):
+            value = str(value)
+        if isinstance(value, str) and "://" not in value:
+            path = Path(value).expanduser().resolve()
+            return f"sqlite+pysqlite:///{path.as_posix()}"
+        return value
 

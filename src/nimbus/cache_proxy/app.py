@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import sqlite3
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
 
@@ -16,6 +14,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 import structlog
 from opentelemetry import trace
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 from ..common.schemas import CacheToken
 from ..common.settings import CacheProxySettings
@@ -290,113 +291,110 @@ TRACER = trace.get_tracer("nimbus.cache_proxy")
 
 
 class CacheMetrics:
-    def __init__(self, db_path: Path):
-        self._db_path = db_path
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+    def __init__(self, database_url: str):
+        self._engine = self._create_engine(database_url)
+        self._initialise()
+
+    @staticmethod
+    def _create_engine(database_url: str) -> Engine:
+        url = make_url(database_url)
+        if url.drivername.startswith("sqlite") and url.database:
+            db_path = Path(url.database).expanduser()
+            if not db_path.is_absolute():
+                db_path = (Path.cwd() / db_path).resolve()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            url = url.set(database=db_path.as_posix())
+            database_url = url.render_as_string(hide_password=False)
+        return create_engine(database_url, future=True, pool_pre_ping=True)
+
+    def _initialise(self) -> None:
+        with self._engine.begin() as conn:
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS cache_metrics (
-                    cache_key TEXT PRIMARY KEY,
-                    total_hits INTEGER NOT NULL DEFAULT 0,
-                    total_misses INTEGER NOT NULL DEFAULT 0,
-                    total_bytes INTEGER NOT NULL DEFAULT 0,
-                    last_access TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS cache_metrics (
+                        cache_key TEXT PRIMARY KEY,
+                        total_hits INTEGER NOT NULL DEFAULT 0,
+                        total_misses INTEGER NOT NULL DEFAULT 0,
+                        total_bytes INTEGER NOT NULL DEFAULT 0,
+                        last_access TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
-                """
             )
 
-    @contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(self._db_path)
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
-
     def record_hit(self, cache_key: str, bytes_served: int) -> None:
-        with self._connect() as conn:
+        with self._engine.begin() as conn:
             conn.execute(
-                """
-                INSERT INTO cache_metrics (cache_key, total_hits, total_bytes, last_access)
-                VALUES (?, 1, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    total_hits = total_hits + 1,
-                    total_bytes = total_bytes + ?,
-                    last_access = CURRENT_TIMESTAMP
-                """,
-                (cache_key, bytes_served, bytes_served),
+                text(
+                    """
+                    INSERT INTO cache_metrics (cache_key, total_hits, total_bytes, last_access)
+                    VALUES (:cache_key, 1, :bytes_served, CURRENT_TIMESTAMP)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        total_hits = total_hits + 1,
+                        total_bytes = total_bytes + :bytes_served,
+                        last_access = CURRENT_TIMESTAMP
+                    """
+                ),
+                {"cache_key": cache_key, "bytes_served": bytes_served},
             )
 
     def record_miss(self, cache_key: str) -> None:
-        with self._connect() as conn:
+        with self._engine.begin() as conn:
             conn.execute(
-                """
-                INSERT INTO cache_metrics (cache_key, total_misses, last_access)
-                VALUES (?, 1, CURRENT_TIMESTAMP)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    total_misses = total_misses + 1,
-                    last_access = CURRENT_TIMESTAMP
-                """,
-                (cache_key,),
+                text(
+                    """
+                    INSERT INTO cache_metrics (cache_key, total_misses, last_access)
+                    VALUES (:cache_key, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        total_misses = total_misses + 1,
+                        last_access = CURRENT_TIMESTAMP
+                    """
+                ),
+                {"cache_key": cache_key},
             )
 
     def top_entries(self, limit: int = 10) -> list[dict[str, object]]:
-        with self._connect() as conn:
-            cur = conn.execute(
-                """
-                SELECT cache_key, total_hits, total_misses, total_bytes, last_access
-                FROM cache_metrics
-                ORDER BY total_hits DESC
-                LIMIT ?
-                """,
-                (limit,),
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT cache_key, total_hits, total_misses, total_bytes, last_access
+                    FROM cache_metrics
+                    ORDER BY total_hits DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
             )
-            rows = cur.fetchall()
-        return [
-            {
-                "cache_key": row[0],
-                "total_hits": row[1],
-                "total_misses": row[2],
-                "total_bytes": row[3],
-                "last_access": row[4],
-            }
-            for row in rows
-        ]
+            rows = result.mappings().all()
+        return [dict(row) for row in rows]
 
     def total_entries(self) -> int:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT COUNT(*) FROM cache_metrics")
-            (count,) = cur.fetchone()
+        with self._engine.connect() as conn:
+            result = conn.execute(text("SELECT COUNT(*) AS count FROM cache_metrics"))
+            count = result.scalar_one()
         return int(count)
 
     def oldest_entries(self, limit: int = 10) -> list[dict[str, object]]:
-        with self._connect() as conn:
-            cur = conn.execute(
-                """
-                SELECT cache_key, total_hits, total_misses, total_bytes, last_access
-                FROM cache_metrics
-                ORDER BY last_access ASC
-                LIMIT ?
-                """,
-                (limit,),
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT cache_key, total_hits, total_misses, total_bytes, last_access
+                    FROM cache_metrics
+                    ORDER BY last_access ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
             )
-            rows = cur.fetchall()
-        return [
-            {
-                "cache_key": row[0],
-                "total_hits": row[1],
-                "total_misses": row[2],
-                "total_bytes": row[3],
-                "last_access": row[4],
-            }
-            for row in rows
-        ]
+            rows = result.mappings().all()
+        return [dict(row) for row in rows]
 
     def delete(self, cache_key: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM cache_metrics WHERE cache_key = ?", (cache_key,))
+        with self._engine.begin() as conn:
+            conn.execute(text("DELETE FROM cache_metrics WHERE cache_key = :cache_key"), {"cache_key": cache_key})
 
 
 def build_backend(settings: CacheProxySettings) -> CacheBackend:
@@ -434,7 +432,7 @@ def create_app() -> FastAPI:
         sampler_ratio=settings.otel_sampler_ratio,
     )
     backend = build_backend(settings)
-    metrics = CacheMetrics(settings.metrics_database_path)
+    metrics = CacheMetrics(settings.metrics_database_url)
     state = CacheProxyState(settings, backend, metrics)
     app = FastAPI()
     instrument_fastapi_app(app)
