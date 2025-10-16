@@ -21,8 +21,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN microdnf update -y \
-    && microdnf install -y \
+USER 0
+
+RUN dnf update -y \
+    && dnf install -y \
         openssl \
         openssl-perl \
         fipscheck \
@@ -33,7 +35,7 @@ RUN microdnf update -y \
         tar \
         gzip \
     && update-crypto-policies --set FIPS \
-    && microdnf clean all
+    && dnf clean all
 
 RUN useradd --no-log-init --create-home --home-dir /var/lib/nimbus nimbus
 
