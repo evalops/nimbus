@@ -3,7 +3,6 @@
 SBOM_OUTPUT ?= 0
 SBOM_DIR ?= sbom
 TRIVY_SEVERITY ?= HIGH,CRITICAL
-TRIVY_FLAGS ?= --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress --ignorefile .trivyignore
 
 bootstrap:
 	uv run python scripts/bootstrap_compose.py --output .env --secrets-output bootstrap-tokens.json
@@ -54,7 +53,7 @@ scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then \
 		docker sbom nimbus-control-plane:ci --format cyclonedx --output $(SBOM_DIR)/nimbus-control-plane.cdx.json || echo "docker sbom unavailable; skipping SBOM" >&2; \
 	fi
-	trivy image $(TRIVY_FLAGS) nimbus-control-plane:ci
+	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-control-plane:ci
 	@if docker buildx version >/dev/null 2>&1; then \
 		docker buildx build --load --platform=linux/amd64 -t nimbus-ai-runner:ci containers/ai-eval-runner; \
 	else \
@@ -64,5 +63,5 @@ scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then \
 		docker sbom nimbus-ai-runner:ci --format cyclonedx --output $(SBOM_DIR)/nimbus-ai-runner.cdx.json || echo "docker sbom unavailable; skipping SBOM" >&2; \
 	fi
-	trivy image $(TRIVY_FLAGS) nimbus-ai-runner:ci
+	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-ai-runner:ci
 	docker image rm -f nimbus-control-plane:ci nimbus-ai-runner:ci >/dev/null 2>&1 || true
