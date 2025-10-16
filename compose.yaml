@@ -4,7 +4,7 @@ services:
   redis:
     image: redis:7.4-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   clickhouse:
     image: clickhouse/clickhouse-server:23.8
@@ -13,12 +13,17 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
 
   control-plane:
     build: .
     command: ["uvicorn", "nimbus.control_plane.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       NIMBUS_GITHUB_APP_ID: ${NIMBUS_GITHUB_APP_ID:-1}
       NIMBUS_GITHUB_APP_PRIVATE_KEY: ${NIMBUS_GITHUB_APP_PRIVATE_KEY:-stub}
@@ -38,13 +43,18 @@ services:
       - redis
       - clickhouse
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - control-data:/app/data
 
   cache-proxy:
     build: .
     command: ["uvicorn", "nimbus.cache_proxy.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       NIMBUS_CACHE_SHARED_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
       NIMBUS_CACHE_STORAGE_PATH: /data/cache
@@ -53,13 +63,18 @@ services:
     volumes:
       - cache-data:/data/cache
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       - control-plane
 
   docker-cache:
     build: .
     command: ["uvicorn", "nimbus.docker_cache.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "5001"]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       NIMBUS_CACHE_SHARED_SECRET: ${NIMBUS_CACHE_SHARED_SECRET:-cache-secret}
       NIMBUS_DOCKER_CACHE_STORAGE_PATH: /data/docker-cache/blobs
@@ -70,7 +85,7 @@ services:
     volumes:
       - docker-cache-data:/data/docker-cache
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
     depends_on:
       - control-plane
       - cache-proxy
@@ -79,19 +94,25 @@ services:
     image: node:20-alpine
     working_dir: /app
     entrypoint: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    user: "node"
     volumes:
       - ./web:/app
     environment:
       VITE_DEFAULT_CONTROL_PLANE_URL: http://control-plane:8000
       VITE_DEFAULT_LOGGING_URL: http://logging-pipeline:8090
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     depends_on:
       - control-plane
 
   logging-pipeline:
     build: .
     command: ["uvicorn", "nimbus.logging_pipeline.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       NIMBUS_CLICKHOUSE_URL: http://clickhouse:8123
       NIMBUS_CLICKHOUSE_DATABASE: nimbus
@@ -100,7 +121,7 @@ services:
     depends_on:
       - clickhouse
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
 
   host-agent:
     build: .

@@ -29,3 +29,9 @@ lint-web:
 
 build-docker-cache:
 	uv run python -m compileall src/nimbus/docker_cache
+
+audit:
+	./scripts/dependency_audit.sh
+
+coverage:
+	uv tool run --from pytest-cov pytest --cov=src --cov-report=term-missing --cov-fail-under=85

@@ -26,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.engine.url import make_url
 
 from ..common.schemas import JobAssignment, JobStatusUpdate
 
@@ -109,7 +110,22 @@ job_leases_table = Table(
 
 
 def create_engine(database_url: str) -> AsyncEngine:
-    return create_async_engine(database_url, future=True, echo=False)
+    url = make_url(database_url)
+    engine_kwargs: dict[str, object] = {
+        "future": True,
+        "echo": False,
+        "pool_pre_ping": True,
+    }
+    if url.get_backend_name() not in {"sqlite", "sqlite+aiosqlite"}:
+        engine_kwargs.update(
+            {
+                "pool_size": 20,
+                "max_overflow": 40,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,
+            }
+        )
+    return create_async_engine(database_url, **engine_kwargs)
 
 
 async def ensure_schema(engine: AsyncEngine) -> None:

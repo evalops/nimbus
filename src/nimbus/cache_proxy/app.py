@@ -443,20 +443,36 @@ def create_app() -> FastAPI:
     async def record_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
         start = time.perf_counter()
         state = request.app.state.cache_state  # type: ignore[attr-defined]
-        response = None
         try:
             response = await call_next(request)
-            return response
-        finally:
+        except Exception:
             duration = time.perf_counter() - start
             CACHE_LATENCY_HISTOGRAM.observe(duration)
-            state.logger.info(
-                "http_request",
+            state.logger.exception(
+                "http_request_error",
                 method=request.method,
                 path=request.url.path,
-                status=getattr(response, "status_code", None),
                 duration_ms=round(duration * 1000, 2),
             )
+            raise
+
+        duration = time.perf_counter() - start
+        CACHE_LATENCY_HISTOGRAM.observe(duration)
+
+        log_kwargs = {
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(duration * 1000, 2),
+        }
+        if response.status_code >= 500:
+            state.logger.error("http_request", **log_kwargs)
+        elif duration >= 1.0:
+            state.logger.warning("http_request", **log_kwargs)
+        else:
+            state.logger.info("http_request", **log_kwargs)
+
+        return response
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(

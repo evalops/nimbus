@@ -530,20 +530,36 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def record_request_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
         start = time.perf_counter()
-        response = None
         try:
             response = await call_next(request)
-            return response
-        finally:
+        except Exception:
             duration = time.perf_counter() - start
             REQUEST_LATENCY_HISTOGRAM.observe(duration)
-            LOGGER.info(
-                "http_request",
+            LOGGER.exception(
+                "http_request_error",
                 method=request.method,
                 path=request.url.path,
-                status=getattr(response, "status_code", None),
                 duration_ms=round(duration * 1000, 2),
             )
+            raise
+
+        duration = time.perf_counter() - start
+        REQUEST_LATENCY_HISTOGRAM.observe(duration)
+
+        log_kwargs = {
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(duration * 1000, 2),
+        }
+        if response.status_code >= 500:
+            LOGGER.error("http_request", **log_kwargs)
+        elif duration >= 1.0:
+            LOGGER.warning("http_request", **log_kwargs)
+        else:
+            LOGGER.info("http_request", **log_kwargs)
+
+        return response
 
     @app.get("/sso/metadata")
     async def saml_metadata(state: AppState = Depends(_get_state)) -> Response:

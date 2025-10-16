@@ -52,3 +52,4 @@ packages = ["src/nimbus"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--strict-config --strict-markers"

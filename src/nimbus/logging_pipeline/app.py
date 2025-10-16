@@ -36,6 +36,16 @@ BATCH_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
         description="Latency of ClickHouse batch writes",
     )
 )
+HTTP_REQUEST_COUNTER = GLOBAL_REGISTRY.register(
+    Counter("nimbus_logging_http_requests_total", "Total HTTP requests to logging pipeline")
+)
+HTTP_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
+    Histogram(
+        "nimbus_logging_http_request_latency_seconds",
+        buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+        description="Latency of logging pipeline HTTP requests",
+    )
+)
 
 LOGGER = structlog.get_logger("nimbus.logging_pipeline")
 TRACER = trace.get_tracer("nimbus.logging_pipeline")
@@ -224,6 +234,39 @@ def require_cache_token(
 
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+
+    @app.middleware("http")
+    async def record_request_metrics(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
+        start = time.perf_counter()
+        HTTP_REQUEST_COUNTER.inc()
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration = time.perf_counter() - start
+            HTTP_LATENCY_HISTOGRAM.observe(duration)
+            LOGGER.exception(
+                "http_request_error",
+                method=request.method,
+                path=request.url.path,
+                duration_ms=round(duration * 1000, 2),
+            )
+            raise
+
+        duration = time.perf_counter() - start
+        HTTP_LATENCY_HISTOGRAM.observe(duration)
+        log_kwargs = {
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(duration * 1000, 2),
+        }
+        if response.status_code >= 500:
+            LOGGER.error("http_request", **log_kwargs)
+        elif duration >= 1.0:
+            LOGGER.warning("http_request", **log_kwargs)
+        else:
+            LOGGER.info("http_request", **log_kwargs)
+        return response
 
     @app.post("/logs", status_code=status.HTTP_202_ACCEPTED)
     async def ingest_logs(
