@@ -26,8 +26,6 @@ USER 0
 RUN dnf update -y \
     && dnf install -y \
         openssl \
-        openssl-perl \
-        fipscheck \
         crypto-policies-scripts \
         policycoreutils-python-utils \
         selinux-policy-targeted \
