@@ -17,6 +17,9 @@ venv/
 # Logs
 *.log
 
+# Host agent state
+.nimbus/
+
 # Frontend artifacts
 web/node_modules/
 web/dist/

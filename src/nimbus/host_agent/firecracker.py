@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import platform
 import shutil
@@ -14,11 +15,10 @@ from uuid import uuid4
 
 import httpx
 import structlog
+from pyroute2 import IPRoute, NetlinkError
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
-from ..common.security import verify_cache_token
-from .reaper import teardown_job_resources
 
 LOGGER = structlog.get_logger("nimbus.host_agent.firecracker")
 
@@ -143,12 +143,8 @@ class FirecrackerLauncher:
                     )
                 raise FirecrackerError(str(exc), result=collected) from exc
             finally:
-                # Idempotent teardown - safe to call even if setup partially failed
-                await teardown_job_resources(
-                    assignment.job_id,
-                    self._settings.tap_device_prefix,
-                    vm_process=process,
-                )
+                if tap_created:
+                    await self.cleanup_network(network)
 
     def _allocate_tap_name(self, job_id: int) -> str:
         suffix = job_id % 10000
@@ -214,13 +210,6 @@ class FirecrackerLauncher:
         cache_section = None
         if assignment.cache_token:
             cache_section = assignment.cache_token.model_dump()
-        elif self._settings.cache_token_secret and self._settings.cache_token_value:
-            fallback = verify_cache_token(
-                self._settings.cache_token_secret.get_secret_value(),
-                self._settings.cache_token_value.get_secret_value(),
-            )
-            if fallback:
-                cache_section = fallback.model_dump()
 
         payload = {
             "job": {
@@ -251,72 +240,46 @@ class FirecrackerLauncher:
             raise FirecrackerError("Host agent requires root privileges to create tap devices")
         LOGGER.debug("Creating tap device", tap=tap_name)
         try:
-            process = await asyncio.create_subprocess_exec(
-                "ip",
-                "tuntap",
-                "add",
-                "mode",
-                "tap",
-                tap_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:  # pragma: no cover - depends on host
-            raise FirecrackerError("ip command not found; install iproute2") from exc
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            raise FirecrackerError(
-                f"Failed to create tap {tap_name}: {stderr.decode().strip() or stdout.decode().strip()}"
-            )
+            await asyncio.to_thread(self._create_tap_device, tap_name)
+        except PermissionError as exc:  # pragma: no cover - depends on host capabilities
+            raise FirecrackerError("Insufficient privileges to create tap device") from exc
+        except NetlinkError as exc:
+            if exc.code == errno.EEXIST:
+                raise FirecrackerError(f"Tap device {tap_name} already exists") from exc
+            raise FirecrackerError(f"Failed to create tap device {tap_name}: {exc}") from exc
 
     async def _teardown_tap_device(self, tap_name: str) -> None:
         LOGGER.debug("Deleting tap device", tap=tap_name)
         try:
-            process = await asyncio.create_subprocess_exec(
-                "ip",
-                "tuntap",
-                "del",
-                "mode",
-                "tap",
-                tap_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            return
-        await process.communicate()
+            await asyncio.to_thread(self._delete_link, tap_name, True)
+        except NetlinkError as exc:
+            LOGGER.debug("Failed to remove tap device", tap=tap_name, error=str(exc))
 
     async def _configure_network(self, network: MicroVMNetwork) -> None:
         LOGGER.debug("Configuring network for tap", tap=network.tap_name, bridge=network.bridge)
-        await self._run_command("ip", "link", "del", network.bridge, skip_fail=True)
-        await self._run_command("ip", "link", "add", network.bridge, "type", "bridge")
-        await self._run_command("ip", "link", "set", network.bridge, "up")
-        await self._run_command("ip", "link", "set", network.tap_name, "master", network.bridge)
-        await self._run_command("ip", "link", "set", network.tap_name, "up")
-        await self._run_command(
-            "ip",
-            "addr",
-            "add",
-            f"{network.host_ip}/{network.cidr}",
-            "dev",
-            network.bridge,
-            skip_fail=True,
-        )
+        try:
+            await asyncio.to_thread(self._delete_link, network.bridge, True)
+            await asyncio.to_thread(self._add_bridge, network.bridge)
+            await asyncio.to_thread(self._set_link_state, network.bridge, "up", False)
+            await asyncio.to_thread(self._set_master, network.tap_name, network.bridge)
+            await asyncio.to_thread(self._set_link_state, network.tap_name, "up", False)
+            await asyncio.to_thread(self._assign_address, network.bridge, network.host_ip, network.cidr)
+        except NetlinkError as exc:
+            raise FirecrackerError(f"Failed to configure network {network.tap_name}: {exc}") from exc
 
     async def _teardown_network(self, network: MicroVMNetwork) -> None:
         LOGGER.debug("Tearing down network", tap=network.tap_name, bridge=network.bridge)
-        await self._run_command(
-            "ip",
-            "addr",
-            "del",
-            f"{network.host_ip}/{network.cidr}",
-            "dev",
-            network.bridge,
-            skip_fail=True,
-        )
-        await self._run_command("ip", "link", "set", network.tap_name, "nomaster", skip_fail=True)
-        await self._run_command("ip", "link", "set", network.tap_name, "down", skip_fail=True)
-        await self._run_command("ip", "link", "del", network.bridge, skip_fail=True)
+        try:
+            await asyncio.to_thread(self._remove_address, network.bridge, network.host_ip, network.cidr)
+            await asyncio.to_thread(self._clear_master, network.tap_name)
+            await asyncio.to_thread(self._set_link_state, network.tap_name, "down", True)
+            await asyncio.to_thread(self._delete_link, network.bridge, True)
+        except NetlinkError as exc:
+            LOGGER.debug("Failed to tear down network cleanly", tap=network.tap_name, error=str(exc))
+
+    async def cleanup_network(self, network: MicroVMNetwork) -> None:
+        await self._teardown_network(network)
+        await self._teardown_tap_device(network.tap_name)
 
     async def _spawn_firecracker(
         self,
@@ -324,11 +287,9 @@ class FirecrackerLauncher:
         log_path: Path,
         metrics_path: Path,
     ) -> asyncio.subprocess.Process:
-        """Spawn Firecracker, using jailer if configured."""
         if self._settings.jailer_bin_path:
             return await self._spawn_firecracker_with_jailer(api_socket, log_path, metrics_path)
-        else:
-            return await self._spawn_firecracker_direct(api_socket, log_path, metrics_path)
+        return await self._spawn_firecracker_direct(api_socket, log_path, metrics_path)
 
     async def _spawn_firecracker_direct(
         self,
@@ -336,7 +297,6 @@ class FirecrackerLauncher:
         log_path: Path,
         metrics_path: Path,
     ) -> asyncio.subprocess.Process:
-        """Spawn Firecracker directly without jailer (less secure)."""
         LOGGER.warning("Running Firecracker without jailer - not recommended for production")
         process = await asyncio.create_subprocess_exec(
             self._settings.firecracker_bin_path,
@@ -365,46 +325,58 @@ class FirecrackerLauncher:
         log_path: Path,
         metrics_path: Path,
     ) -> asyncio.subprocess.Process:
-        """Spawn Firecracker using the jailer for security isolation."""
+        if platform.system().lower() != "linux":
+            raise FirecrackerError("Jailer is only supported on Linux systems")
+
+        if not self._settings.jailer_chroot_base.exists():
+            self._settings.jailer_chroot_base.mkdir(parents=True, exist_ok=True)
+
         vm_id = uuid4().hex[:16]
         jailer_chroot = self._settings.jailer_chroot_base / vm_id
-        jailer_chroot.mkdir(parents=True, exist_ok=True)
-        
-        # Prepare chroot directory structure
-        (jailer_chroot / "root").mkdir(exist_ok=True)
+        (jailer_chroot / "root").mkdir(parents=True, exist_ok=True)
         (jailer_chroot / "root" / "run").mkdir(exist_ok=True)
-        
-        # Copy Firecracker binary into chroot
+
         fc_in_chroot = jailer_chroot / "firecracker"
         shutil.copy2(self._settings.firecracker_bin_path, fc_in_chroot)
         fc_in_chroot.chmod(0o755)
-        
-        # Build jailer command
+
         cmd = [
             self._settings.jailer_bin_path,
-            "--id", vm_id,
-            "--exec-file", str(fc_in_chroot),
-            "--uid", str(self._settings.jailer_uid),
-            "--gid", str(self._settings.jailer_gid),
-            "--chroot-base-dir", str(self._settings.jailer_chroot_base),
+            "--id",
+            vm_id,
+            "--exec-file",
+            str(fc_in_chroot),
+            "--uid",
+            str(self._settings.jailer_uid),
+            "--gid",
+            str(self._settings.jailer_gid),
+            "--chroot-base-dir",
+            str(self._settings.jailer_chroot_base),
             "--new-pid-ns",
         ]
-        
-        # Add seccomp filter if configured
+
         if self._settings.seccomp_filter_path and self._settings.seccomp_filter_path.exists():
             cmd.extend(["--seccomp-filter", str(self._settings.seccomp_filter_path)])
         elif self._settings.seccomp_filter_path:
-            LOGGER.warning("Seccomp filter configured but not found", path=self._settings.seccomp_filter_path)
-        
-        # Firecracker arguments after --
-        cmd.extend([
-            "--",
-            "--api-sock", "/run/firecracker.sock",
-            "--log-path", str(log_path),
-            "--level", "Info",
-            "--metrics-path", str(metrics_path),
-        ])
-        
+            LOGGER.warning(
+                "Seccomp filter configured but not found",
+                path=str(self._settings.seccomp_filter_path),
+            )
+
+        cmd.extend(
+            [
+                "--",
+                "--api-sock",
+                "/run/firecracker.sock",
+                "--log-path",
+                str(log_path),
+                "--level",
+                "Info",
+                "--metrics-path",
+                str(metrics_path),
+            ]
+        )
+
         LOGGER.info(
             "Spawning Firecracker with jailer",
             vm_id=vm_id,
@@ -412,24 +384,22 @@ class FirecrackerLauncher:
             gid=self._settings.jailer_gid,
             seccomp=self._settings.seccomp_filter_path is not None,
         )
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        
-        # Give jailer time to set up
+
         await asyncio.sleep(0.2)
-        
+
         if process.returncode is not None:
             stdout, stderr = await process.communicate()
-            # Cleanup chroot on failure
             shutil.rmtree(jailer_chroot, ignore_errors=True)
             raise FirecrackerError(
                 f"Jailer/Firecracker exited prematurely: {stderr.decode().strip() or stdout.decode().strip()}"
             )
-        
+
         return process
 
     async def _configure_vm(self, api_socket: Path, config: dict, metadata: dict) -> None:
@@ -511,25 +481,69 @@ class FirecrackerLauncher:
             metrics=metrics_data,
         )
 
-    async def _run_command(
-        self,
-        *args: str,
-        skip_fail: bool = False,
-    ) -> None:
-        LOGGER.debug("Executing command", args=args)
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            if skip_fail:
-                return
-            raise FirecrackerError(f"Command not found: {args[0]}")
+    def _create_tap_device(self, tap_name: str) -> None:
+        with IPRoute() as ipr:
+            ipr.link("add", ifname=tap_name, kind="tuntap", mode="tap")
 
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0 and not skip_fail:
-            raise FirecrackerError(
-                f"Command {' '.join(args)} failed: {stderr.decode().strip() or stdout.decode().strip()}"
-            )
+    def _delete_link(self, ifname: str, ignore_missing: bool) -> None:
+        with IPRoute() as ipr:
+            indexes = ipr.link_lookup(ifname=ifname)
+            if not indexes:
+                if ignore_missing:
+                    return
+                raise NetlinkError(errno.ENODEV, os.strerror(errno.ENODEV))
+            ipr.link("del", index=indexes[0])
+
+    def _add_bridge(self, bridge: str) -> None:
+        with IPRoute() as ipr:
+            try:
+                ipr.link("add", ifname=bridge, kind="bridge")
+            except NetlinkError as exc:
+                if exc.code == errno.EEXIST:
+                    return
+                raise
+
+    def _set_link_state(self, ifname: str, state: str, ignore_missing: bool) -> None:
+        with IPRoute() as ipr:
+            indexes = ipr.link_lookup(ifname=ifname)
+            if not indexes:
+                if ignore_missing:
+                    return
+                raise NetlinkError(errno.ENODEV, os.strerror(errno.ENODEV))
+            ipr.link("set", index=indexes[0], state=state)
+
+    def _set_master(self, tap_name: str, bridge: str) -> None:
+        with IPRoute() as ipr:
+            tap_idx = ipr.link_lookup(ifname=tap_name)
+            bridge_idx = ipr.link_lookup(ifname=bridge)
+            if not tap_idx:
+                raise NetlinkError(errno.ENODEV, f"Tap {tap_name} not found")
+            if not bridge_idx:
+                raise NetlinkError(errno.ENODEV, f"Bridge {bridge} not found")
+            ipr.link("set", index=tap_idx[0], master=bridge_idx[0])
+
+    def _clear_master(self, tap_name: str) -> None:
+        with IPRoute() as ipr:
+            indexes = ipr.link_lookup(ifname=tap_name)
+            if not indexes:
+                return
+            ipr.link("set", index=indexes[0], master=0)
+
+    def _assign_address(self, ifname: str, address: str, cidr: int) -> None:
+        with IPRoute() as ipr:
+            indexes = ipr.link_lookup(ifname=ifname)
+            if not indexes:
+                raise NetlinkError(errno.ENODEV, f"Interface {ifname} not found")
+            ipr.addr("replace", index=indexes[0], address=address, mask=cidr)
+
+    def _remove_address(self, ifname: str, address: str, cidr: int) -> None:
+        with IPRoute() as ipr:
+            indexes = ipr.link_lookup(ifname=ifname)
+            if not indexes:
+                return
+            try:
+                ipr.addr("del", index=indexes[0], address=address, mask=cidr)
+            except NetlinkError as exc:
+                if exc.code in {errno.ENOENT, errno.EADDRNOTAVAIL, errno.ENODEV}:
+                    return
+                raise

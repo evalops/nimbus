@@ -79,11 +79,10 @@ class HostAgentSettings(BaseSettings):
     control_plane_token: SecretStr = env_field(..., "NIMBUS_CONTROL_PLANE_TOKEN")
     redis_url: Optional[RedisDsn] = env_field(None, "NIMBUS_AGENT_REDIS_URL")
     cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
-    cache_token_secret: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_SECRET")
-    cache_token_value: Optional[SecretStr] = env_field(None, "NIMBUS_CACHE_TOKEN_VALUE")
     log_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_LOG_SINK_URL")
     metrics_host: str = env_field("127.0.0.1", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
+    state_database_path: Path = env_field(Path("./.nimbus/agent_state.db"), "NIMBUS_AGENT_STATE_DB")
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")
     jailer_bin_path: Optional[str] = env_field(None, "NIMBUS_JAILER_BIN")

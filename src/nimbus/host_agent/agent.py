@@ -14,10 +14,10 @@ from opentelemetry import trace
 
 from ..common.schemas import JobAssignment, JobLeaseRequest, JobLeaseResponse, JobStatusUpdate
 from ..common.settings import HostAgentSettings
-from ..common.security import verify_cache_token
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
+from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
 from .reaper import reap_stale_resources
 
@@ -58,9 +58,12 @@ class HostAgent:
         self._ssh_sessions: Dict[str, ActiveSSHSession] = {}
         self._enable_ssh = settings.enable_ssh
         self._last_ssh_sync = 0.0
+        self._state_store = AgentStateStore(settings.state_database_path)
 
     async def run(self) -> None:
         self._running = True
+        await self._state_store.open()
+        await self._recover_state()
         await self._ensure_metrics_server()
         
         # Run reaper on startup to clean up stale resources from previous crashes
@@ -99,6 +102,7 @@ class HostAgent:
             self._metrics_server.close()
             await self._metrics_server.wait_closed()
             self._metrics_server = None
+        await self._state_store.close()
 
     async def _lease_job(self) -> JobLeaseResponse:
         request = JobLeaseRequest(
@@ -149,8 +153,68 @@ class HostAgent:
                         await asyncio.sleep(delay)
         raise RuntimeError("Lease retry loop exited unexpectedly")
 
+    async def _recover_state(self) -> None:
+        try:
+            pending = await self._state_store.list_jobs()
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.warning("Failed to load persisted job state", error=str(exc))
+            return
+
+        if not pending:
+            return
+
+        LOGGER.info("Recovering orphaned jobs", count=len(pending))
+        for job in pending:
+            LOGGER.warning(
+                "Cleaning up orphaned job",
+                job_id=job.job_id,
+                tap=job.tap_name,
+                bridge=job.bridge,
+            )
+            network = MicroVMNetwork(
+                tap_name=job.tap_name,
+                bridge=job.bridge,
+                host_ip=job.host_ip,
+                guest_ip=job.guest_ip,
+                cidr=job.cidr,
+            )
+            try:
+                await self._launcher.cleanup_network(network)
+            except FirecrackerError as exc:
+                LOGGER.debug(
+                    "Network cleanup during recovery failed",
+                    job_id=job.job_id,
+                    error=str(exc),
+                )
+            try:
+                await self._submit_status_for_job(
+                    job.job_id,
+                    "failed",
+                    message="host agent restarted before completion",
+                )
+            except httpx.HTTPError as exc:
+                LOGGER.debug(
+                    "Failed to notify control plane about orphaned job",
+                    job_id=job.job_id,
+                    error=str(exc),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.debug(
+                    "Unexpected error notifying control plane",
+                    job_id=job.job_id,
+                    error=str(exc),
+                )
+            try:
+                await self._state_store.remove_job(job.job_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.debug("Failed to remove recovered job state", job_id=job.job_id, error=str(exc))
+
     async def _process_job(
-        self, assignment: JobAssignment, *, fence_token: Optional[int] = None, lease_ttl: int = 300
+        self,
+        assignment: JobAssignment,
+        *,
+        fence_token: Optional[int] = None,
+        lease_ttl: int = 300,
     ) -> None:
         with TRACER.start_as_current_span(
             "host_agent.process_job",
@@ -160,21 +224,21 @@ class HostAgent:
             JOB_STARTED_COUNTER.inc()
             self._active_jobs += 1
             await self._submit_status(assignment, "starting", fence_token=fence_token)
-
-            if (
-                not assignment.cache_token
-                and self._settings.cache_token_secret
-                and self._settings.cache_token_value
-            ):
-                fallback = verify_cache_token(
-                    self._settings.cache_token_secret.get_secret_value(),
-                    self._settings.cache_token_value.get_secret_value(),
-                )
-                if fallback:
-                    assignment.cache_token = fallback
-
             network = self._launcher.network_for_job(assignment.job_id)
             self._job_networks[assignment.job_id] = network
+            try:
+                await self._state_store.record_job(
+                    StoredJobNetwork(
+                        job_id=assignment.job_id,
+                        tap_name=network.tap_name,
+                        bridge=network.bridge,
+                        host_ip=network.host_ip,
+                        guest_ip=network.guest_ip,
+                        cidr=network.cidr,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to persist job state", job_id=assignment.job_id, error=str(exc))
 
             # Start heartbeat renewal task if fence token provided
             heartbeat_task: Optional[asyncio.Task] = None
@@ -223,6 +287,10 @@ class HostAgent:
                         pass
                 self._active_jobs = max(0, self._active_jobs - 1)
                 self._job_networks.pop(assignment.job_id, None)
+                try:
+                    await self._state_store.remove_job(assignment.job_id)
+                except Exception as exc:  # pragma: no cover - defensive
+                    LOGGER.debug("Failed to clear stored job state", job_id=assignment.job_id, error=str(exc))
                 await self._teardown_sessions_for_job(assignment.job_id, reason="job complete")
 
     async def _submit_status(
@@ -233,9 +301,24 @@ class HostAgent:
         message: Optional[str] = None,
         fence_token: Optional[int] = None,
     ) -> None:
+        await self._submit_status_for_job(
+            assignment.job_id,
+            status,
+            message=message,
+            fence_token=fence_token,
+        )
+
+    async def _submit_status_for_job(
+        self,
+        job_id: int,
+        status: str,
+        *,
+        message: Optional[str] = None,
+        fence_token: Optional[int] = None,
+    ) -> None:
         payload = JobStatusUpdate(
             agent_id=self._settings.agent_id,
-            job_id=assignment.job_id,
+            job_id=job_id,
             status=status,  # type: ignore[arg-type]
             message=message,
             fence_token=fence_token,

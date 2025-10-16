@@ -823,6 +823,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyroute2" },
     { name = "python-dotenv" },
     { name = "redis" },
     { name = "sqlalchemy" },
@@ -852,6 +853,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<2.9" },
     { name = "pydantic-settings", specifier = ">=2.2,<2.3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8,<2.9" },
+    { name = "pyroute2", specifier = ">=0.7,<0.8" },
     { name = "python-dotenv", specifier = ">=1.0,<1.1" },
     { name = "redis", specifier = ">=5.0,<5.1" },
     { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
@@ -1239,6 +1241,18 @@ crypto = [
 ]
 
 [[package]]
+name = "pyroute2"
+version = "0.7.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "win-inet-pton", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/39/16/323b947c34530436658331e2cf393b72ebcbd923a75154a7efb28feefd5d/pyroute2-0.7.12.tar.gz", hash = "sha256:54d226fc3ff2732f49bac9b26853c50c9d05be05a4d9daf09c7cf6d77301eff3", size = 423519, upload-time = "2024-02-10T15:04:45.931Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/24/abfa808cbf32659f75092601d74fd24c5608daf408008ab6a7bfdc2807e9/pyroute2-0.7.12-py3-none-any.whl", hash = "sha256:9df8d0fcb5fb0a724603bcfdef76ffbd287f00f69e9fb660c20a06962b24691a", size = 460493, upload-time = "2024-02-10T15:04:40.912Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -1570,6 +1584,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/86/eb/20b6cdf273913d0ad05a6a14aed4b9a85591c18a987a3d47f20fa13dcc47/websockets-15.0.1-cp313-cp313-win32.whl", hash = "sha256:ba9e56e8ceeeedb2e080147ba85ffcd5cd0711b89576b83784d8605a7df455fa", size = 176393, upload-time = "2025-03-05T20:02:53.814Z" },
     { url = "https://files.pythonhosted.org/packages/1b/6c/c65773d6cab416a64d191d6ee8a8b1c68a09970ea6909d16965d26bfed1e/websockets-15.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:e09473f095a819042ecb2ab9465aee615bd9c2028e4ef7d933600a8401c79561", size = 176837, upload-time = "2025-03-05T20:02:55.237Z" },
     { url = "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl", hash = "sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f", size = 169743, upload-time = "2025-03-05T20:03:39.41Z" },
+]
+
+[[package]]
+name = "win-inet-pton"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/da/0b1487b5835497dea00b00d87c2aca168bb9ca2e2096981690239e23760a/win_inet_pton-1.1.0.tar.gz", hash = "sha256:dd03d942c0d3e2b1cf8bab511844546dfa5f74cb61b241699fa379ad707dea4f", size = 2949, upload-time = "2019-02-19T17:46:23.925Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/be/31/ff772a44aa56319df8afbb0b34f1a856f66f05b9d5f1fed917849e47fdae/win_inet_pton-1.1.0-py2.py3-none-any.whl", hash = "sha256:eaf0193cbe7152ac313598a0da7313fb479f769343c0c16c5308f64887dc885b", size = 4848, upload-time = "2019-02-19T17:46:22.182Z" },
 ]
 
 [[package]]
