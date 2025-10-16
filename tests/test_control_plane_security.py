@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from starlette.requests import Request
 
 from nimbus.common.security import mint_agent_token
-from nimbus.control_plane.app import AppState, RateLimiter, verify_admin_token
+from nimbus.control_plane.app import AppState, RateLimiter, verify_admin_token, _validate_webhook_timestamp
 
 
 def make_settings(**overrides: Any):
@@ -88,3 +88,31 @@ async def test_verify_admin_token_rate_limits_subject():
     with pytest.raises(HTTPException) as excinfo:
         verify_admin_token(request2, settings)
     assert excinfo.value.status_code == 429
+
+
+def test_validate_webhook_timestamp_within_tolerance():
+    now = 1_000
+    assert _validate_webhook_timestamp(str(now - 30), 60, now=now) == now - 30
+
+
+def test_validate_webhook_timestamp_tolerance_zero_allows_skew():
+    now = 1_000
+    assert _validate_webhook_timestamp(str(now - 300), 0, now=now) == now - 300
+
+
+def test_validate_webhook_timestamp_missing_header():
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_webhook_timestamp("", 300, now=1_000)
+    assert excinfo.value.status_code == 400
+
+
+def test_validate_webhook_timestamp_invalid_value():
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_webhook_timestamp("not-an-int", 300, now=1_000)
+    assert excinfo.value.status_code == 400
+
+
+def test_validate_webhook_timestamp_outside_tolerance():
+    with pytest.raises(HTTPException) as excinfo:
+        _validate_webhook_timestamp(str(1_000), 30, now=1_200)
+    assert excinfo.value.status_code == 409

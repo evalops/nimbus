@@ -49,7 +49,6 @@ async def test_cache_status_reports_cold_entries(monkeypatch, tmp_path: Path):
         token = mint_cache_token(secret="local-cache-secret", organization_id=1, ttl_seconds=60)
         headers = {"Authorization": f"Bearer {token.token}"}
         metrics_headers = {"Authorization": "Bearer metrics-secret"}
-        metrics_headers = {"Authorization": "Bearer metrics-secret"}
 
         put_response = await client.put("/cache/hot/item", content=b"payload", headers=headers)
         assert put_response.status_code == 201

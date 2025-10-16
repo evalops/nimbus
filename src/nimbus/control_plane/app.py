@@ -23,6 +23,7 @@ import structlog
 from opentelemetry import trace
 
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
+from ..common.http_security import require_metrics_access
 from ..common.schemas import (
     AgentTokenMintRequest,
     AgentTokenAuditRecord,
@@ -69,22 +70,21 @@ def _default_cache_scope(org_id: int) -> str:
     return f"pull:org-{org_id},push:org-{org_id}"
 
 
-def _require_metrics_access(request: Request, token: Optional[str]) -> None:
-    if token:
-        auth_header = request.headers.get("authorization")
-        expected = f"Bearer {token}"
-        if not auth_header or not hmac.compare_digest(auth_header, expected):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
-        return
+def _validate_webhook_timestamp(raw_timestamp: str, tolerance_seconds: int, *, now: Optional[int] = None) -> int:
+    if not raw_timestamp:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing signature timestamp")
 
-    host = request.client.host if request.client else None
-    if not host:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied")
     try:
-        if not ip_address(host).is_loopback:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access restricted to localhost")
-    except ValueError as exc:  # pragma: no cover - depends on network stack
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied") from exc
+        timestamp = int(raw_timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid signature timestamp") from exc
+
+    tolerance = max(0, tolerance_seconds)
+    current = now if now is not None else int(time.time())
+    if tolerance and (timestamp < current - tolerance or timestamp > current + tolerance):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale webhook delivery")
+
+    return timestamp
 
 
 def get_client_ip(request: Request, trusted_proxies: list[str]) -> str:
@@ -426,24 +426,27 @@ def create_app() -> FastAPI:
                 LOGGER.warning("Webhook missing signature timestamp")
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing signature timestamp")
 
-            try:
-                signature_ts_int = int(signature_ts)
-            except ValueError as exc:
-                LOGGER.warning("Invalid webhook signature timestamp", raw_value=signature_ts)
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid signature timestamp") from exc
-
-            tolerance = max(0, settings.webhook_timestamp_tolerance_seconds)
+            tolerance_setting = settings.webhook_timestamp_tolerance_seconds
             now = int(time.time())
-            if tolerance and (signature_ts_int < now - tolerance or signature_ts_int > now + tolerance):
-                LOGGER.warning(
-                    "Webhook timestamp outside tolerance",
-                    delivery_id=delivery_id,
-                    timestamp=signature_ts_int,
+            try:
+                signature_ts_int = _validate_webhook_timestamp(
+                    signature_ts,
+                    tolerance_setting,
                     now=now,
-                    tolerance=tolerance,
                 )
-                WEBHOOK_REPLAY_COUNTER.inc()
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stale webhook delivery")
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_400_BAD_REQUEST:
+                    LOGGER.warning("Invalid webhook signature timestamp", raw_value=signature_ts)
+                elif exc.status_code == status.HTTP_409_CONFLICT:
+                    LOGGER.warning(
+                        "Webhook timestamp outside tolerance",
+                        delivery_id=delivery_id,
+                        timestamp=signature_ts,
+                        now=now,
+                        tolerance=max(0, tolerance_setting),
+                    )
+                    WEBHOOK_REPLAY_COUNTER.inc()
+                raise
             
             # Check for replay attack via delivery ID (nonce)
             if delivery_id:
@@ -921,7 +924,7 @@ def create_app() -> FastAPI:
         settings: ControlPlaneSettings = Depends(get_settings),
     ) -> PlainTextResponse:
         token = settings.metrics_token.get_secret_value() if settings.metrics_token else None
-        _require_metrics_access(request, token)
+        require_metrics_access(request, token)
         return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     @app.get("/api/keys", response_model=dict[str, list[str]])

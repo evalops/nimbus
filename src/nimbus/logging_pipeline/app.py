@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 import json
 import time
-import hmac
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
@@ -15,13 +14,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 import structlog
 from opentelemetry import trace
-from ipaddress import ip_address
 
 from ..common.schemas import CacheToken, LogIngestRequest
 from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.settings import LoggingIngestSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
+from ..common.http_security import require_metrics_access
 INGEST_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_ingest_requests_total", "Total log ingest requests"))
 INGESTED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_rows_ingested_total", "Rows ingested into ClickHouse"))
 DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_rows_dropped_total", "Log rows dropped due to size limits"))
@@ -43,26 +42,6 @@ TRACER = trace.get_tracer("nimbus.logging_pipeline")
 
 MAX_ROWS_PER_BATCH = 500
 MAX_BYTES_PER_BATCH = 4 * 1024 * 1024  # 4 MiB
-
-
-def _require_metrics_access(request: Request, token: Optional[str]) -> None:
-    if token:
-        expected = f"Bearer {token}"
-        auth_header = request.headers.get("authorization")
-        if not auth_header or not hmac.compare_digest(auth_header, expected):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
-        return
-
-    client_host = request.client.host if request.client else None
-    if not client_host:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied")
-    try:
-        if not ip_address(client_host).is_loopback:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access restricted to localhost")
-    except ValueError as exc:  # pragma: no cover - platform dependent
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics access denied") from exc
-
-
 class PipelineState:
     def __init__(self, settings: LoggingIngestSettings, http_client: httpx.AsyncClient) -> None:
         self.settings = settings
@@ -349,7 +328,7 @@ def create_app() -> FastAPI:
             if settings.metrics_token
             else None
         )
-        _require_metrics_access(request, token)
+        require_metrics_access(request, token)
         return PlainTextResponse(GLOBAL_REGISTRY.render())
 
     @app.get("/healthz", status_code=status.HTTP_200_OK)

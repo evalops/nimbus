@@ -40,7 +40,7 @@ echo "✓ Seccomp profile: $SECCOMP_FILE"
 # Install privileged setup script
 echo ""
 echo "Installing privileged setup script..."
-sudo cp scripts/privileged-setup.sh "$INSTALL_DIR/nimbus-privileged-setup.sh"
+sudo cp scripts/nimbus-privileged-setup.sh "$INSTALL_DIR/nimbus-privileged-setup.sh"
 sudo chmod 755 "$INSTALL_DIR/nimbus-privileged-setup.sh"
 echo "✓ Setup script: $INSTALL_DIR/nimbus-privileged-setup.sh"
 
