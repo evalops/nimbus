@@ -49,6 +49,7 @@ jobs:
         env:
           TRIVY_EXIT_CODE: "1"
         run: |
+          export DOCKER_CONTENT_TRUST=1
           make scan-images SBOM_OUTPUT=1 TRIVY_SEVERITY="CRITICAL,HIGH,MEDIUM" KEEP_IMAGES=1
           docker save nimbus-control-plane:ci -o nimbus-control-plane_ci.tar
           docker save nimbus-ai-runner:ci -o nimbus-ai-runner_ci.tar

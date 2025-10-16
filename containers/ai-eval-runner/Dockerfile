@@ -14,7 +14,7 @@ RUN set -eux; \
         -not -path '/usr/bin/node' \
         -exec rm -f {} + || true
 
-COPY . .
+COPY run_eval.js ./
 
 RUN useradd --create-home --home-dir /home/evaluator --uid 10001 --gid 0 evaluator \
     && chown -R evaluator:0 /app /home/evaluator \

@@ -168,6 +168,7 @@ async def test_end_to_end_job_and_cache_flow(monkeypatch, tmp_path: Path) -> Non
                 "name": "demo",
                 "full_name": "acme/demo",
                 "private": False,
+                "owner_id": 7,
             },
             "workflow_job": {
                 "id": 101,

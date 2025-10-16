@@ -76,7 +76,7 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     JOB_TIMEOUT_LAST_TS.set(0.0)
     before = JOB_TIMEOUT_COUNTER._value
 
-    repo = GitHubRepository(id=1, name="demo", full_name="acme/demo", private=False)
+    repo = GitHubRepository(id=1, name="demo", full_name="acme/demo", private=False, owner_id=123)
     assignment = JobAssignment(
         job_id=101,
         run_id=202,

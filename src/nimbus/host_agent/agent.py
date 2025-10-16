@@ -473,10 +473,8 @@ class HostAgent:
 
         entries = []
         timestamp = datetime.now(UTC).isoformat()
-        # Note: GitHub repository.id is the repo ID, not org ID
-        # Using repo_id as proxy for org_id until we extract actual org from owner
         repo_id = assignment.repository.id
-        org_id = assignment.repository.id  # TODO: Extract actual org_id from repository owner
+        org_id = assignment.repository.owner_id or repo_id
         
         if result and result.log_lines:
             for line in result.log_lines[:1000]:

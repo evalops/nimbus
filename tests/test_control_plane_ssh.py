@@ -85,6 +85,7 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
                 name="demo",
                 full_name="acme/demo",
                 private=False,
+                owner_id=123,
             ),
             labels=["firecracker"],
             runner_registration=RunnerRegistrationToken(

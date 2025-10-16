@@ -1019,7 +1019,7 @@ def create_app() -> FastAPI:
             span.set_attribute("nimbus.repo", repo.full_name)
             
             # Check per-org rate limit using distributed limiter
-            org_id = repo.id
+            org_id = repo.owner_id or repo.id
             allowed, current_count = await state.distributed_limiter.check_limit(
                 key=f"org:{org_id}",
                 limit=settings.org_job_rate_limit,
@@ -1050,9 +1050,9 @@ def create_app() -> FastAPI:
             runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
             cache_token = mint_cache_token(
                 secret=settings.cache_shared_secret.get_secret_value(),
-                organization_id=repo.id,
+                organization_id=org_id,
                 ttl_seconds=settings.cache_token_ttl_seconds,
-                scope=_default_cache_scope(repo.id),
+                scope=_default_cache_scope(org_id),
             )
             assignment = JobAssignment(
                 job_id=payload.workflow_job.id,
@@ -1112,11 +1112,12 @@ def create_app() -> FastAPI:
             # Mint cache token for the job
             cache_token = None
             if state.settings.cache_shared_secret:
+                org_id = assignment.repository.owner_id or assignment.repository.id
                 cache_token = mint_cache_token(
                     secret=state.settings.cache_shared_secret.get_secret_value(),
-                    organization_id=assignment.repository.id,
+                    organization_id=org_id,
                     ttl_seconds=state.settings.cache_token_ttl_seconds,
-                    scope=_default_cache_scope(assignment.repository.id),
+                    scope=_default_cache_scope(org_id),
                 )
                 assignment.cache_token = cache_token
             

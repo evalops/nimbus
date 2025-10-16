@@ -46,7 +46,7 @@ coverage:
 scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then mkdir -p $(SBOM_DIR); fi
 	@if docker buildx version >/dev/null 2>&1; then \
-		docker buildx build --load --platform=linux/amd64 -t nimbus-control-plane:ci .; \
+		docker buildx build --load --platform=linux/amd64 -t nimbus-control-plane:ci --provenance=false .; \
 	else \
 		echo "docker buildx not available; falling back to docker build (SBOM disabled)"; \
 		docker build -t nimbus-control-plane:ci .; \
@@ -56,7 +56,7 @@ scan-images:
 	fi
 	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-control-plane:ci
 	@if docker buildx version >/dev/null 2>&1; then \
-		docker buildx build --load --platform=linux/amd64 -t nimbus-ai-runner:ci containers/ai-eval-runner; \
+		docker buildx build --load --platform=linux/amd64 -t nimbus-ai-runner:ci --provenance=false containers/ai-eval-runner; \
 	else \
 		echo "docker buildx not available; falling back to docker build (SBOM disabled)"; \
 		docker build -t nimbus-ai-runner:ci containers/ai-eval-runner; \

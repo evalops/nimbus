@@ -29,7 +29,7 @@ async def session():
 
 
 def _make_assignment(job_id: int = 100) -> JobAssignment:
-    repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False)
+    repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False, owner_id=123)
     registration = RunnerRegistrationToken(token="tok", expires_at=datetime.now(timezone.utc))
     return JobAssignment(
         job_id=job_id,

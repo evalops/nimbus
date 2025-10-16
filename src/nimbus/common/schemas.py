@@ -16,6 +16,7 @@ class GitHubRepository(BaseModel):
     full_name: str
     private: bool = False
     html_url: Optional[HttpUrl] = None
+    owner_id: Optional[int] = None
 
 
 class GitHubWorkflowJob(BaseModel):
