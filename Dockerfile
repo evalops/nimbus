@@ -5,11 +5,15 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 USER 0
+RUN useradd --no-log-init --create-home --home-dir /home/webbuild --uid 10001 --gid 0 webbuild
+RUN chown webbuild:0 /app
 
-COPY web/package.json web/package-lock.json ./
+USER webbuild
+
+COPY --chown=webbuild:0 web/package.json web/package-lock.json ./
 RUN npm ci
 
-COPY web ./
+COPY --chown=webbuild:0 web ./
 RUN npm run build
 
 FROM registry.access.redhat.com/ubi9/python-312:latest
