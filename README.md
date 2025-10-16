@@ -78,7 +78,7 @@ jobs:
 ```
 
 The control plane will:
-1. Receive and verify the `workflow_job` webhook from GitHub (signature + replay protection)
+1. Receive and verify the `workflow_job` webhook from GitHub (requires `X-Hub-Signature-256` and `X-Hub-Signature-Timestamp`; default tolerance is 300 s via `NIMBUS_WEBHOOK_TIMESTAMP_TOLERANCE`)
 2. Check per-org rate limits and generate a one-time runner registration token via the GitHub API
 3. Enqueue the job assignment to Redis with org-scoped cache token
 4. Agent leases the job with DB-backed fence token and starts heartbeat renewal
@@ -146,12 +146,14 @@ python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECR
 | `NIMBUS_DATABASE_URL` | Async SQLAlchemy database URL (e.g. `postgresql+asyncpg://user:pass@host/nimbus_control`). | required |
 | `NIMBUS_JWT_SECRET` | Secret used to mint control-plane JWTs for CLI access. | required |
 | `NIMBUS_PUBLIC_BASE_URL` | Public URL base returned to GitHub for runner callbacks. | required |
+| `NIMBUS_METRICS_TOKEN` | Bearer token required for `/metrics`; if unset, access is restricted to loopback clients. | optional |
 | `NIMBUS_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
 | `NIMBUS_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
 | `NIMBUS_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
 | `NIMBUS_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
 | `NIMBUS_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
 | `NIMBUS_ADMIN_ALLOWED_SUBJECTS` | Comma-separated list of allowed admin JWT subjects. | empty (all subjects) |
+| `NIMBUS_WEBHOOK_TIMESTAMP_TOLERANCE` | Allowed skew (seconds) for `X-Hub-Signature-Timestamp` values. | `300` |
 
 ### Host Agent (`nimbus.host_agent`)
 
@@ -186,6 +188,7 @@ python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECR
 | `NIMBUS_CACHE_S3_BUCKET` | S3 bucket/key prefix for remote storage. | optional |
 | `NIMBUS_CACHE_S3_REGION` | AWS region for the S3 endpoint. | optional |
 | `NIMBUS_CACHE_METRICS_DB` | SQLAlchemy database URL for cache metrics (Postgres recommended). | `postgresql+psycopg://localhost/nimbus_cache_metrics` |
+| `NIMBUS_CACHE_METRICS_TOKEN` | Bearer token required for cache proxy metrics scraping. | optional |
 | `NIMBUS_CACHE_S3_MAX_RETRIES` | Retry attempts for S3 operations. | `3` |
 | `NIMBUS_CACHE_S3_RETRY_BASE` | Base backoff (seconds) for retries. | `0.2` |
 | `NIMBUS_CACHE_S3_RETRY_MAX` | Maximum backoff (seconds). | `2.0` |
@@ -225,6 +228,7 @@ Dashboard settings are persisted in-memory; tokens are cleared after a browser r
 | `NIMBUS_CLICKHOUSE_USERNAME` | Basic auth username for ClickHouse. | optional |
 | `NIMBUS_CLICKHOUSE_PASSWORD` | Basic auth password for ClickHouse. | optional |
 | `NIMBUS_CLICKHOUSE_TIMEOUT` | HTTP timeout in seconds for ClickHouse operations. | `10` |
+| `NIMBUS_LOGGING_METRICS_TOKEN` | Bearer token required for logging pipeline metrics scraping. | optional |
 
 ### Shared observability variables
 
@@ -352,6 +356,7 @@ Use the reporting CLI to generate quick snapshots across services:
 
 ## Observability
 
+- Metrics endpoints enforce authentication: set the appropriate `NIMBUS_*_METRICS_TOKEN` environment variable and configure your Prometheus scrape job to send `Authorization: Bearer <token>`. When no token is provided, access is limited to loopback clients.
 - Structured logging is enabled across services via `structlog`; adjust verbosity with `NIMBUS_LOG_LEVEL` (e.g. `DEBUG`, `INFO`).
 - Enable OpenTelemetry tracing by setting `NIMBUS_OTEL_EXPORTER_ENDPOINT` (OTLP HTTP/GRPC), optional `NIMBUS_OTEL_EXPORTER_HEADERS` (`key=value` pairs), and `NIMBUS_OTEL_SAMPLER_RATIO` (0.0–1.0) to control sampling.
 

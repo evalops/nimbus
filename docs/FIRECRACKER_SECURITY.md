@@ -117,20 +117,31 @@ Drop unnecessary Linux capabilities from the host agent process.
 
 ```bash
 #!/bin/bash
-# privileged-setup.sh - Run once at agent startup as root
+# nimbus-privileged-setup.sh - Run once at agent startup as root
 
-# Create tap devices and network namespaces (requires CAP_SYS_ADMIN)
-ip netns add nimbus-default
-ip tuntap add mode tap nimbus-tap-template
+set -euo pipefail
 
-# Drop privileges and exec into agent
+AGENT_USER=${NIMBUS_AGENT_USER:-nimbus}
+AGENT_GROUP=${NIMBUS_AGENT_GROUP:-$AGENT_USER}
+NET_SETUP_SCRIPT=${NIMBUS_AGENT_NETWORK_SETUP_SCRIPT:-}
+
+if [[ -n "${NET_SETUP_SCRIPT}" ]]; then
+  "${NET_SETUP_SCRIPT}"
+fi
+
+if ! id -u "${AGENT_USER}" >/dev/null 2>&1; then
+  useradd --system --create-home "${AGENT_USER}"
+fi
+
 exec setpriv \
-  --reuid=nimbus \
-  --regid=nimbus \
+  --reuid="${AGENT_USER}" \
+  --regid="${AGENT_GROUP}" \
   --init-groups \
-  --inh-caps=-all \
+  --no-new-privs \
+  --inh-caps=cap_net_admin \
   --ambient-caps=cap_net_admin \
-  python -m nimbus.host_agent.main
+  --bounding-set=cap_net_admin \
+  "$@"
 ```
 
 #### Required Capabilities (Minimal Set)
@@ -155,12 +166,10 @@ def drop_capabilities():
 #### Production Pattern: Privileged Helper + Capability Drop
 
 ```bash
-# 1. Systemd service runs privileged helper first
+# 1. Optional network prep script (creates tap templates, bridges, etc.)
 ExecStartPre=/usr/local/bin/nimbus-network-setup.sh
-# 2. Main process runs with minimal caps
-ExecStart=/usr/bin/setpriv --reuid=nimbus --regid=nimbus \
-  --inh-caps=-all --ambient-caps=cap_net_admin \
-  /usr/bin/python -m nimbus.host_agent.main
+# 2. Main process enters capability-restricted wrapper
+ExecStart=/usr/local/bin/nimbus-privileged-setup.sh /usr/bin/python -m nimbus.host_agent.main
 ```
 
 ### 4. Network Namespace Per VM
