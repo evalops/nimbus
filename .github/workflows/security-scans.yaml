@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: web/.nvmrc
+          node-version: '20'
           cache: 'npm'
           cache-dependency-path: |
             web/package-lock.json
