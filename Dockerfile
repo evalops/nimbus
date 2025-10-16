@@ -46,7 +46,8 @@ COPY src ./src
 
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir . \
-    && if command -v npm >/dev/null 2>&1; then npm install -g npm@10.9.0 && npm cache clean --force; fi
+    && rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx \
+    && [ ! -d /usr/local/lib/node_modules ]
 
 COPY README.md ./
 COPY --from=web-build /app/dist ./web/dist
