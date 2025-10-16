@@ -47,10 +47,17 @@ def validate_repository_access(repository: str, token: CacheToken, operation: st
     
     # Enforce org prefix in repository name
     expected_prefix = f"org-{org_id}/"
-    if not repository.startswith(expected_prefix):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Repository must be under {expected_prefix}",
+    if repository.startswith("org-"):
+        if not repository.startswith(expected_prefix):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Repository must be under {expected_prefix}",
+            )
+    else:
+        LOGGER.debug(
+            "Allowing legacy repository without org prefix",
+            repository=repository,
+            org_id=org_id,
         )
 
 

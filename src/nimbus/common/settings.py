@@ -78,11 +78,14 @@ class HostAgentSettings(BaseSettings):
     control_plane_base_url: HttpUrl = env_field(..., "NIMBUS_CONTROL_PLANE_URL")
     control_plane_token: SecretStr = env_field(..., "NIMBUS_CONTROL_PLANE_TOKEN")
     redis_url: Optional[RedisDsn] = env_field(None, "NIMBUS_AGENT_REDIS_URL")
-    cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
     log_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_LOG_SINK_URL")
     metrics_host: str = env_field("127.0.0.1", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
-    state_database_path: Path = env_field(Path("./.nimbus/agent_state.db"), "NIMBUS_AGENT_STATE_DB")
+    cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
+    state_database_url: str = env_field(
+        "postgresql+asyncpg://localhost/nimbus_agent_state",
+        "NIMBUS_AGENT_STATE_DATABASE_URL",
+    )
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")
     jailer_bin_path: Optional[str] = env_field(None, "NIMBUS_JAILER_BIN")
@@ -112,7 +115,7 @@ class CacheProxySettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", populate_by_name=True)
     storage_path: Path = env_field(Path("./cache"), "NIMBUS_CACHE_STORAGE_PATH")
-    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     s3_endpoint_url: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_ENDPOINT")
     s3_bucket: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_REGION")
@@ -142,7 +145,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
     log_query_max_hours: int = env_field(168, "NIMBUS_LOG_QUERY_MAX_HOURS")  # 7 days default
-    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
@@ -156,7 +159,7 @@ class DockerCacheSettings(BaseSettings):
     storage_path: Path = env_field(Path("./docker-cache"), "NIMBUS_DOCKER_CACHE_STORAGE_PATH")
     uploads_path: Path = env_field(Path("./docker-cache/uploads"), "NIMBUS_DOCKER_CACHE_UPLOAD_PATH")
     metadata_path: Path = env_field(Path("./docker-cache/metadata.db"), "NIMBUS_DOCKER_CACHE_DB_PATH")
-    shared_secret: SecretStr = env_field(..., "NIMBUS_CACHE_SHARED_SECRET")
+    shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_CACHE_MAX_BYTES")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")

@@ -54,6 +54,10 @@ async def test_host_agent_ssh_session_lifecycle(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setenv("NIMBUS_ROOTFS_IMAGE", str(rootfs))
     monkeypatch.setenv("NIMBUS_SSH_ENABLE", "1")
     monkeypatch.setenv("NIMBUS_SSH_POLL_INTERVAL", "0")
+    monkeypatch.setenv(
+        "NIMBUS_AGENT_STATE_DATABASE_URL",
+        f"sqlite+aiosqlite:///{(tmp_path / 'agent_state.db').as_posix()}",
+    )
 
     settings = HostAgentSettings()
 

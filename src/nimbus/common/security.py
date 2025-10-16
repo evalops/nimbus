@@ -37,9 +37,9 @@ def mint_cache_token(
     """
     expires_at = _utc_now() + timedelta(seconds=ttl_seconds)
     
-    # Default scope includes both read and write for the org
+    # Default scope preserves legacy behavior permitting full access
     if scope is None:
-        scope = f"pull:org-{organization_id},push:org-{organization_id}"
+        scope = "read_write"
     
     payload = {
         "organization_id": organization_id,

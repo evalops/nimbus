@@ -7,6 +7,7 @@ import hmac
 import json
 import time
 from collections import defaultdict, deque
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -142,6 +143,11 @@ class RateLimiter:
         return True
 
 
+class _NoopDistributedLimiter:
+    async def check_limit(self, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
+        return True, 0
+
+
 class AppState:
     """Container for application-level shared resources."""
 
@@ -154,7 +160,7 @@ class AppState:
         session_factory,
         token_rate_limiter: RateLimiter,
         admin_rate_limiter: RateLimiter,
-        distributed_limiter: DistributedRateLimiter,
+        distributed_limiter: Optional[DistributedRateLimiter] = None,
     ) -> None:
         self.settings = settings
         self.redis = redis
@@ -164,6 +170,8 @@ class AppState:
         self.session_factory = session_factory
         self.token_rate_limiter = token_rate_limiter
         self.admin_rate_limiter = admin_rate_limiter
+        if distributed_limiter is None:
+            distributed_limiter = _NoopDistributedLimiter()
         self.distributed_limiter = distributed_limiter
 
 
@@ -220,7 +228,12 @@ def verify_admin_token(
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
     token = auth_header.split(" ", 1)[1]
-    decoded = decode_agent_token_payload(settings.jwt_secret.get_secret_value(), token)
+    jwt_secret = (
+        settings.jwt_secret.get_secret_value()
+        if hasattr(settings.jwt_secret, "get_secret_value")
+        else settings.jwt_secret
+    )
+    decoded = decode_agent_token_payload(jwt_secret, token)
     if decoded is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
     subject, _ = decoded
@@ -230,10 +243,12 @@ def verify_admin_token(
 
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
 
+    trusted_proxy_cidrs = getattr(settings, "trusted_proxy_cidrs", [])
+
     if settings.require_https:
         # Only trust X-Forwarded-Proto from configured proxies
         scheme = request.url.scheme
-        if settings.trusted_proxy_cidrs:
+        if trusted_proxy_cidrs:
             source_ip = request.client.host if request.client else None
             if source_ip:
                 from ipaddress import ip_address, ip_network
@@ -241,7 +256,7 @@ def verify_admin_token(
                     source = ip_address(source_ip)
                     is_trusted = any(
                         source in ip_network(cidr, strict=False)
-                        for cidr in settings.trusted_proxy_cidrs
+                        for cidr in trusted_proxy_cidrs
                     )
                     if is_trusted:
                         forwarded_proto = request.headers.get("x-forwarded-proto")
@@ -255,7 +270,7 @@ def verify_admin_token(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="HTTPS required")
 
     if settings.admin_allowed_ips:
-        client_ip = get_client_ip(request, settings.trusted_proxy_cidrs)
+        client_ip = get_client_ip(request, trusted_proxy_cidrs)
         if client_ip not in settings.admin_allowed_ips:
             LOGGER.warning("Admin request rejected: IP not allowed", subject=subject, client_ip=client_ip)
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin source not allowed")
@@ -467,6 +482,8 @@ def create_app() -> FastAPI:
         token_agent_id: str = Depends(verify_agent_token),
         redis_client: Redis = Depends(get_redis),
         session: AsyncSession = Depends(get_session),
+        state: AppState = Depends(_get_state),
+        settings: ControlPlaneSettings = Depends(get_settings),
     ) -> JobLeaseResponse:
         REQUEST_COUNTER.inc()
         with TRACER.start_as_current_span("control_plane.lease_job") as span:
@@ -519,6 +536,7 @@ def create_app() -> FastAPI:
         renewal: JobLeaseRenewalRequest,
         token_agent_id: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
+        settings: ControlPlaneSettings = Depends(get_settings),
     ) -> dict:
         REQUEST_COUNTER.inc()
         with TRACER.start_as_current_span("control_plane.renew_lease") as span:

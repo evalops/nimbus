@@ -58,7 +58,7 @@ class HostAgent:
         self._ssh_sessions: Dict[str, ActiveSSHSession] = {}
         self._enable_ssh = settings.enable_ssh
         self._last_ssh_sync = 0.0
-        self._state_store = AgentStateStore(settings.state_database_path)
+        self._state_store = AgentStateStore(settings.state_database_url)
 
     async def run(self) -> None:
         self._running = True
@@ -220,10 +220,14 @@ class HostAgent:
             "host_agent.process_job",
             attributes={"nimbus.job_id": assignment.job_id, "nimbus.repo": assignment.repository.full_name},
         ):
+            await self._state_store.open()
             LOGGER.info("Starting job", job_id=assignment.job_id, fence_token=fence_token)
             JOB_STARTED_COUNTER.inc()
             self._active_jobs += 1
-            await self._submit_status(assignment, "starting", fence_token=fence_token)
+            status_kwargs: dict[str, object] = {}
+            if fence_token is not None:
+                status_kwargs["fence_token"] = fence_token
+            await self._submit_status(assignment, "starting", **status_kwargs)
             network = self._launcher.network_for_job(assignment.job_id)
             self._job_networks[assignment.job_id] = network
             try:
@@ -263,19 +267,28 @@ class HostAgent:
                     JOB_TIMEOUT_LAST_TS.set(time.time())
                 else:
                     LOGGER.exception("Job failed", job_id=assignment.job_id)
-                await self._submit_status(assignment, "failed", message=str(exc), fence_token=fence_token)
+                status_kwargs = {"message": str(exc)}
+                if fence_token is not None:
+                    status_kwargs["fence_token"] = fence_token
+                await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Job failed", job_id=assignment.job_id)
                 await self._emit_logs(assignment, None)
-                await self._submit_status(assignment, "failed", message=str(exc), fence_token=fence_token)
+                status_kwargs = {"message": str(exc)}
+                if fence_token is not None:
+                    status_kwargs["fence_token"] = fence_token
+                await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
             else:
                 await self._emit_logs(assignment, result)
                 LOGGER.info("Job succeeded", job_id=assignment.job_id)
-                await self._submit_status(assignment, "succeeded", fence_token=fence_token)
+                status_kwargs = {}
+                if fence_token is not None:
+                    status_kwargs["fence_token"] = fence_token
+                await self._submit_status(assignment, "succeeded", **status_kwargs)
                 JOB_SUCCEEDED_COUNTER.inc()
             finally:
                 # Stop heartbeat renewal
@@ -301,12 +314,12 @@ class HostAgent:
         message: Optional[str] = None,
         fence_token: Optional[int] = None,
     ) -> None:
-        await self._submit_status_for_job(
-            assignment.job_id,
-            status,
-            message=message,
-            fence_token=fence_token,
-        )
+        kwargs: dict[str, object] = {}
+        if message is not None:
+            kwargs["message"] = message
+        if fence_token is not None:
+            kwargs["fence_token"] = fence_token
+        await self._submit_status_for_job(assignment.job_id, status, **kwargs)
 
     async def _submit_status_for_job(
         self,

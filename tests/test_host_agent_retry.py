@@ -22,6 +22,10 @@ async def test_host_agent_lease_retries(monkeypatch, tmp_path):
     monkeypatch.setenv("NIMBUS_AGENT_LEASE_RETRIES", "3")
     monkeypatch.setenv("NIMBUS_AGENT_LEASE_RETRY_BASE", "0.01")
     monkeypatch.setenv("NIMBUS_AGENT_LEASE_RETRY_MAX", "0.02")
+    monkeypatch.setenv(
+        "NIMBUS_AGENT_STATE_DATABASE_URL",
+        f"sqlite+aiosqlite:///{(tmp_path / 'agent_state.db').as_posix()}",
+    )
 
     settings = HostAgentSettings()
     agent = HostAgent(settings)

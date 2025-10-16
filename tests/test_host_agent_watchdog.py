@@ -52,6 +52,10 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     monkeypatch.setenv("NIMBUS_KERNEL_IMAGE", str(kernel))
     monkeypatch.setenv("NIMBUS_ROOTFS_IMAGE", str(rootfs))
     monkeypatch.setenv("NIMBUS_JOB_TIMEOUT", "1")
+    monkeypatch.setenv(
+        "NIMBUS_AGENT_STATE_DATABASE_URL",
+        f"sqlite+aiosqlite:///{(tmp_path / 'agent_state.db').as_posix()}",
+    )
 
     settings = HostAgentSettings()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -570,6 +571,14 @@ def create_app() -> FastAPI:
                     "max_storage_bytes": state.settings.max_storage_bytes,
                 }
             )
+            stripped_entries = []
+            for entry in status_payload["top_entries"]:
+                cache_key = entry.get("cache_key")
+                if isinstance(cache_key, str):
+                    entry = dict(entry)
+                    entry["cache_key"] = re.sub(r"^org-\d+/", "", cache_key)
+                stripped_entries.append(entry)
+            status_payload["top_entries"] = stripped_entries
             TOTAL_ENTRIES_GAUGE.set(float(status_payload["total_entries"]))
             return JSONResponse(status_payload)
 
