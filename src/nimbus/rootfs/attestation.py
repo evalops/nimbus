@@ -76,7 +76,7 @@ class RootfsAttestor:
 
     def verify(self, rootfs_source: Path, checksum: str) -> None:
         checksum = checksum.lower()
-        entry = self._select_entry(rootfs_source.resolve())
+        entry = self._select_entry(rootfs_source.resolve(), checksum)
 
         if entry is None:
             message = "Rootfs image not listed in manifest"
@@ -97,7 +97,7 @@ class RootfsAttestor:
             path=str(rootfs_source),
         )
 
-    def _select_entry(self, rootfs_source: Path) -> Optional[ManifestEntry]:
+    def _select_entry(self, rootfs_source: Path, checksum: str) -> Optional[ManifestEntry]:
         if self._requested_version:
             entry = self._entries.get(self._requested_version)
             if entry is not None:
@@ -126,8 +126,7 @@ class RootfsAttestor:
                 )
             return matches[0]
 
-        # Fallback: match by checksum if unique
-        checksum_map: dict[str, ManifestEntry] = {}
         for entry in self._entries.values():
-            checksum_map.setdefault(entry.checksum, entry)
-        return checksum_map.get(next(iter(checksum_map))) if len(checksum_map) == 1 else None
+            if entry.checksum == checksum:
+                return entry
+        return None

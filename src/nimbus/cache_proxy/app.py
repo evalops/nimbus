@@ -566,6 +566,8 @@ def create_app() -> FastAPI:
             quota = state.settings.org_storage_quota_bytes
             if quota is not None and new_total > quota:
                 state.update_org_usage(org_id, -bytes_written)
+                await state.backend.delete(namespaced_key)
+                state.metrics.delete(namespaced_key)
                 state.logger.warning(
                     "org_quota_exceeded",
                     org_id=org_id,

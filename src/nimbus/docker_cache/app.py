@@ -376,7 +376,10 @@ class DockerCacheState:
             path = self.blob_path(digest)
             if path.exists():
                 path.unlink(missing_ok=True)
+            blob_org = self.metrics.get_blob_org_id(digest)
             self.metrics.delete_blob(digest)
+            if blob_org is not None:
+                self.update_org_usage(blob_org, -size)
             total -= size
             EVICTION_COUNTER.inc()
             self.logger.info("blob_evicted", digest=digest, reclaimed_bytes=size)
