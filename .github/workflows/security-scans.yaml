@@ -30,7 +30,9 @@ jobs:
             containers/ai-eval-runner/package-lock.json
 
       - name: Install web dependencies
-        run: npm ci --prefix web --omit=dev
+        run: |
+          npm ci --prefix web --omit=dev
+          npm install --prefix web --ignore-scripts typescript vite
 
       - name: Install ai-eval-runner dependencies
         run: npm ci --prefix containers/ai-eval-runner --omit=dev
