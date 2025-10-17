@@ -140,6 +140,17 @@ class DockerCacheMetrics:
             conn.execute(
                 text(
                     """
+                    CREATE TABLE IF NOT EXISTS org_usage (
+                        org_id INTEGER PRIMARY KEY,
+                        total_bytes INTEGER NOT NULL,
+                        updated_at DOUBLE PRECISION NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                     CREATE TABLE IF NOT EXISTS manifests (
                         repository TEXT NOT NULL,
                         reference TEXT NOT NULL,
@@ -249,6 +260,40 @@ class DockerCacheMetrics:
             row = result.fetchone()
         return row[0] if row else None
 
+    def add_org_bytes(self, org_id: int, delta: int) -> int:
+        now = time.time()
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO org_usage (org_id, total_bytes, updated_at)
+                    VALUES (:org_id, CASE WHEN :delta < 0 THEN 0 ELSE :delta END, :updated_at)
+                    ON CONFLICT(org_id) DO UPDATE SET
+                        total_bytes = CASE
+                            WHEN org_usage.total_bytes + :delta < 0 THEN 0
+                            ELSE org_usage.total_bytes + :delta
+                        END,
+                        updated_at = :updated_at
+                    """
+                ),
+                {"org_id": org_id, "delta": delta, "updated_at": now},
+            )
+            result = conn.execute(
+                text("SELECT total_bytes FROM org_usage WHERE org_id=:org_id"),
+                {"org_id": org_id},
+            )
+            value = result.scalar_one()
+        return int(value)
+
+    def get_org_bytes(self, org_id: int) -> int:
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT total_bytes FROM org_usage WHERE org_id=:org_id"),
+                {"org_id": org_id},
+            )
+            row = result.fetchone()
+        return int(row[0]) if row else 0
+
 
 class DockerCacheState:
     def __init__(self, settings: DockerCacheSettings, metrics: DockerCacheMetrics):
@@ -331,11 +376,19 @@ class DockerCacheState:
             path = self.blob_path(digest)
             if path.exists():
                 path.unlink(missing_ok=True)
+            blob_org = self.metrics.get_blob_org_id(digest)
             self.metrics.delete_blob(digest)
+            if blob_org is not None:
+                self.update_org_usage(blob_org, -size)
             total -= size
             EVICTION_COUNTER.inc()
             self.logger.info("blob_evicted", digest=digest, reclaimed_bytes=size)
         TOTAL_BLOB_BYTES_GAUGE.set(float(self.metrics.total_blob_bytes()))
+
+    def update_org_usage(self, org_id: Optional[int], delta: int) -> int:
+        if org_id is None or delta == 0:
+            return 0
+        return self.metrics.add_org_bytes(int(org_id), delta)
 
 
 def get_state(request: Request) -> DockerCacheState:
@@ -541,6 +594,22 @@ def create_app() -> FastAPI:
         final_session = await state.finalize_upload(upload_id)
         target_path = state.blob_path(expected_digest)
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        quota = state.settings.org_storage_quota_bytes
+        new_total = state.update_org_usage(token.organization_id, final_session.size)
+        if quota is not None and new_total > quota:
+            state.update_org_usage(token.organization_id, -final_session.size)
+            final_session.file_path.unlink(missing_ok=True)
+            state.logger.warning(
+                "docker_org_quota_exceeded",
+                org_id=token.organization_id,
+                wrote_bytes=final_session.size,
+                new_total=new_total,
+                quota=quota,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Org {token.organization_id} exceeded docker cache quota",
+            )
         if target_path.exists():
             target_path.touch()  # update mtime for eviction ordering
             final_session.file_path.unlink(missing_ok=True)

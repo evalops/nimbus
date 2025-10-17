@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from nimbus.common.settings import HostAgentSettings
@@ -11,12 +12,37 @@ def _seed_host_agent_env(tmp_path: Path, monkeypatch) -> None:
     rootfs = tmp_path / "rootfs.ext4"
     kernel.write_text("kernel")
     rootfs.write_text("rootfs")
+    checksum = hashlib.sha256(rootfs.read_bytes()).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        (
+            "\n".join(
+                [
+                    "{",
+                    '  "versions": {',
+                    '    "test": {',
+                    '      "rootfs_path": "versions/test/rootfs.ext4",',
+                    f'      "checksum_sha256": "{checksum}"',
+                    "    }",
+                    "  },",
+                    '  "default_version": "test"',
+                    "}",
+                ]
+            )
+        )
+    )
+    versions_dir = tmp_path / "versions" / "test"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    (versions_dir / "rootfs.ext4").write_bytes(rootfs.read_bytes())
 
     monkeypatch.setenv("NIMBUS_AGENT_ID", "agent-1")
     monkeypatch.setenv("NIMBUS_CONTROL_PLANE_URL", "http://localhost:8000")
     monkeypatch.setenv("NIMBUS_CONTROL_PLANE_TOKEN", "token")
     monkeypatch.setenv("NIMBUS_KERNEL_IMAGE", str(kernel))
     monkeypatch.setenv("NIMBUS_ROOTFS_IMAGE", str(rootfs))
+    monkeypatch.setenv("NIMBUS_ROOTFS_MANIFEST", str(manifest))
+    monkeypatch.setenv("NIMBUS_ROOTFS_VERSION", "test")
+    monkeypatch.setenv("NIMBUS_ROOTFS_ATTESTATION_REQUIRED", "true")
     monkeypatch.setenv(
         "NIMBUS_AGENT_STATE_DATABASE_URL",
         f"sqlite+aiosqlite:///{(tmp_path / 'agent.db').as_posix()}",

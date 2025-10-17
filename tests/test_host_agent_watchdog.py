@@ -58,6 +58,9 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
     )
 
     settings = HostAgentSettings()
+    assert settings.rootfs_manifest_path is None
+    assert settings.rootfs_version is None
+    assert settings.require_rootfs_attestation is False
 
     agent = HostAgent(settings)
     agent._launcher = TimeoutLauncher()  # type: ignore[assignment]

@@ -183,6 +183,9 @@ class HostAgentSettings(BaseSettings):
     seccomp_filter_path: Optional[Path] = env_field(None, "NIMBUS_SECCOMP_FILTER")
     kernel_image_path: str = env_field(..., "NIMBUS_KERNEL_IMAGE")
     rootfs_image_path: str = env_field(..., "NIMBUS_ROOTFS_IMAGE")
+    rootfs_manifest_path: Optional[Path] = env_field(None, "NIMBUS_ROOTFS_MANIFEST")
+    rootfs_version: Optional[str] = env_field(None, "NIMBUS_ROOTFS_VERSION")
+    require_rootfs_attestation: bool = env_field(False, "NIMBUS_ROOTFS_ATTESTATION_REQUIRED")
     snapshot_state_path: Optional[str] = env_field(None, "NIMBUS_SNAPSHOT_STATE_PATH")
     snapshot_memory_path: Optional[str] = env_field(None, "NIMBUS_SNAPSHOT_MEMORY_PATH")
     snapshot_enable_diff: bool = env_field(False, "NIMBUS_SNAPSHOT_ENABLE_DIFF")
@@ -273,6 +276,7 @@ class CacheProxySettings(BaseSettings):
         "postgresql+psycopg://localhost/nimbus_cache_metrics",
         "NIMBUS_CACHE_METRICS_DB",
     )
+    org_storage_quota_bytes: Optional[int] = env_field(None, "NIMBUS_CACHE_ORG_QUOTA_BYTES")
     s3_max_retries: int = env_field(3, "NIMBUS_CACHE_S3_MAX_RETRIES")
     s3_retry_base_seconds: float = env_field(0.2, "NIMBUS_CACHE_S3_RETRY_BASE")
     s3_retry_max_seconds: float = env_field(2.0, "NIMBUS_CACHE_S3_RETRY_MAX")
@@ -328,6 +332,7 @@ class DockerCacheSettings(BaseSettings):
     )
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_CACHE_MAX_BYTES")
+    org_storage_quota_bytes: Optional[int] = env_field(None, "NIMBUS_DOCKER_ORG_QUOTA_BYTES")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")

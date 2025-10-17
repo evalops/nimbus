@@ -246,6 +246,7 @@ class CacheProxyState:
         max_bytes = self.settings.max_storage_bytes
         if not max_bytes:
             return
+        quota = self.settings.org_storage_quota_bytes
         storage_path = self.settings.storage_path
         total = directory_size(storage_path)
         if total <= max_bytes:
@@ -267,11 +268,24 @@ class CacheProxyState:
                     except OSError:
                         pass
             self.metrics.delete(cache_key)
+            if quota is not None:
+                try:
+                    org_prefix, _ = cache_key.split("/", 1)
+                    if org_prefix.startswith("org-"):
+                        org_id = int(org_prefix.split("-", 1)[1])
+                        self.update_org_usage(org_id, -size)
+                except (ValueError, IndexError):
+                    self.logger.debug("failed_to_parse_org_from_cache_key", cache_key=cache_key)
             CACHE_EVICTIONS_COUNTER.inc()
             total -= size
             self.logger.info("cache_evicted", cache_key=cache_key, reclaimed_bytes=size)
         TOTAL_ENTRIES_GAUGE.set(float(self.metrics.total_entries()))
         self.logger.info("cache_eviction_completed", total_bytes=directory_size(storage_path))
+
+    def update_org_usage(self, org_id: Optional[int], delta: int) -> int:
+        if org_id is None or delta == 0:
+            return 0
+        return self.metrics.add_org_bytes(int(org_id), delta)
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_requests_total", "Total cache proxy requests"))
@@ -281,6 +295,8 @@ BYTES_READ_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_bytes_read_t
 BYTES_WRITTEN_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_bytes_written_total", "Bytes written to cache"))
 TOTAL_ENTRIES_GAUGE = GLOBAL_REGISTRY.register(Gauge("nimbus_cache_entries", "Number of cache entries"))
 CACHE_EVICTIONS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_evictions_total", "Cache entries evicted to enforce limits"))
+ORG_QUOTA_VIOLATIONS_COUNTER = GLOBAL_REGISTRY.register(
+    Counter("nimbus_cache_org_quota_violations_total", "Cache writes rejected due to org quota"))
 CACHE_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
     Histogram(
         "nimbus_cache_proxy_request_latency_seconds",
@@ -319,6 +335,17 @@ class CacheMetrics:
                         total_misses INTEGER NOT NULL DEFAULT 0,
                         total_bytes INTEGER NOT NULL DEFAULT 0,
                         last_access TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS cache_org_usage (
+                        org_id INTEGER PRIMARY KEY,
+                        total_bytes INTEGER NOT NULL,
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )
                     """
                 )
@@ -396,6 +423,39 @@ class CacheMetrics:
     def delete(self, cache_key: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(text("DELETE FROM cache_metrics WHERE cache_key = :cache_key"), {"cache_key": cache_key})
+
+    def add_org_bytes(self, org_id: int, delta: int) -> int:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO cache_org_usage (org_id, total_bytes)
+                    VALUES (:org_id, CASE WHEN :delta < 0 THEN 0 ELSE :delta END)
+                    ON CONFLICT(org_id) DO UPDATE SET
+                        total_bytes = CASE
+                            WHEN cache_org_usage.total_bytes + :delta < 0 THEN 0
+                            ELSE cache_org_usage.total_bytes + :delta
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    """
+                ),
+                {"org_id": org_id, "delta": delta},
+            )
+            result = conn.execute(
+                text("SELECT total_bytes FROM cache_org_usage WHERE org_id=:org_id"),
+                {"org_id": org_id},
+            )
+            value = result.scalar_one()
+        return int(value)
+
+    def get_org_bytes(self, org_id: int) -> int:
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT total_bytes FROM cache_org_usage WHERE org_id=:org_id"),
+                {"org_id": org_id},
+            )
+            row = result.fetchone()
+        return int(row[0]) if row else 0
 
 
 def build_backend(settings: CacheProxySettings) -> CacheBackend:
@@ -502,6 +562,24 @@ def create_app() -> FastAPI:
         with TRACER.start_as_current_span("cache_proxy.put", attributes={"nimbus.cache_key": namespaced_key}) as span:
             await state.backend.write(namespaced_key, request.stream())
             bytes_written = await state.backend.head(namespaced_key)
+            new_total = state.update_org_usage(org_id, bytes_written)
+            quota = state.settings.org_storage_quota_bytes
+            if quota is not None and new_total > quota:
+                state.update_org_usage(org_id, -bytes_written)
+                await state.backend.delete(namespaced_key)
+                state.metrics.delete(namespaced_key)
+                state.logger.warning(
+                    "org_quota_exceeded",
+                    org_id=org_id,
+                    wrote_bytes=bytes_written,
+                    new_total=new_total,
+                    quota=quota,
+                )
+                ORG_QUOTA_VIOLATIONS_COUNTER.inc()
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Org {org_id} exceeded cache quota",
+                )
             state.metrics.record_hit(namespaced_key, bytes_written)
             BYTES_WRITTEN_COUNTER.inc(bytes_written)
             HIT_COUNTER.inc()
@@ -510,6 +588,7 @@ def create_app() -> FastAPI:
             state.enforce_storage_limit()
             span.set_attribute("nimbus.bytes_written", bytes_written)
             span.set_attribute("nimbus.org_id", org_id)
+            span.set_attribute("nimbus.org_bytes_total", new_total)
             return Response(status_code=status.HTTP_201_CREATED)
 
     @app.head("/cache/{cache_key:path}")
