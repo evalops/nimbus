@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
-import { useSettings } from "../context/SettingsContext";
+import { useSettings } from "../hooks/useSettings";
 
 import "./Layout.css";
 
@@ -12,6 +12,7 @@ export function Layout() {
         <div className="layout__brand">Nimbus Dashboard</div>
         <nav className="layout__nav">
           <NavItem to="/">Overview</NavItem>
+          <NavItem to="/observability">Observability</NavItem>
           <NavItem to="/agents">Agents</NavItem>
           <NavItem to="/logs">Logs</NavItem>
           <NavItem to="/settings">Settings</NavItem>

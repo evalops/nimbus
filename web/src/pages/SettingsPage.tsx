@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 import { useApi } from "../hooks/useApi";
-import { useSettings } from "../context/SettingsContext";
+import { useSettings } from "../hooks/useSettings";
 import type { AgentTokenResponse } from "../types";
 
 import "./SettingsPage.css";

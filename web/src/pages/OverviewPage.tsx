@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useApi } from "../hooks/useApi";
 import type { JobRecord, ServiceStatus } from "../types";
-import { useSettings } from "../context/SettingsContext";
+import { useSettings } from "../hooks/useSettings";
 
 import "./OverviewPage.css";
 

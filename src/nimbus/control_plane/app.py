@@ -50,6 +50,7 @@ from ..common.ratelimit import RateLimiter as DistributedRateLimiter, InMemoryRa
 from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job, lease_job_with_fence
+from .observability import build_org_overview
 from ..common.security import mint_cache_token
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 from ..common.networking import (
@@ -1207,12 +1208,13 @@ def create_app() -> FastAPI:
     @app.get("/api/jobs/recent", response_model=list[JobRecord])
     async def recent_jobs(
         limit: int = 50,
+        org_id: Optional[int] = None,
         _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> list[JobRecord]:
         REQUEST_COUNTER.inc()
         limit = max(1, min(limit, 200))
-        rows = await db.list_recent_jobs(session, limit=limit)
+        rows = await db.list_recent_jobs(session, limit=limit, org_id=org_id)
         return [JobRecord.model_validate(row) for row in rows]
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
@@ -1228,6 +1230,34 @@ def create_app() -> FastAPI:
             "queue_length": queue_length,
             "jobs_by_status": counts,
         }
+
+    @app.get("/api/observability/orgs")
+    async def observability_orgs_endpoint(
+        limit: int = 50,
+        hours_back: Optional[int] = None,
+        _: str = Depends(verify_admin_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> list[dict]:
+        REQUEST_COUNTER.inc()
+        limit = max(1, min(limit, 200))
+        org_ids = await db.distinct_org_ids(session, hours_back=hours_back)
+        if limit and len(org_ids) > limit:
+            org_ids = org_ids[:limit]
+        status_rows = await db.org_job_status_counts(session, hours_back=hours_back)
+        last_activity = await db.org_last_activity(session, hours_back=hours_back)
+        agents = await db.org_active_agents(session, hours_back=24)
+        failures: dict[int, list[dict]] = {}
+        for org_id in org_ids:
+            failure_rows = await db.list_recent_failures(session, org_id, limit=5)
+            failures[org_id] = failure_rows
+        summaries = build_org_overview(
+            org_ids,
+            status_rows=status_rows,
+            last_activity=last_activity,
+            active_agents=agents,
+            failures=failures,
+        )
+        return summaries
 
     @app.post("/api/agents/token", response_model=AgentTokenResponse)
     async def mint_agent_token_endpoint(

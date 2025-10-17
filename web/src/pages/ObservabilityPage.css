@@ -1,0 +1,158 @@
+.observability__container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+}
+
+.observability__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.observability__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.observability__controls input {
+  width: 80px;
+  margin-left: 8px;
+}
+
+.observability__banner {
+  padding: 12px;
+  background: #fff3cd;
+  border: 1px solid #ffeeba;
+  color: #856404;
+  border-radius: 4px;
+}
+
+.observability__error {
+  padding: 12px;
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  color: #721c24;
+  border-radius: 4px;
+}
+
+.observability__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.observability__card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+}
+
+.observability__card h2 {
+  margin-bottom: 12px;
+}
+
+.observability__card ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.observability__card li {
+  display: flex;
+  justify-content: space-between;
+  font-family: monospace;
+}
+
+.observability__section {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+}
+
+.observability__section header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.observability__table-wrapper {
+  overflow-x: auto;
+}
+
+.observability__table-wrapper table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.observability__table-wrapper th,
+.observability__table-wrapper td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+}
+
+.observability__table-wrapper th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+
+.observability__empty {
+  text-align: center;
+  color: #6c757d;
+}
+
+.observability__failures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.observability__failures-card {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.observability__failures-card ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.observability__failures-card li {
+  display: grid;
+  grid-template-columns: 0.6fr 1.2fr 1fr 1fr;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 768px) {
+  .observability__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .observability__controls {
+    justify-content: space-between;
+  }
+
+  .observability__failures-card li {
+    grid-template-columns: 1fr;
+  }
+}

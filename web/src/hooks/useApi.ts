@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 
-import type { AgentTokenResponse } from "../types";
-import { useSettings } from "../context/SettingsContext";
+import type { AgentTokenResponse, OrgStatusSummary } from "../types";
+import { useSettings } from "./useSettings";
 
 const DEFAULT_CONTROL_PLANE_BASE = import.meta.env.VITE_DEFAULT_CONTROL_PLANE_URL ?? "";
 const DEFAULT_LOGGING_BASE = import.meta.env.VITE_DEFAULT_LOGGING_URL ?? DEFAULT_CONTROL_PLANE_BASE;
@@ -123,10 +123,19 @@ export function useApi() {
     [adminRequest, updateSettings],
   );
 
+  const observabilityGet = useCallback(
+    async (path: string) => {
+      const response = await adminRequest(path, { method: "GET" });
+      return response as OrgStatusSummary[];
+    },
+    [adminRequest],
+  );
+
   return {
     controlGet,
     controlRequest,
     adminRequest,
+    observabilityGet,
     loggingGet,
     fetchMetricsText,
     mintAgentToken,

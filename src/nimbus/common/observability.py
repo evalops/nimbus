@@ -10,7 +10,10 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+try:  # pragma: no cover - optional dependency
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+except ModuleNotFoundError:  # pragma: no cover - fallback when extra not installed
+    HTTPXClientInstrumentor = None  # type: ignore[assignment]
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
@@ -111,7 +114,7 @@ def configure_tracing(
     _tracer_configured = True
 
     global _httpx_instrumented
-    if not _httpx_instrumented:
+    if not _httpx_instrumented and HTTPXClientInstrumentor is not None:
         HTTPXClientInstrumentor().instrument()
         _httpx_instrumented = True
 

@@ -76,5 +76,11 @@ class MetricsRegistry:
     def render(self) -> str:
         return "\n".join(metric.render() for metric in self._metrics.values()) + "\n"
 
+    def get_metric(self, name: str) -> object:
+        return self._metrics[name]
+
+    def get(self, name: str) -> object | None:
+        return self._metrics.get(name)
+
 
 GLOBAL_REGISTRY = MetricsRegistry()

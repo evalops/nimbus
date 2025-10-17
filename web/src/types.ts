@@ -20,6 +20,14 @@ export interface ServiceStatus {
   jobs_by_status: Record<string, number>;
 }
 
+export interface OrgStatusSummary {
+  org_id: number;
+  status_counts: Record<string, number>;
+  last_activity: string | null;
+  active_agents: string[];
+  recent_failures: JobRecord[];
+}
+
 export interface AgentTokenRecord {
   agent_id: string;
   token_version: number;

@@ -1,38 +1,24 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type { DashboardSettings } from "../types";
-
-const defaultSettings: DashboardSettings = {
-  controlPlaneBase: "",
-  loggingBase: "",
-  adminToken: "",
-  agentToken: "",
-  dashboardAgentId: "dashboard-viewer",
-};
-
-type SettingsContextValue = {
-  settings: DashboardSettings;
-  updateSettings: (next: Partial<DashboardSettings>) => void;
-  clearTokens: () => void;
-};
-
-const SettingsContext = createContext<SettingsContextValue | undefined>(undefined);
+import { clearSettings, loadSettings, persistSettings } from "../utils/settings";
+import { SettingsContext, type SettingsContextValue } from "./settingsContext";
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<DashboardSettings>(defaultSettings);
+  const [settings, setSettings] = useState<DashboardSettings>(() => loadSettings());
 
   const value = useMemo<SettingsContextValue>(() => {
     const updateSettings = (next: Partial<DashboardSettings>) => {
-      setSettings((prev) => ({ ...prev, ...next }));
+      setSettings((prev) => {
+        const updated = { ...prev, ...next };
+        persistSettings(updated);
+        return updated;
+      });
     };
 
     const clearTokens = () => {
-      setSettings((prev) => ({
-        ...prev,
-        adminToken: "",
-        agentToken: "",
-        agentTokenExpiresAt: undefined,
-      }));
+      const cleared = clearSettings();
+      setSettings(cleared);
     };
 
     return { settings, updateSettings, clearTokens };
@@ -41,10 +27,3 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 }
 
-export function useSettings(): SettingsContextValue {
-  const ctx = useContext(SettingsContext);
-  if (!ctx) {
-    throw new Error("useSettings must be used within a SettingsProvider");
-  }
-  return ctx;
-}

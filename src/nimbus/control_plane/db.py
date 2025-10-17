@@ -138,6 +138,19 @@ def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+def _normalise_job_rows(rows: Iterable[dict]) -> list[dict]:
+    normalised: list[dict] = []
+    for row in rows:
+        payload = dict(row)
+        payload["repo_private"] = True if payload.get("repo_private") == "true" else False
+        for key in ("queued_at", "leased_at", "completed_at", "updated_at"):
+            value = payload.get(key)
+            if isinstance(value, datetime):
+                payload[key] = value.isoformat()
+        normalised.append(payload)
+    return normalised
+
+
 async def record_job_queued(session: AsyncSession, assignment: JobAssignment) -> None:
     now = datetime.now(timezone.utc)
     repo = assignment.repository
@@ -209,28 +222,141 @@ async def record_status_update(session: AsyncSession, update_payload: JobStatusU
 
 
 async def list_recent_jobs(
-    session: AsyncSession, limit: int = 50
+    session: AsyncSession, limit: int = 50, org_id: Optional[int] = None
 ) -> Iterable[dict]:
     stmt = (
         select(jobs_table)
         .order_by(jobs_table.c.updated_at.desc())
         .limit(limit)
     )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
     result = await session.execute(stmt)
     rows = [dict(row) for row in result.mappings()]
-    for row in rows:
-        row["repo_private"] = True if row.get("repo_private") == "true" else False
-        for key in ("queued_at", "leased_at", "completed_at", "updated_at"):
-            value = row.get(key)
-            if isinstance(value, datetime):
-                row[key] = value.isoformat()
-    return rows
+    return _normalise_job_rows(rows)
 
 
-async def job_status_counts(session: AsyncSession) -> dict[str, int]:
+async def job_status_counts(
+    session: AsyncSession,
+    *,
+    org_id: Optional[int] = None,
+) -> dict[str, int]:
     stmt = select(jobs_table.c.status, func.count().label("count")).group_by(jobs_table.c.status)
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
     result = await session.execute(stmt)
     return {row.status: row.count for row in result}
+
+
+async def distinct_org_ids(
+    session: AsyncSession,
+    *,
+    hours_back: Optional[int] = None,
+) -> list[int]:
+    stmt = select(jobs_table.c.org_id).distinct().where(jobs_table.c.org_id.isnot(None))
+    if hours_back is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        stmt = stmt.where(jobs_table.c.updated_at >= cutoff)
+    result = await session.execute(stmt)
+    org_ids = [int(row.org_id) for row in result if row.org_id is not None]
+    return sorted(set(org_ids))
+
+
+async def org_job_status_counts(
+    session: AsyncSession,
+    *,
+    org_id: Optional[int] = None,
+    hours_back: Optional[int] = None,
+) -> list[dict]:
+    stmt = select(
+        jobs_table.c.org_id,
+        jobs_table.c.status,
+        func.count().label("count"),
+    )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    if hours_back is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        stmt = stmt.where(jobs_table.c.updated_at >= cutoff)
+    stmt = stmt.group_by(jobs_table.c.org_id, jobs_table.c.status)
+    result = await session.execute(stmt)
+    return [
+        {
+            "org_id": int(row.org_id),
+            "status": row.status,
+            "count": row.count,
+        }
+        for row in result
+        if row.org_id is not None
+    ]
+
+
+async def org_last_activity(
+    session: AsyncSession,
+    *,
+    org_id: Optional[int] = None,
+    hours_back: Optional[int] = None,
+) -> dict[int, datetime]:
+    stmt = select(
+        jobs_table.c.org_id,
+        func.max(jobs_table.c.updated_at).label("last_updated"),
+    )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    if hours_back is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        stmt = stmt.where(jobs_table.c.updated_at >= cutoff)
+    stmt = stmt.group_by(jobs_table.c.org_id)
+    result = await session.execute(stmt)
+    activity: dict[int, datetime] = {}
+    for row in result:
+        if row.org_id is None:
+            continue
+        activity[int(row.org_id)] = row.last_updated
+    return activity
+
+
+async def org_active_agents(
+    session: AsyncSession,
+    *,
+    org_id: Optional[int] = None,
+    hours_back: int = 24,
+) -> dict[int, set[str]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    stmt = select(jobs_table.c.org_id, jobs_table.c.agent_id).where(
+        jobs_table.c.agent_id.isnot(None),
+        jobs_table.c.updated_at >= cutoff,
+    )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    result = await session.execute(stmt)
+    mapping: dict[int, set[str]] = {}
+    for row in result:
+        if row.org_id is None or not row.agent_id:
+            continue
+        bucket = mapping.setdefault(int(row.org_id), set())
+        bucket.add(str(row.agent_id))
+    return mapping
+
+
+async def list_recent_failures(
+    session: AsyncSession,
+    org_id: int,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    stmt = (
+        select(jobs_table)
+        .where(
+            jobs_table.c.org_id == org_id,
+            jobs_table.c.status.in_(["failed", "cancelled"]),
+        )
+        .order_by(jobs_table.c.updated_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    rows = [dict(row) for row in result.mappings()]
+    return _normalise_job_rows(rows)
 
 
 async def get_job(session: AsyncSession, job_id: int) -> Optional[dict]:

@@ -28,8 +28,8 @@ async def session():
         await engine.dispose()
 
 
-def _make_assignment(job_id: int = 100) -> JobAssignment:
-    repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False, owner_id=123)
+def _make_assignment(job_id: int = 100, owner_id: int = 123) -> JobAssignment:
+    repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False, owner_id=owner_id)
     registration = RunnerRegistrationToken(token="tok", expires_at=datetime.now(timezone.utc))
     return JobAssignment(
         job_id=job_id,
@@ -43,7 +43,7 @@ def _make_assignment(job_id: int = 100) -> JobAssignment:
 
 @pytest.mark.asyncio
 async def test_record_job_queued_and_list_recent_jobs(session):
-    assignment = _make_assignment(200)
+    assignment = _make_assignment(200, owner_id=999)
     await db.record_job_queued(session, assignment)
     await session.commit()
 
@@ -53,10 +53,14 @@ async def test_record_job_queued_and_list_recent_jobs(session):
     assert row["job_id"] == 200
     assert row["repo_private"] is False
 
+    scoped_rows = await db.list_recent_jobs(session, limit=5, org_id=assignment.repository.owner_id)
+    assert scoped_rows
+    assert scoped_rows[0]["org_id"] == assignment.repository.owner_id
+
 
 @pytest.mark.asyncio
 async def test_mark_job_leased_transitions(session):
-    assignment = _make_assignment(201)
+    assignment = _make_assignment(201, owner_id=321)
     await db.record_job_queued(session, assignment)
     await session.commit()
 
@@ -70,7 +74,7 @@ async def test_mark_job_leased_transitions(session):
 
 @pytest.mark.asyncio
 async def test_record_status_update_terminal_releases(session, monkeypatch):
-    assignment = _make_assignment(202)
+    assignment = _make_assignment(202, owner_id=222)
     await db.record_job_queued(session, assignment)
     await db.mark_job_leased(session, 202, "agent-9")
     await session.commit()
