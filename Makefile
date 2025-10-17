@@ -52,7 +52,7 @@ scan-images:
 		docker build -t nimbus-control-plane:ci .; \
 	fi
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then \
-		docker sbom nimbus-control-plane:ci --format cyclonedx --output $(SBOM_DIR)/nimbus-control-plane.cdx.json || echo "docker sbom unavailable; skipping SBOM" >&2; \
+		trivy image --format cyclonedx --output $(SBOM_DIR)/nimbus-control-plane.cdx.json nimbus-control-plane:ci || echo "trivy sbom generation failed; skipping SBOM" >&2; \
 	fi
 	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-control-plane:ci
 	@if docker buildx version >/dev/null 2>&1; then \
@@ -62,7 +62,7 @@ scan-images:
 		docker build -t nimbus-ai-runner:ci containers/ai-eval-runner; \
 	fi
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then \
-		docker sbom nimbus-ai-runner:ci --format cyclonedx --output $(SBOM_DIR)/nimbus-ai-runner.cdx.json || echo "docker sbom unavailable; skipping SBOM" >&2; \
+		trivy image --format cyclonedx --output $(SBOM_DIR)/nimbus-ai-runner.cdx.json nimbus-ai-runner:ci || echo "trivy sbom generation failed; skipping SBOM" >&2; \
 	fi
 	trivy image --exit-code 1 --severity $(TRIVY_SEVERITY) --ignore-unfixed --no-progress nimbus-ai-runner:ci
 	if [ "$(KEEP_IMAGES)" != "1" ]; then \
