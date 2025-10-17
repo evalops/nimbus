@@ -7,6 +7,7 @@ COPY package*.json ./
 
 RUN npm ci --omit=dev \
     && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
+    && rm -f Dockerfile \
     && [ ! -d /usr/local/lib/node_modules ]
 
 RUN set -eux; \

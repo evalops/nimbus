@@ -54,6 +54,7 @@ COPY src ./src
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir . \
     && rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx \
+    && rm -f Dockerfile \
     && [ ! -d /usr/local/lib/node_modules ]
 
 COPY README.md ./
