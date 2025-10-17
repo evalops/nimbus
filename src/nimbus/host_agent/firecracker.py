@@ -20,6 +20,7 @@ from pyroute2 import IPRoute, NetNS, NetlinkError, netns
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
+from ..rootfs.attestation import RootfsAttestationError, RootfsAttestor
 
 LOGGER = structlog.get_logger("nimbus.host_agent.firecracker")
 
@@ -98,6 +99,25 @@ class FirecrackerLauncher:
         self._snapshot_memory = Path(settings.snapshot_memory_path) if settings.snapshot_memory_path else None
         self._snapshot_enabled = self._snapshot_state is not None and self._snapshot_memory is not None
         self._snapshot_enable_diff = settings.snapshot_enable_diff
+        manifest_path = settings.rootfs_manifest_path
+        if manifest_path:
+            try:
+                self._attestor: Optional[RootfsAttestor] = RootfsAttestor(
+                    manifest_path,
+                    required=settings.require_rootfs_attestation,
+                    version=settings.rootfs_version,
+                )
+            except RootfsAttestationError as exc:
+                if settings.require_rootfs_attestation:
+                    raise
+                LOGGER.warning(
+                    "rootfs_attestor_initialisation_failed",
+                    error=str(exc),
+                    manifest=str(manifest_path),
+                )
+                self._attestor = None
+        else:
+            self._attestor = None
 
     async def execute_job(
         self,
@@ -244,6 +264,11 @@ class FirecrackerLauncher:
         except OSError as exc:
             LOGGER.warning("Unable to mark rootfs copy read-only", path=str(destination), error=str(exc))
         checksum = self._compute_checksum(destination)
+        if self._attestor:
+            try:
+                self._attestor.verify(source, checksum)
+            except RootfsAttestationError as exc:
+                raise FirecrackerError(f"Rootfs attestation failed: {exc}") from exc
         return destination, checksum
 
     def _build_vm_config(self, rootfs_path: str, kernel_path: str, tap_name: str) -> dict:
