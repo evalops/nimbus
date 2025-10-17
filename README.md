@@ -48,9 +48,9 @@ Nimbus publishes curated container images, such as `nimbus/ai-eval-runner` (Node
 
 ## Roadmap Snapshot
 
-- **Complete**: Multi-tenant isolation, lease fencing, webhook replay protection, distributed rate limiting, metrics endpoint authentication.
-- **In Progress**: Schema migrations, expanded integration tests, jailer rollout.
-- **Planned**: Storage quotas, rootfs attestation, performance tuning, snapshot boot support.
+- **Complete**: Multi-tenant isolation, lease fencing, webhook replay protection, distributed rate limiting, metrics endpoint authentication, tenant analytics dashboard.
+- **In Progress**: Rootfs attestation, storage quotas, performance tuning.
+- **Planned**: Snapshot boot support, browser automation for dashboard E2E tests.
 
 ## Contributing
 
