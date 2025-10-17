@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, status
 
-from nimbus.cache_proxy.app import S3CacheBackend
+from nimbus.cache_proxy.app import CacheMetrics, S3CacheBackend
 from nimbus.common.settings import CacheProxySettings
 
 
@@ -127,3 +127,23 @@ async def test_s3_circuit_breaker_blocks_after_failures(monkeypatch, fake_sessio
     size = await backend.head("key")
     assert size == 42
     assert fake_session.head_calls == first_two_calls + 1
+
+
+def test_cache_metrics_org_usage(tmp_path):
+    db_path = tmp_path / "metrics.db"
+    metrics = CacheMetrics(f"sqlite+pysqlite:///{db_path.as_posix()}")
+
+    current = metrics.get_org_bytes(123)
+    assert current == 0
+
+    current = metrics.add_org_bytes(123, 100)
+    assert current == 100
+    assert metrics.get_org_bytes(123) == 100
+
+    current = metrics.add_org_bytes(123, -30)
+    assert current == 70
+    assert metrics.get_org_bytes(123) == 70
+
+    current = metrics.add_org_bytes(123, -1000)
+    assert current == 0
+    assert metrics.get_org_bytes(123) == 0
