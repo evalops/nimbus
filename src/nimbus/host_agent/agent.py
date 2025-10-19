@@ -30,6 +30,7 @@ from ..common.supply_chain import (
 )
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
 from ..runners import EXECUTORS, Executor, RunResult
+from ..runners.pool_manager import PoolManager, PoolConfig
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
@@ -63,6 +64,28 @@ class HostAgent:
         for executor in self._executors.values():
             if hasattr(executor, 'initialize'):
                 executor.initialize(settings)
+        
+        # Initialize pool manager
+        self._pool_manager = None
+        if settings.enable_warm_pools:
+            self._pool_manager = PoolManager(settings, self._executors)
+            # Configure pools based on settings
+            if "firecracker" in self._executors:
+                self._pool_manager._pool_configs["firecracker"] = PoolConfig(
+                    executor_name="firecracker",
+                    min_warm=settings.firecracker_min_warm,
+                    max_warm=settings.firecracker_max_warm,
+                    max_idle_seconds=600,
+                    health_check_interval=30,
+                )
+            if "docker" in self._executors:
+                self._pool_manager._pool_configs["docker"] = PoolConfig(
+                    executor_name="docker", 
+                    min_warm=settings.docker_min_warm,
+                    max_warm=settings.docker_max_warm,
+                    max_idle_seconds=180,
+                    health_check_interval=60,
+                )
         allowed_registries = list(settings.artifact_registry_allow_list)
         parsed = urlparse(str(settings.control_plane_base_url))
         if parsed.hostname:
@@ -106,6 +129,10 @@ class HostAgent:
         await self._state_store.open()
         await self._recover_state()
         await self._ensure_metrics_server()
+        
+        # Start pool manager
+        if self._pool_manager:
+            await self._pool_manager.start()
 
         if self._sbom_output_path:
             try:
@@ -143,6 +170,11 @@ class HostAgent:
 
     async def stop(self) -> None:
         self._running = False
+        
+        # Stop pool manager first
+        if self._pool_manager:
+            await self._pool_manager.stop()
+        
         await self._http.aclose()
         if self._log_http:
             await self._log_http.aclose()
@@ -320,6 +352,7 @@ class HostAgent:
                 )
 
             timeout_seconds = self._settings.job_timeout_seconds
+            warm_instance = None  # Track warm instance for cleanup
             
             # Get the appropriate executor
             executor_name = getattr(assignment, 'executor', 'firecracker')
@@ -328,8 +361,26 @@ class HostAgent:
                 raise RuntimeError(f"Unknown executor: {executor_name}")
             
             try:
-                # Use the executor interface
-                await executor.prepare(assignment)
+                # Try to get a warm instance first
+                if self._pool_manager:
+                    warm_instance = await self._pool_manager.get_warm_instance(
+                        executor_name, assignment
+                    )
+                
+                if warm_instance:
+                    LOGGER.info("Using warm instance", 
+                               job_id=assignment.job_id,
+                               instance_id=warm_instance.instance_id,
+                               executor=executor_name)
+                    # For warm instances, prepare might be lighter/different
+                    if hasattr(executor, 'prepare_job_with_warm_instance'):
+                        await executor.prepare_job_with_warm_instance(assignment, warm_instance)
+                    else:
+                        await executor.prepare(assignment)
+                else:
+                    LOGGER.info("Using cold start", job_id=assignment.job_id, executor=executor_name)
+                    await executor.prepare(assignment)
+                
                 result = await executor.run(assignment, timeout_seconds=timeout_seconds)
                 
                 # Convert RunResult to FirecrackerResult for compatibility
@@ -390,8 +441,17 @@ class HostAgent:
                     except asyncio.CancelledError:
                         pass
                 
-                # Cleanup executor resources
+                # Release warm instance or cleanup executor resources
                 executor_name = getattr(assignment, 'executor', 'firecracker')
+                if self._pool_manager and warm_instance:
+                    try:
+                        await self._pool_manager.release_instance(warm_instance, assignment.job_id)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        LOGGER.debug("Warm instance release failed", 
+                                   job_id=assignment.job_id, 
+                                   instance_id=warm_instance.instance_id,
+                                   error=str(exc))
+                
                 executor = self._executors.get(executor_name)
                 if executor:
                     try:

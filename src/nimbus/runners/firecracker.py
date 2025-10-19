@@ -5,10 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+import structlog
+
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
 from ..host_agent.firecracker import FirecrackerError, FirecrackerLauncher, MicroVMNetwork
 from .base import Executor, RunResult
+
+LOGGER = structlog.get_logger("nimbus.runners.firecracker")
 
 
 class FirecrackerExecutor:
@@ -108,3 +112,70 @@ class FirecrackerExecutor:
             except Exception:
                 # Log but don't fail cleanup
                 pass
+    
+    async def prepare_warm_instance(self, instance_id: str) -> dict:
+        """Prepare a warm Firecracker instance ready for job assignment."""
+        if not self._launcher:
+            raise RuntimeError("FirecrackerExecutor not initialized")
+        
+        # For warm instances, we pre-allocate network but don't start VM yet
+        # The VM will be started when a job is assigned
+        mock_job_id = hash(instance_id) % 100000  # Generate pseudo job ID
+        network = self._launcher.network_for_job(mock_job_id)
+        
+        try:
+            # Pre-setup network resources
+            await self._launcher._prepare_network_resources(network)
+            
+            LOGGER.info("Prepared warm Firecracker instance", 
+                       instance_id=instance_id,
+                       tap=network.tap_name,
+                       network=f"{network.host_ip}-{network.guest_ip}")
+            
+            return {
+                "network": network,
+                "mock_job_id": mock_job_id,
+                "prepared_at": datetime.now(timezone.utc).isoformat(),
+            }
+            
+        except Exception as exc:
+            LOGGER.error("Failed to prepare warm instance", 
+                        instance_id=instance_id, 
+                        error=str(exc))
+            raise
+    
+    async def cleanup_warm_instance(self, instance_id: str, context: dict) -> None:
+        """Clean up a warm Firecracker instance."""
+        if not self._launcher:
+            return
+            
+        network = context.get("network")
+        if network:
+            try:
+                await self._launcher.cleanup_network(network)
+                LOGGER.debug("Cleaned up warm instance network", 
+                           instance_id=instance_id,
+                           tap=network.tap_name)
+            except Exception as exc:
+                LOGGER.warning("Warm instance network cleanup failed", 
+                              instance_id=instance_id,
+                              error=str(exc))
+    
+    async def health_check_warm_instance(self, instance_id: str, context: dict) -> bool:
+        """Health check a warm Firecracker instance."""
+        # For Firecracker warm instances, we just check if network is still available
+        network = context.get("network")
+        if not network:
+            return False
+            
+        # Simple check - verify tap device exists
+        import os
+        tap_path = f"/sys/class/net/{network.tap_name}"
+        exists = os.path.exists(tap_path)
+        
+        if not exists:
+            LOGGER.warning("Warm instance network missing", 
+                          instance_id=instance_id,
+                          tap=network.tap_name)
+        
+        return exists
