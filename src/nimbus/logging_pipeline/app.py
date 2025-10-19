@@ -105,6 +105,10 @@ class PipelineState:
         hours_back: Optional[int] = None,
     ) -> list[dict[str, object]]:
         limit = max(1, min(limit, 500))
+
+        # Require tenant scoping unless querying by job
+        if org_id is None and job_id is None:
+            raise PermissionError("org_id or job_id required for log queries")
         
         # Enforce time window to prevent expensive scans
         if hours_back is None:
