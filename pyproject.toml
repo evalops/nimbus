@@ -62,7 +62,7 @@ packages = ["src/nimbus"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
 addopts = "--strict-config --strict-markers"
 markers = [
     "integration: marks tests as integration tests (may require external services)",
