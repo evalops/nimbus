@@ -232,6 +232,7 @@ class HostAgentSettings(BaseSettings):
     docker_network_name: str = env_field("nimbus", "NIMBUS_DOCKER_NETWORK") 
     docker_workspace_path: Path = env_field(Path("/tmp/nimbus-workspaces"), "NIMBUS_DOCKER_WORKSPACE")
     docker_default_image: str = env_field("ubuntu:22.04", "NIMBUS_DOCKER_DEFAULT_IMAGE")
+    docker_container_user: Optional[str] = env_field(None, "NIMBUS_DOCKER_USER")
     
     # Warm pool settings
     enable_warm_pools: bool = env_field(True, "NIMBUS_WARM_POOLS_ENABLE")
@@ -239,6 +240,15 @@ class HostAgentSettings(BaseSettings):
     firecracker_max_warm: int = env_field(3, "NIMBUS_FIRECRACKER_MAX_WARM")
     docker_min_warm: int = env_field(0, "NIMBUS_DOCKER_MIN_WARM")  
     docker_max_warm: int = env_field(2, "NIMBUS_DOCKER_MAX_WARM")
+
+    @field_validator("docker_container_user", mode="before")
+    @classmethod
+    def _normalize_docker_user(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        return value
 
     @field_validator("cpu_affinity", mode="before")
     @classmethod
@@ -360,4 +370,3 @@ class DockerCacheSettings(BaseSettings):
             path = Path(value).expanduser().resolve()
             return f"sqlite+pysqlite:///{path.as_posix()}"
         return value
-

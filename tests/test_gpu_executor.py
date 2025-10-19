@@ -17,6 +17,7 @@ def mock_settings():
     settings = Mock(spec=HostAgentSettings)
     settings.docker_socket_path = "/var/run/docker.sock"
     settings.docker_workspace_path = Path("/tmp/test-gpu-workspaces")
+    settings.docker_container_user = None
     return settings
 
 

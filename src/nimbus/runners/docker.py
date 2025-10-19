@@ -36,6 +36,7 @@ class DockerExecutor:
         self._job_containers: dict[int, Container] = {}
         self._job_workspaces: dict[int, Path] = {}
         self._egress_enforcer: Optional[OfflineEgressEnforcer] = None
+        self._container_user: Optional[str] = None
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the executor with settings."""
@@ -56,6 +57,7 @@ class DockerExecutor:
         
         # Create workspace directory
         settings.docker_workspace_path.mkdir(parents=True, exist_ok=True)
+        self._container_user = settings.docker_container_user
         
         # Initialize egress enforcer (similar to HostAgent)
         metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
@@ -160,8 +162,9 @@ class DockerExecutor:
                 "network": self._settings.docker_network_name,
                 "remove": False,  # We'll remove it ourselves for proper cleanup
                 "detach": True,
-                "user": "runner:docker",  # Assume runner user exists in image
             }
+            if self._container_user:
+                container_config["user"] = self._container_user
             
             # Add resource limits
             container_config.update({
@@ -179,7 +182,12 @@ class DockerExecutor:
                 "read_only": False,  # GitHub Actions needs write access
             })
             
-            LOGGER.info("Starting container", job_id=job.job_id, image=image)
+            LOGGER.info(
+                "Starting container",
+                job_id=job.job_id,
+                image=image,
+                user=self._container_user or "default",
+            )
             
             # Create and start container
             container = self._docker_client.containers.create(**container_config)
@@ -256,13 +264,13 @@ class DockerExecutor:
             
         try:
             # Check if image exists locally
-            self._docker_client.images.get(image)
+            await asyncio.to_thread(self._docker_client.images.get, image)
             LOGGER.debug("Image already exists locally", image=image)
         except docker.errors.ImageNotFound:
             LOGGER.info("Pulling container image", image=image)
             try:
                 # Pull the image
-                self._docker_client.images.pull(image)
+                await asyncio.to_thread(self._docker_client.images.pull, image)
                 LOGGER.info("Successfully pulled image", image=image)
             except Exception as exc:
                 LOGGER.error("Failed to pull image", image=image, error=str(exc))

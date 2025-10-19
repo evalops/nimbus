@@ -20,6 +20,7 @@ def mock_settings():
     settings.docker_network_name = "nimbus-test"
     settings.docker_workspace_path = Path("/tmp/test-workspaces")
     settings.docker_default_image = "ubuntu:22.04"
+    settings.docker_container_user = None
     settings.metadata_endpoint_denylist = []
     settings.egress_policy_pack = None
     settings.offline_mode = False

@@ -55,6 +55,9 @@ class CacheBackend:
     async def read(self, cache_key: str) -> bytes:
         raise NotImplementedError
 
+    async def delete(self, cache_key: str) -> None:
+        raise NotImplementedError
+
     def status(self) -> dict[str, object]:
         raise NotImplementedError
 
@@ -114,6 +117,20 @@ class LocalCacheBackend(CacheBackend):
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache miss")
         return path.read_bytes()
+
+    async def delete(self, cache_key: str) -> None:
+        path = sanitize_key(self._settings.storage_path, cache_key)
+        if not path.exists():
+            return
+        path.unlink(missing_ok=True)
+        root = self._settings.storage_path.resolve()
+        parent = path.parent
+        while parent != root and parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
     def status(self) -> dict[str, object]:
         storage = self._settings.storage_path
@@ -192,6 +209,28 @@ class S3CacheBackend(CacheBackend):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="S3 error") from exc
         body = response["Body"]
         return await asyncio.to_thread(body.read)
+
+    async def delete(self, cache_key: str) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            await self._call_with_retry(
+                self._client.delete_object,
+                Bucket=self._bucket,
+                Key=self._sanitize_key(cache_key),
+            )
+        except self._client.exceptions.NoSuchKey:  # type: ignore[attr-defined]
+            self._breaker.record_success()
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                self._breaker.record_success()
+            else:
+                self._breaker.record_failure()
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="S3 error",
+                ) from exc
 
     def status(self) -> dict[str, object]:
         return {

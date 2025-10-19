@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -51,6 +52,7 @@ class GPUExecutor:
         self._job_workspaces: Dict[int, Path] = {}
         self._available_gpus: Dict[str, GPUInfo] = {}
         self._gpu_allocations: Dict[int, List[str]] = {}  # job_id -> gpu_uuids
+        self._container_user: Optional[str] = None
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the GPU executor."""
@@ -75,6 +77,7 @@ class GPUExecutor:
         
         # Create workspace directory
         settings.docker_workspace_path.mkdir(parents=True, exist_ok=True)
+        self._container_user = settings.docker_container_user
     
     @property
     def name(self) -> str:
@@ -248,8 +251,9 @@ class GPUExecutor:
                 "runtime": "nvidia",  # Use nvidia runtime
                 "remove": False,
                 "detach": True,
-                "user": "runner:docker",
             }
+            if self._container_user:
+                container_config["user"] = self._container_user
             
             # Add GPU device requests
             if allocated_gpus:
@@ -269,10 +273,13 @@ class GPUExecutor:
                 "shm_size": "1g",  # Shared memory for GPU
             })
             
-            LOGGER.info("Starting GPU container", 
-                       job_id=job.job_id, 
-                       image=image,
-                       gpu_count=len(allocated_gpus))
+            LOGGER.info(
+                "Starting GPU container",
+                job_id=job.job_id,
+                image=image,
+                gpu_count=len(allocated_gpus),
+                user=self._container_user or "default",
+            )
             
             # Create and start container
             container = self._docker_client.containers.create(**container_config)
@@ -432,12 +439,12 @@ class GPUExecutor:
             return
             
         try:
-            self._docker_client.images.get(image)
+            await asyncio.to_thread(self._docker_client.images.get, image)
             LOGGER.debug("GPU image already exists locally", image=image)
         except docker.errors.ImageNotFound:
             LOGGER.info("Pulling GPU container image", image=image)
             try:
-                self._docker_client.images.pull(image)
+                await asyncio.to_thread(self._docker_client.images.pull, image)
                 LOGGER.info("Successfully pulled GPU image", image=image)
             except Exception as exc:
                 LOGGER.error("Failed to pull GPU image", image=image, error=str(exc))
