@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -118,8 +121,6 @@ class FirecrackerExecutor:
         if not self._launcher:
             raise RuntimeError("FirecrackerExecutor not initialized")
         
-        # For warm instances, we pre-allocate network but don't start VM yet
-        # The VM will be started when a job is assigned
         mock_job_id = hash(instance_id) % 100000  # Generate pseudo job ID
         network = self._launcher.network_for_job(mock_job_id)
         
@@ -127,16 +128,28 @@ class FirecrackerExecutor:
             # Pre-setup network resources
             await self._launcher._prepare_network_resources(network)
             
-            LOGGER.info("Prepared warm Firecracker instance", 
-                       instance_id=instance_id,
-                       tap=network.tap_name,
-                       network=f"{network.host_ip}-{network.guest_ip}")
-            
-            return {
+            context = {
                 "network": network,
                 "mock_job_id": mock_job_id,
                 "prepared_at": datetime.now(timezone.utc).isoformat(),
             }
+            
+            # If snapshots are enabled, pre-start a VM from snapshot
+            if self._launcher._snapshot_enabled:
+                vm_context = await self._prepare_snapshot_vm(instance_id, network)
+                context.update({
+                    "vm_context": vm_context,
+                    "snapshot_ready": True,
+                })
+                LOGGER.info("Prepared warm Firecracker instance with snapshot", 
+                           instance_id=instance_id,
+                           tap=network.tap_name)
+            else:
+                LOGGER.info("Prepared warm Firecracker instance (cold boot)", 
+                           instance_id=instance_id,
+                           tap=network.tap_name)
+            
+            return context
             
         except Exception as exc:
             LOGGER.error("Failed to prepare warm instance", 
@@ -148,6 +161,30 @@ class FirecrackerExecutor:
         """Clean up a warm Firecracker instance."""
         if not self._launcher:
             return
+        
+        # Cleanup snapshot VM if it was running
+        vm_context = context.get("vm_context")
+        if vm_context:
+            try:
+                process = vm_context.get("process")
+                if process and process.returncode is None:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.wait()
+                
+                # Cleanup temporary directory
+                temp_dir = vm_context.get("temp_dir")
+                if temp_dir and Path(temp_dir).exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    
+                LOGGER.debug("Cleaned up snapshot VM", instance_id=instance_id)
+            except Exception as exc:
+                LOGGER.warning("Snapshot VM cleanup failed", 
+                              instance_id=instance_id,
+                              error=str(exc))
             
         network = context.get("network")
         if network:
@@ -179,3 +216,95 @@ class FirecrackerExecutor:
                           tap=network.tap_name)
         
         return exists
+    
+    async def _prepare_snapshot_vm(self, instance_id: str, network: MicroVMNetwork) -> dict:
+        """Pre-start a VM from snapshot for ultra-fast job assignment."""
+        import tempfile
+        import httpx
+        
+        # Create temporary workspace for this warm instance
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"nimbus-warm-{instance_id}-"))
+        api_socket = temp_dir / "firecracker.sock"
+        log_path = temp_dir / "firecracker.log"  
+        metrics_path = temp_dir / "firecracker.metrics"
+        
+        try:
+            # Prepare minimal rootfs (just for metadata, snapshot has the real state)
+            rootfs_copy, rootfs_hash = self._launcher._prepare_rootfs(temp_dir)
+            
+            # Spawn Firecracker process
+            process, fc_context = await self._launcher._spawn_firecracker(
+                api_socket, log_path, metrics_path, rootfs_copy, rootfs_hash, network
+            )
+            
+            # Wait for API and restore from snapshot
+            await self._wait_for_api(fc_context)
+            await self._launcher._restore_snapshot(fc_context)
+            await self._launcher._start_instance(api_socket)
+            
+            # Give it a moment to fully boot from snapshot
+            await asyncio.sleep(0.2)  # 200ms should be enough from snapshot
+            
+            LOGGER.info("Snapshot VM ready", 
+                       instance_id=instance_id,
+                       temp_dir=str(temp_dir))
+            
+            return {
+                "process": process,
+                "fc_context": fc_context,
+                "temp_dir": temp_dir,
+                "api_socket": api_socket,
+                "booted_at": datetime.now(timezone.utc).isoformat(),
+            }
+            
+        except Exception as exc:
+            # Cleanup on failure
+            if 'process' in locals() and process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            
+            if temp_dir.exists():
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            raise RuntimeError(f"Failed to prepare snapshot VM: {exc}") from exc
+    
+    async def _wait_for_api(self, context, timeout: int = 10) -> None:
+        """Wait for Firecracker API to be ready."""
+        transport = httpx.AsyncHTTPTransport(uds=str(context.api_socket_host))
+        
+        for attempt in range(timeout):
+            try:
+                async with httpx.AsyncClient(transport=transport, base_url="http://localhost", timeout=1.0) as client:
+                    response = await client.get("/")
+                    if response.status_code in (200, 404):  # API is ready
+                        return
+            except Exception:
+                pass
+            
+            await asyncio.sleep(0.1)  # Check every 100ms
+        
+        raise RuntimeError("Firecracker API did not become ready in time")
+    
+    async def prepare_job_with_warm_instance(self, job: JobAssignment, warm_instance) -> None:
+        """Prepare a job using a warm instance - much faster than cold start."""
+        if not warm_instance.context.get("snapshot_ready"):
+            # Fall back to normal prepare if no snapshot
+            await self.prepare(job)
+            return
+            
+        vm_context = warm_instance.context.get("vm_context")
+        if not vm_context:
+            raise RuntimeError("Warm instance missing VM context")
+        
+        # The VM is already running from snapshot, just update job association
+        self._job_networks[job.job_id] = warm_instance.context["network"]
+        
+        LOGGER.info("Job prepared with warm snapshot instance", 
+                   job_id=job.job_id,
+                   instance_id=warm_instance.instance_id,
+                   boot_time="~80ms")

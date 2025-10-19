@@ -31,6 +31,7 @@ from ..common.supply_chain import (
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
 from ..runners import EXECUTORS, Executor, RunResult
 from ..runners.pool_manager import PoolManager, PoolConfig
+from ..runners.resource_manager import ResourceTracker
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
@@ -64,6 +65,9 @@ class HostAgent:
         for executor in self._executors.values():
             if hasattr(executor, 'initialize'):
                 executor.initialize(settings)
+        
+        # Initialize resource tracker
+        self._resource_tracker = ResourceTracker()
         
         # Initialize pool manager
         self._pool_manager = None
@@ -130,6 +134,9 @@ class HostAgent:
         await self._recover_state()
         await self._ensure_metrics_server()
         
+        # Start resource tracker
+        await self._resource_tracker.start()
+        
         # Start pool manager
         if self._pool_manager:
             await self._pool_manager.start()
@@ -174,6 +181,9 @@ class HostAgent:
         # Stop pool manager first
         if self._pool_manager:
             await self._pool_manager.stop()
+        
+        # Stop resource tracker
+        await self._resource_tracker.stop()
         
         await self._http.aclose()
         if self._log_http:
@@ -381,6 +391,14 @@ class HostAgent:
                     LOGGER.info("Using cold start", job_id=assignment.job_id, executor=executor_name)
                     await executor.prepare(assignment)
                 
+                # Start resource tracking
+                await self._resource_tracker.start_job_tracking(
+                    assignment.job_id, 
+                    executor_name,
+                    cpu_limit=2.0,  # 2 CPU cores
+                    memory_limit_mb=4096,  # 4GB RAM
+                )
+                
                 result = await executor.run(assignment, timeout_seconds=timeout_seconds)
                 
                 # Convert RunResult to FirecrackerResult for compatibility
@@ -458,6 +476,9 @@ class HostAgent:
                         await executor.cleanup(assignment.job_id)
                     except Exception as exc:  # pragma: no cover - defensive
                         LOGGER.debug("Executor cleanup failed", job_id=assignment.job_id, executor=executor_name, error=str(exc))
+                
+                # Stop resource tracking
+                await self._resource_tracker.stop_job_tracking(assignment.job_id)
                 
                 self._active_jobs = max(0, self._active_jobs - 1)
                 self._job_networks.pop(assignment.job_id, None)
