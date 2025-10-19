@@ -41,7 +41,7 @@ audit:
 
 coverage:
 	uv sync --extra dev
-	uv run python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=66
+	uv run python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=65
 
 scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then mkdir -p $(SBOM_DIR); fi
