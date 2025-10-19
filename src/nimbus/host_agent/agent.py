@@ -32,6 +32,7 @@ from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResul
 from ..runners import EXECUTORS, Executor, RunResult
 from ..runners.pool_manager import PoolManager, PoolConfig
 from ..runners.resource_manager import ResourceTracker
+from ..runners.performance_monitor import PerformanceMonitor
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
@@ -68,6 +69,9 @@ class HostAgent:
         
         # Initialize resource tracker
         self._resource_tracker = ResourceTracker()
+        
+        # Initialize performance monitor
+        self._performance_monitor = PerformanceMonitor()
         
         # Initialize pool manager
         self._pool_manager = None
@@ -391,13 +395,14 @@ class HostAgent:
                     LOGGER.info("Using cold start", job_id=assignment.job_id, executor=executor_name)
                     await executor.prepare(assignment)
                 
-                # Start resource tracking
+                # Start resource tracking and performance monitoring
                 await self._resource_tracker.start_job_tracking(
                     assignment.job_id, 
                     executor_name,
                     cpu_limit=2.0,  # 2 CPU cores
                     memory_limit_mb=4096,  # 4GB RAM
                 )
+                self._performance_monitor.record_job_start(assignment.job_id)
                 
                 result = await executor.run(assignment, timeout_seconds=timeout_seconds)
                 
@@ -450,6 +455,15 @@ class HostAgent:
                     status_kwargs["fence_token"] = fence_token
                 await self._submit_status(assignment, "succeeded", **status_kwargs)
                 JOB_SUCCEEDED_COUNTER.inc()
+                
+                # Record successful job performance
+                if result:
+                    self._performance_monitor.record_job_completion(
+                        assignment.job_id,
+                        executor_name,
+                        result,
+                        warm_instance_used=(warm_instance is not None)
+                    )
             finally:
                 # Stop heartbeat renewal
                 if heartbeat_task:

@@ -36,6 +36,9 @@ class GPUInfo:
         self.cuda_version = data.get("cuda_version", "0.0")
         self.mig_enabled = data.get("mig_mode", False)
         self.mig_instances = data.get("mig_instances", [])
+        self.utilization = data.get("utilization", 0)  # GPU utilization %
+        self.power_draw = data.get("power_draw", 0)  # Power usage in watts
+        self.temperature = data.get("temperature", 0)  # Temperature in C
 
 
 class GPUExecutor:
@@ -114,11 +117,12 @@ class GPUExecutor:
             return False
     
     def _discover_gpus(self) -> None:
-        """Discover available GPUs using nvidia-ml-py or nvidia-smi."""
+        """Discover available GPUs with enhanced monitoring data."""
         try:
-            # Try nvidia-smi first (more widely available)
+            # Enhanced GPU query with utilization and power data
             result = subprocess.run([
-                "nvidia-smi", "--query-gpu=index,name,uuid,memory.total,memory.free,compute_cap,driver_version",
+                "nvidia-smi", 
+                "--query-gpu=index,name,uuid,memory.total,memory.free,compute_cap,driver_version,utilization.gpu,power.draw,temperature.gpu",
                 "--format=csv,noheader,nounits"
             ], capture_output=True, text=True, check=True)
             
@@ -134,15 +138,42 @@ class GPUExecutor:
                             "memory_free": int(parts[4]) * 1024 * 1024,
                             "compute_capability": parts[5],
                             "cuda_version": parts[6],
+                            "utilization": int(parts[7]) if len(parts) > 7 and parts[7] != '[Not Supported]' else 0,
+                            "power_draw": float(parts[8]) if len(parts) > 8 and parts[8] != '[Not Supported]' else 0,
+                            "temperature": int(parts[9]) if len(parts) > 9 and parts[9] != '[Not Supported]' else 0,
                         })
                         self._available_gpus[gpu_info.uuid] = gpu_info
             
-            LOGGER.info("Discovered GPUs", count=len(self._available_gpus), 
-                       gpus=[gpu.name for gpu in self._available_gpus.values()])
+            LOGGER.info("Discovered GPUs", 
+                       count=len(self._available_gpus),
+                       gpus=[f"{gpu.name} ({gpu.memory_total//1024//1024//1024}GB)" for gpu in self._available_gpus.values()])
+            
+            # Discover MIG instances if any GPU has MIG enabled
+            self._discover_mig_instances()
                        
         except Exception as exc:
             LOGGER.error("Failed to discover GPUs", error=str(exc))
             raise RuntimeError("GPU discovery failed - nvidia-smi not available") from exc
+    
+    def _discover_mig_instances(self) -> None:
+        """Discover MIG instances for advanced GPU partitioning."""
+        try:
+            result = subprocess.run([
+                "nvidia-smi", "mig", "-lgip", 
+                "--format=csv,noheader,nounits"
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                LOGGER.info("MIG instances detected", instances=result.stdout.count('\n'))
+                # Parse MIG instances and add to GPU capabilities
+                for gpu in self._available_gpus.values():
+                    gpu.mig_enabled = True
+            else:
+                LOGGER.debug("No MIG instances found or MIG not supported")
+                
+        except Exception:
+            # MIG discovery failing is not fatal
+            LOGGER.debug("MIG discovery skipped - nvidia-smi mig not available")
     
     async def prepare(self, job: JobAssignment) -> None:
         """Prepare environment for GPU job execution."""

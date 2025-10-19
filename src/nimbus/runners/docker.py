@@ -268,6 +268,82 @@ class DockerExecutor:
                 LOGGER.error("Failed to pull image", image=image, error=str(exc))
                 raise RuntimeError(f"Failed to pull image {image}: {exc}") from exc
     
+    async def prepare_warm_instance(self, instance_id: str) -> dict:
+        """Prepare a warm Docker instance (primarily pre-pulled images)."""
+        if not self._docker_client:
+            raise RuntimeError("DockerExecutor not initialized")
+        
+        # For Docker, warm instances primarily mean pre-pulled common images
+        common_images = [
+            "ubuntu:22.04",
+            "ubuntu:20.04", 
+            "node:18-alpine",
+            "python:3.11-slim",
+            "golang:1.21-alpine"
+        ]
+        
+        pulled_images = []
+        for image in common_images:
+            try:
+                await self._ensure_image(image)
+                pulled_images.append(image)
+            except Exception as exc:
+                LOGGER.warning("Failed to pre-pull image", image=image, error=str(exc))
+        
+        context = {
+            "instance_id": instance_id,
+            "pulled_images": pulled_images,
+            "prepared_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        LOGGER.info("Prepared warm Docker instance", 
+                   instance_id=instance_id,
+                   pre_pulled_images=len(pulled_images))
+        
+        return context
+    
+    async def cleanup_warm_instance(self, instance_id: str, context: dict) -> None:
+        """Clean up warm Docker instance (no-op since images can be shared)."""
+        # For Docker warm instances, we don't need to clean up anything
+        # Pre-pulled images can be shared across instances
+        LOGGER.debug("Docker warm instance cleanup (no-op)", instance_id=instance_id)
+    
+    async def health_check_warm_instance(self, instance_id: str, context: dict) -> bool:
+        """Health check for warm Docker instance."""
+        if not self._docker_client:
+            return False
+        
+        try:
+            # Check that Docker daemon is still responsive
+            self._docker_client.ping()
+            
+            # Verify some pre-pulled images are still available
+            pulled_images = context.get("pulled_images", [])
+            available_count = 0
+            
+            for image in pulled_images[:3]:  # Check first 3 images
+                try:
+                    self._docker_client.images.get(image)
+                    available_count += 1
+                except Exception:
+                    pass
+            
+            # Consider healthy if Docker responds and at least 1 image available
+            is_healthy = available_count > 0
+            
+            if not is_healthy:
+                LOGGER.warning("Docker warm instance unhealthy", 
+                              instance_id=instance_id,
+                              available_images=available_count)
+            
+            return is_healthy
+            
+        except Exception as exc:
+            LOGGER.warning("Docker health check failed", 
+                          instance_id=instance_id,
+                          error=str(exc))
+            return False
+    
     async def cleanup(self, job_id: int) -> None:
         """Clean up resources associated with a job."""
         # Remove container
