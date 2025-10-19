@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import tempfile
 from collections import defaultdict, deque
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 import pytest
 from hypothesis import given, settings, strategies as st
@@ -14,14 +11,8 @@ from sqlalchemy import update
 
 from src.nimbus.common.schemas import JobAssignment, GitHubRepository, RunnerRegistrationToken
 from src.nimbus.control_plane.jobs import QUEUE_KEY, enqueue_job, lease_job_with_fence
-from src.nimbus.control_plane.db import (
-    metadata,
-    job_leases_table,
-    jobs_table,
-    record_job_queued,
-    create_engine,
-    session_factory,
-)
+from src.nimbus.control_plane.db import metadata, job_leases_table, jobs_table, record_job_queued
+from tests.utils.database import temp_session
 
 
 class FakeRedis:
@@ -38,19 +29,6 @@ class FakeRedis:
 
     async def delete(self, key: str) -> None:
         self._lists.pop(key, None)
-
-
-@asynccontextmanager
-async def session_context():
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        db_path = Path(tmp_dir) / "nimbus.db"
-        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(metadata.create_all)
-        Session = session_factory(engine)
-        async with Session() as session:
-            yield session
-        await engine.dispose()
 
 
 async def _prepare_job(session, job_id: int, executor: str = "firecracker") -> JobAssignment:
@@ -88,7 +66,7 @@ async def _prepare_job(session, job_id: int, executor: str = "firecracker") -> J
 async def test_lease_fencing_monotonic(job_id: int, attempts: int):
     """Ensure fence tokens never decrease across acquisitions."""
     fake_redis = FakeRedis()
-    async with session_context() as session:
+    async with temp_session(metadata) as session:
         assignment = await _prepare_job(session, job_id)
         await enqueue_job(fake_redis, assignment)
 
@@ -139,7 +117,7 @@ async def test_lease_fencing_monotonic(job_id: int, attempts: int):
 async def test_capability_matching(job_executor: str, agent_capability: str):
     """Jobs should only lease to agents with matching capability."""
     fake_redis = FakeRedis()
-    async with session_context() as session:
+    async with temp_session(metadata) as session:
         assignment = await _prepare_job(session, job_id=42, executor=job_executor)
         await enqueue_job(fake_redis, assignment)
 
