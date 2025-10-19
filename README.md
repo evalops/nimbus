@@ -14,7 +14,8 @@ Nimbus is a self-hosted CI platform built around Firecracker microVMs, org-scope
 ## Architecture Overview
 
 - **Control Plane**: Handles GitHub webhooks (HMAC + timestamp validation), manages DB-backed job leases and rate limits, and coordinates agent registration.
-- **Host Agent**: Polls for assignments, provisions Firecracker microVMs, enforces capability restrictions, and persists in-flight state.
+- **Multi-Executor Host Agent**: Polls for assignments, provisions execution environments (Firecracker microVMs, Docker containers, GPU workloads), enforces capability restrictions, and manages warm pools for performance.
+- **Executor System**: Pluggable backends supporting Firecracker (secure isolation), Docker (fast startup), and GPU (CUDA workloads) with capability-based job matching.
 - **Cache Proxy**: Org-scoped artifact cache with optional S3 backend, eviction policies, and protected metrics endpoint.
 - **Logging Pipeline**: Authenticated ClickHouse ingestion with org/repo filters on queries.
 - **Docker Layer Cache**: OCI-compatible registry that enforces org-prefixed repositories and metadata ownership.
@@ -35,7 +36,23 @@ Nimbus is a self-hosted CI platform built around Firecracker microVMs, org-scope
 
 ## GitHub Actions Integration
 
-Workflows can target Nimbus runners by setting `runs-on: nimbus`. The control plane verifies `workflow_job` signatures (`X-Hub-Signature-256` plus `X-Hub-Signature-Timestamp`), enforces per-org rate limits, and dispatches jobs to agents via leased assignments.
+Workflows can target Nimbus runners using capability-based labels:
+
+```yaml
+# Secure isolation (default)
+runs-on: [nimbus]  # Uses Firecracker microVMs
+
+# Fast startup for CI/CD
+runs-on: [nimbus, docker]  # ~200ms startup
+
+# GPU acceleration for ML/AI
+runs-on: [nimbus, gpu, pytorch, gpu-count:2]  # 2 GPUs
+
+# Custom configurations
+runs-on: [nimbus, docker, image:node:18-alpine]
+```
+
+The control plane verifies `workflow_job` signatures, enforces per-org rate limits, and dispatches jobs to agents based on capability matching.
 
 ## Pre-built Runners
 
@@ -48,12 +65,14 @@ Nimbus publishes curated container images, such as `nimbus/ai-eval-runner` (Node
 
 ## Roadmap Snapshot
 
-- **Complete**: Multi-tenant isolation, lease fencing, webhook replay protection, distributed rate limiting, metrics endpoint authentication, tenant analytics dashboard.
-- **In Progress**: Rootfs attestation, storage quotas, performance tuning.
-- **Planned**: Snapshot boot support, browser automation for dashboard E2E tests.
+- **Complete**: Multi-tenant isolation, lease fencing, webhook replay protection, distributed rate limiting, metrics endpoint authentication, tenant analytics dashboard, **multi-executor system with Firecracker/Docker/GPU support, warm pools, snapshot boot, comprehensive performance monitoring**.
+- **In Progress**: Enhanced GPU scheduling, ARM64 support, advanced resource optimization.
+- **Planned**: Kubernetes executor, Windows containers, auto-scaling warm pools, cost optimization features.
 
 ## Contributing
 
-Nimbus is ready for pilot deployments; major readiness items are summarized in the [Operations Guide](docs/operations.md). Contributions improving security, observability, and distributed test coverage are welcome.
-- Performance optimization
-- Additional eval-specific runners
+Nimbus is ready for production deployments with a mature multi-executor architecture. See the [Executor System Guide](docs/EXECUTOR_SYSTEM.md) for comprehensive usage documentation. Contributions welcome in:
+- New executor implementations (Kubernetes, ARM64, Windows)
+- Advanced GPU scheduling and optimization
+- Performance analysis and cost optimization
+- Extended warm pool strategies
