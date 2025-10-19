@@ -37,7 +37,7 @@ class GPUInfo:
         self.compute_capability = data.get("compute_capability", "0.0")
         self.cuda_version = data.get("cuda_version", "0.0")
         self.mig_enabled = data.get("mig_mode", False)
-        self.mig_instances = data.get("mig_instances", [])
+        self.mig_profiles: list[str] = list(data.get("mig_profiles", []))
         self.utilization = data.get("utilization", 0)  # GPU utilization %
         self.power_draw = data.get("power_draw", 0)  # Power usage in watts
         self.temperature = data.get("temperature", 0)  # Temperature in C
@@ -57,6 +57,9 @@ class GPUExecutor:
         self._image_policy: Optional[ImagePolicy] = None
         self._cosign_key: Optional[Path] = None
         self._require_provenance: bool = False
+        self._allowed_profiles: list[str] = []
+        self._require_mig: bool = False
+        self._job_profiles: Dict[int, Optional[str]] = {}
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the GPU executor."""
@@ -87,6 +90,8 @@ class GPUExecutor:
         )
         self._cosign_key = settings.cosign_certificate_authority
         self._require_provenance = settings.provenance_required
+        self._allowed_profiles = list(settings.gpu_allowed_profiles)
+        self._require_mig = settings.gpu_require_mig
     
     @property
     def name(self) -> str:
@@ -111,6 +116,8 @@ class GPUExecutor:
             if gpu.compute_capability:
                 cc_str = gpu.compute_capability.replace('.', '_')
                 capabilities.append(f"sm_{cc_str}")
+            for profile in getattr(gpu, "mig_profiles", []):
+                capabilities.append(f"mig:{profile}")
         
         return list(set(capabilities))
     
@@ -171,15 +178,34 @@ class GPUExecutor:
         """Discover MIG instances for advanced GPU partitioning."""
         try:
             result = subprocess.run([
-                "nvidia-smi", "mig", "-lgip", 
+                "nvidia-smi", "mig", "-lgip",
                 "--format=csv,noheader,nounits"
             ], capture_output=True, text=True)
-            
+
             if result.returncode == 0 and result.stdout.strip():
                 LOGGER.info("MIG instances detected", instances=result.stdout.count('\n'))
-                # Parse MIG instances and add to GPU capabilities
-                for gpu in self._available_gpus.values():
-                    gpu.mig_enabled = True
+                for line in result.stdout.strip().split('\n'):
+                    parts = line.strip()
+                    if not parts:
+                        continue
+                    try:
+                        gpu_index = None
+                        profile = None
+                        tokens = [token.strip() for token in parts.split(',')]
+                        for token in tokens:
+                            if token.lower().startswith("gpu"):
+                                gpu_index = int(token.split()[1])
+                            if "profile" in token.lower():
+                                profile = token.split(':', 1)[-1].strip()
+                        if gpu_index is None or not profile:
+                            continue
+                        for gpu in self._available_gpus.values():
+                            if gpu.index == gpu_index:
+                                gpu.mig_enabled = True
+                                if profile not in gpu.mig_profiles:
+                                    gpu.mig_profiles.append(profile)
+                    except Exception:
+                        continue
             else:
                 LOGGER.debug("No MIG instances found or MIG not supported")
                 
@@ -205,7 +231,9 @@ class GPUExecutor:
         
         # Allocate GPUs for this job
         gpu_count = self._get_required_gpu_count(job)
-        allocated_gpus = self._allocate_gpus(job.job_id, gpu_count)
+        profile = self._get_required_gpu_profile(job)
+        self._job_profiles[job.job_id] = profile
+        allocated_gpus = self._allocate_gpus(job.job_id, gpu_count, profile)
         self._gpu_allocations[job.job_id] = allocated_gpus
         
         LOGGER.info("Prepared GPU workspace", 
@@ -356,6 +384,8 @@ class GPUExecutor:
                 LOGGER.debug("Removed GPU workspace", job_id=job_id)
             except Exception as exc:
                 LOGGER.warning("Failed to remove GPU workspace", job_id=job_id, error=str(exc))
+
+        self._job_profiles.pop(job_id, None)
     
     def _get_required_gpu_count(self, job: JobAssignment) -> int:
         """Determine how many GPUs this job requires."""
@@ -367,8 +397,20 @@ class GPUExecutor:
         
         # Default to 1 GPU
         return 1
+
+    def _get_required_gpu_profile(self, job: JobAssignment) -> Optional[str]:
+        for label in job.labels:
+            if label.startswith("gpu-profile:"):
+                profile = label.split(":", 1)[1]
+                if self._allowed_profiles and profile not in self._allowed_profiles:
+                    raise RuntimeError(f"GPU profile {profile} not allowed")
+                return profile
+        if self._require_mig and self._allowed_profiles:
+            # Require an explicit profile when MIG enforcement enabled
+            raise RuntimeError("GPU profile required but not provided")
+        return None
     
-    def _allocate_gpus(self, job_id: int, gpu_count: int) -> List[str]:
+    def _allocate_gpus(self, job_id: int, gpu_count: int, profile: Optional[str]) -> List[str]:
         """Allocate GPUs for a job."""
         # Simple allocation - just take first N available GPUs
         # In production, this would consider current usage, MIG instances, etc.
@@ -382,12 +424,16 @@ class GPUExecutor:
                     allocated = True
                     break
             
+            if profile and profile not in getattr(gpu, "mig_profiles", []):
+                continue
             if not allocated:
                 available.append(uuid)
                 if len(available) >= gpu_count:
                     break
         
         if len(available) < gpu_count:
+            if profile:
+                raise RuntimeError(f"Required GPU profile {profile} unavailable")
             raise RuntimeError(f"Not enough GPUs available: need {gpu_count}, have {len(available)}")
         
         return available[:gpu_count]
@@ -418,6 +464,8 @@ class GPUExecutor:
     
     def _build_gpu_environment(self, job: JobAssignment, allocated_gpus: List[str]) -> dict[str, str]:
         """Build environment variables for GPU containers."""
+        profile = self._job_profiles.get(job.job_id)
+
         env = {
             # Standard GitHub Actions environment
             "CI": "true",
@@ -440,6 +488,8 @@ class GPUExecutor:
             "NIMBUS_EXECUTOR": "gpu",
             "NIMBUS_GPU_COUNT": str(len(allocated_gpus)),
         }
+        if profile:
+            env["NIMBUS_GPU_PROFILE"] = profile
         
         return env
     

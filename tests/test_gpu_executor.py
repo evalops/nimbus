@@ -22,6 +22,8 @@ def mock_settings():
     settings.image_deny_list_path = None
     settings.cosign_certificate_authority = None
     settings.provenance_required = False
+    settings.gpu_allowed_profiles = []
+    settings.gpu_require_mig = False
     return settings
 
 
@@ -256,7 +258,7 @@ def test_allocate_gpus_success():
     }
     
     # Allocate 2 GPUs
-    allocated = executor._allocate_gpus(job_id=123, gpu_count=2)
+    allocated = executor._allocate_gpus(job_id=123, gpu_count=2, profile=None)
     
     assert len(allocated) == 2
     assert all(uuid in executor._available_gpus for uuid in allocated)
@@ -273,7 +275,7 @@ def test_allocate_gpus_insufficient():
     
     # Try to allocate 2 GPUs
     with pytest.raises(RuntimeError, match="Not enough GPUs available"):
-        executor._allocate_gpus(job_id=123, gpu_count=2)
+        executor._allocate_gpus(job_id=123, gpu_count=2, profile=None)
 
 
 def test_allocate_gpus_with_existing_allocation():
@@ -290,7 +292,7 @@ def test_allocate_gpus_with_existing_allocation():
     executor._gpu_allocations[999] = ["GPU-1"]
     
     # Allocate 1 GPU for new job
-    allocated = executor._allocate_gpus(job_id=123, gpu_count=1)
+    allocated = executor._allocate_gpus(job_id=123, gpu_count=1, profile=None)
     
     assert len(allocated) == 1
     assert allocated[0] == "GPU-2"  # GPU-1 should be skipped
@@ -329,6 +331,26 @@ def test_get_gpu_container_image_default():
     
     image = executor._get_gpu_container_image(job)
     assert image == "nvcr.io/nvidia/cuda:12.2-runtime-ubuntu22.04"
+
+
+def test_allocate_gpus_mig_profile_success():
+    executor = GPUExecutor()
+    gpu = GPUInfo({"index": 0, "uuid": "GPU-1"})
+    gpu.mig_enabled = True
+    gpu.mig_profiles = ["1g.5gb"]
+    executor._available_gpus = {"GPU-1": gpu}
+    allocated = executor._allocate_gpus(job_id=1, gpu_count=1, profile="1g.5gb")
+    assert allocated == ["GPU-1"]
+
+
+def test_allocate_gpus_mig_profile_missing():
+    executor = GPUExecutor()
+    gpu = GPUInfo({"index": 0, "uuid": "GPU-1"})
+    gpu.mig_enabled = True
+    gpu.mig_profiles = ["1g.5gb"]
+    executor._available_gpus = {"GPU-1": gpu}
+    with pytest.raises(RuntimeError):
+        executor._allocate_gpus(job_id=1, gpu_count=1, profile="2g.10gb")
 
 
 def test_build_gpu_environment(mock_settings, sample_gpu_job):

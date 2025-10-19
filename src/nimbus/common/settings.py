@@ -233,6 +233,8 @@ class HostAgentSettings(BaseSettings):
     docker_workspace_path: Path = env_field(Path("/tmp/nimbus-workspaces"), "NIMBUS_DOCKER_WORKSPACE")
     docker_default_image: str = env_field("ubuntu:22.04", "NIMBUS_DOCKER_DEFAULT_IMAGE")
     docker_container_user: Optional[str] = env_field(None, "NIMBUS_DOCKER_USER")
+    gpu_allowed_profiles: list[str] = Field(default_factory=list, validation_alias="NIMBUS_GPU_ALLOWED_PROFILES")
+    gpu_require_mig: bool = env_field(False, "NIMBUS_GPU_REQUIRE_MIG")
     
     # Warm pool settings
     enable_warm_pools: bool = env_field(True, "NIMBUS_WARM_POOLS_ENABLE")
@@ -248,6 +250,13 @@ class HostAgentSettings(BaseSettings):
             value = value.strip()
             if not value:
                 return None
+        return value
+
+    @field_validator("gpu_allowed_profiles", mode="before")
+    @classmethod
+    def _split_gpu_profiles(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     @field_validator("cpu_affinity", mode="before")

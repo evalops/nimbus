@@ -36,6 +36,8 @@ def mock_settings():
     settings.image_deny_list_path = None
     settings.cosign_certificate_authority = None
     settings.provenance_required = False
+    settings.gpu_allowed_profiles = []
+    settings.gpu_require_mig = False
     return settings
 
 
