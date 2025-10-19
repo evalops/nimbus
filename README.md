@@ -13,26 +13,29 @@ Nimbus is a self-hosted CI platform built around Firecracker microVMs, org-scope
 
 ## Architecture Overview
 
-- **Control Plane**: Handles GitHub webhooks (HMAC + timestamp validation), manages DB-backed job leases and rate limits, and coordinates agent registration.
-- **Multi-Executor Host Agent**: Polls for assignments, provisions execution environments (Firecracker microVMs, Docker containers, GPU workloads), enforces capability restrictions, and manages warm pools for performance.
-- **Executor System**: Pluggable backends supporting Firecracker (secure isolation), Docker (fast startup), and GPU (CUDA workloads) with capability-based job matching.
-- **Cache Proxy**: Org-scoped artifact cache with optional S3 backend, eviction policies, and protected metrics endpoint.
-- **Logging Pipeline**: Authenticated ClickHouse ingestion with org/repo filters on queries.
-- **Docker Layer Cache**: OCI-compatible registry that enforces org-prefixed repositories and metadata ownership.
-- **Web Dashboard**: React/Vite SPA for monitoring jobs, agents, logs, and system health.
+- **Control Plane (`src/nimbus/control_plane`)**: Validates GitHub `workflow_job` webhooks (HMAC, timestamp, delivery replay fence), enforces distributed per-org rate limits, issues agent/cache tokens, and brokers job leases over Redis + Postgres. It also exposes SAML SSO, SCIM provisioning, service accounts, and compliance export logging.
+- **Host Agent (`src/nimbus/host_agent`)**: Runs Firecracker microVMs with snapshot boot and network fencing, plus Docker and GPU executors selected by capability labels. The agent layers in warm pools, resource/performance telemetry, offline egress enforcement, SBOM generation, and supply-chain allow/deny policies.
+- **Executor System (`src/nimbus/runners`)**: Pluggable executors share a common `Executor` protocol, pool manager, resource tracker, and watchdogs for timeouts and lease renewal fencing.
+- **Cache Proxy (`src/nimbus/cache_proxy`)**: Multi-tenant cache front-end with S3/local backends, org quotas, eviction metrics, and circuit-breakers to isolate backend failures.
+- **Docker Layer Cache (`src/nimbus/docker_cache`)**: Minimal OCI registry enforcing org-prefixed repositories, blob accounting, and scoped cache tokens for push/pull.
+- **Logging Pipeline (`src/nimbus/logging_pipeline`)**: ClickHouse-backed ingestion API with batched writes, scoped query filters, and hardened metrics endpoints.
+- **Web Dashboard (`web`)**: React/Vite SPA that surfaces job queues, agent health, logs, and compliance metadata via the public API.
 
 ### Security Highlights
 
-- Lease fencing with fence tokens prevents duplicate job execution.
-- Delivery ID tracking plus timestamp tolerance block webhook replays.
-- Org-level access controls across cache, logging, and Docker registry assets.
-- Metrics endpoints require a bearer token or loopback access by default.
+- Lease fencing with rotating fence tokens prevents duplicate job execution across agents.
+- Webhook signature + timestamp validation with replay tracking (`x-github-delivery`) blocks tampering and replays.
+- Agent/cache/service-account tokens are org scoped, versioned, and auditable through Postgres-backed ledgers.
+- Offline-mode egress enforcement combines metadata endpoint deny-lists, regex policy packs, and explicit registry allow-lists.
+- Rootfs attestation, cosign provenance checks, and per-job SBOM generation tighten host supply-chain posture.
+- Metrics and admin endpoints require bearer tokens and can be IP-filtered for additional hardening.
 
 ## Quick Start
 
 1. Install dependencies and bootstrap the environment (`uv venv`, `uv pip install -e .`).
 2. Configure the required environment variables and secrets (see [Configuration](docs/configuration.md)).
-3. Follow the detailed setup in [Getting Started](docs/getting-started.md) to launch services and run the test suite.
+3. Follow the detailed setup in [Getting Started](docs/getting-started.md) to launch services and supporting infrastructure.
+4. Run the automated checks with `uv run pytest` to validate control plane, host agent, caching, and executor integrations.
 
 ## GitHub Actions Integration
 
@@ -62,6 +65,16 @@ Nimbus publishes curated container images, such as `nimbus/ai-eval-runner` (Node
 
 - Day-two procedures, monitoring, and ClickHouse schema live in the [Operations Guide](docs/operations.md).
 - Firecracker jailer, seccomp, and capability dropping guidance is documented in [Firecracker Security Hardening](docs/FIRECRACKER_SECURITY.md).
+
+## Repository Layout
+
+- `src/nimbus/control_plane`: FastAPI application, database models, RBAC/SCIM/SAML integrations, compliance tooling.
+- `src/nimbus/host_agent`: Firecracker launcher, multi-executor orchestration, warm pools, egress enforcement, and SSH utilities.
+- `src/nimbus/runners`: Executor implementations (Firecracker, Docker, GPU), pool manager, resource tracker, performance monitor.
+- `src/nimbus/cache_proxy` & `src/nimbus/docker_cache`: Artifact/cache services with metrics, quota enforcement, and S3/OCI backends.
+- `src/nimbus/logging_pipeline`: ClickHouse ingestion and querying service for job logs.
+- `web`: Vite/React dashboard for operational monitoring.
+- `tests`: Extensive pytest suite covering services, executors, security controls, and CLI tooling.
 
 ## Roadmap Snapshot
 
