@@ -29,6 +29,7 @@ from ..common.supply_chain import (
     generate_spdx_sbom,
 )
 from .firecracker import FirecrackerError, FirecrackerLauncher, FirecrackerResult, MicroVMNetwork
+from ..runners import EXECUTORS, Executor, RunResult
 from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
@@ -56,6 +57,12 @@ class HostAgent:
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
         self._launcher = FirecrackerLauncher(settings)
+        
+        # Initialize executors
+        self._executors = dict(EXECUTORS)
+        for executor in self._executors.values():
+            if hasattr(executor, 'initialize'):
+                executor.initialize(settings)
         allowed_registries = list(settings.artifact_registry_allow_list)
         parsed = urlparse(str(settings.control_plane_base_url))
         if parsed.hostname:
@@ -146,10 +153,15 @@ class HostAgent:
         await self._state_store.close()
 
     async def _lease_job(self) -> JobLeaseResponse:
+        # Collect capabilities from all executors
+        all_capabilities = []
+        for executor in self._executors.values():
+            all_capabilities.extend(executor.capabilities)
+        
         request = JobLeaseRequest(
             agent_id=self._settings.agent_id,
             agent_version="0.1.0",
-            capabilities=["firecracker"],
+            capabilities=list(set(all_capabilities)),  # Remove duplicates
         )
         LEASE_REQUEST_COUNTER.inc()
         attempts = max(1, self._settings.lease_retry_attempts)
@@ -308,12 +320,35 @@ class HostAgent:
                 )
 
             timeout_seconds = self._settings.job_timeout_seconds
+            
+            # Get the appropriate executor
+            executor_name = getattr(assignment, 'executor', 'firecracker')
+            executor = self._executors.get(executor_name)
+            if not executor:
+                raise RuntimeError(f"Unknown executor: {executor_name}")
+            
             try:
-                result = await self._launcher.execute_job(
-                    assignment,
-                    timeout_seconds=timeout_seconds,
-                    network=network,
+                # Use the executor interface
+                await executor.prepare(assignment)
+                result = await executor.run(assignment, timeout_seconds=timeout_seconds)
+                
+                # Convert RunResult to FirecrackerResult for compatibility
+                fc_result = FirecrackerResult(
+                    job_id=assignment.job_id,
+                    exit_code=result.exit_code,
+                    log_lines=result.log_lines,
+                    metrics=result.metrics,
                 )
+                
+            except RuntimeError as exc:
+                # Convert executor errors to FirecrackerError for compatibility
+                fc_result = FirecrackerResult(
+                    job_id=assignment.job_id,
+                    exit_code=-1,
+                    log_lines=[],
+                    metrics=None,
+                )
+                raise FirecrackerError(str(exc), result=fc_result) from exc
             except FirecrackerError as exc:
                 await self._emit_logs(assignment, exc.result)
                 message = str(exc)
@@ -339,7 +374,7 @@ class HostAgent:
                 JOB_FAILED_COUNTER.inc()
                 return
             else:
-                await self._emit_logs(assignment, result)
+                await self._emit_logs(assignment, fc_result)
                 LOGGER.info("Job succeeded", job_id=assignment.job_id)
                 status_kwargs = {}
                 if fence_token is not None:
@@ -354,6 +389,16 @@ class HostAgent:
                         await heartbeat_task
                     except asyncio.CancelledError:
                         pass
+                
+                # Cleanup executor resources
+                executor_name = getattr(assignment, 'executor', 'firecracker')
+                executor = self._executors.get(executor_name)
+                if executor:
+                    try:
+                        await executor.cleanup(assignment.job_id)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        LOGGER.debug("Executor cleanup failed", job_id=assignment.job_id, executor=executor_name, error=str(exc))
+                
                 self._active_jobs = max(0, self._active_jobs - 1)
                 self._job_networks.pop(assignment.job_id, None)
                 try:

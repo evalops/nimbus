@@ -1055,6 +1055,15 @@ def create_app() -> FastAPI:
                 ttl_seconds=settings.cache_token_ttl_seconds,
                 scope=_default_cache_scope(org_id),
             )
+            # Determine executor from job labels
+            executor = "firecracker"  # default
+            for label in payload.workflow_job.labels:
+                if label == "nimbus":
+                    continue  # Our platform label
+                elif label in ["docker", "firecracker", "gpu"]:
+                    executor = label
+                    break
+            
             assignment = JobAssignment(
                 job_id=payload.workflow_job.id,
                 run_id=payload.workflow_job.run_id,
@@ -1063,6 +1072,7 @@ def create_app() -> FastAPI:
                 labels=payload.workflow_job.labels,
                 runner_registration=runner_token,
                 cache_token=cache_token,
+                executor=executor,
             )
             await enqueue_job(state.redis, assignment)
             await db.record_job_queued(session, assignment)
@@ -1091,7 +1101,7 @@ def create_app() -> FastAPI:
             # Use fenced leasing with DB-backed lease records
             lease_ttl = settings.job_lease_ttl_seconds
             result = await lease_job_with_fence(
-                redis_client, session, request_body.agent_id, lease_ttl
+                redis_client, session, request_body.agent_id, lease_ttl, request_body.capabilities
             )
             if result is None:
                 return JobLeaseResponse(job=None, backoff_seconds=5)

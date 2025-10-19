@@ -59,7 +59,7 @@ class CacheToken(BaseModel):
 
 
 class JobAssignment(BaseModel):
-    """Payload delivered to host agents for Firecracker execution."""
+    """Payload delivered to host agents for execution."""
 
     job_id: int
     run_id: int
@@ -68,6 +68,7 @@ class JobAssignment(BaseModel):
     labels: list[str]
     runner_registration: RunnerRegistrationToken
     cache_token: Optional[CacheToken] = None
+    executor: str = "firecracker"  # Which executor to use
     payload_received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -111,6 +112,7 @@ class JobRecord(BaseModel):
     labels: list[str]
     status: str
     agent_id: Optional[str] = None
+    executor: str = "firecracker"
     queued_at: datetime
     leased_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
