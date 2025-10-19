@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 from hypothesis import given, settings, strategies as st
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.nimbus.common.schemas import JobAssignment, GitHubRepository, RunnerRegistrationToken
 from src.nimbus.control_plane.jobs import QUEUE_KEY, enqueue_job, lease_job_with_fence
@@ -29,6 +29,9 @@ class FakeRedis:
 
     async def delete(self, key: str) -> None:
         self._lists.pop(key, None)
+
+    def peek(self, key: str):
+        return list(self._lists.get(key, []))
 
 
 async def _prepare_job(session, job_id: int, executor: str = "firecracker") -> JobAssignment:
@@ -136,3 +139,50 @@ async def test_capability_matching(job_executor: str, agent_capability: str):
             assert fence > 0
         else:
             assert result is None
+
+
+@pytest.mark.asyncio
+async def test_lease_requeues_when_existing_lease_active():
+    """Jobs should remain queued if another agent holds a valid lease."""
+    fake_redis = FakeRedis()
+    async with temp_session(metadata) as session:
+        assignment = await _prepare_job(session, job_id=77)
+        await enqueue_job(fake_redis, assignment)
+
+        # Create active lease owned by another agent
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            insert(job_leases_table).values(
+                job_id=assignment.job_id,
+                agent_id="agent-existing",
+                version=1,
+                lease_expires_at=now + timedelta(minutes=5),
+                heartbeat_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.execute(
+            update(jobs_table)
+            .where(jobs_table.c.job_id == assignment.job_id)
+            .values(
+                status="leased",
+                agent_id="agent-existing",
+                leased_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+        result = await lease_job_with_fence(
+            fake_redis,
+            session,
+            agent_id="agent-new",
+            ttl_seconds=60,
+            capabilities=[assignment.executor],
+        )
+
+        assert result is None
+        # Job should still be in queue
+        requeued = await fake_redis.rpop(QUEUE_KEY)
+        assert requeued is not None
