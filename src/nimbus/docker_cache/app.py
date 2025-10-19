@@ -40,27 +40,35 @@ def validate_repository_access(repository: str, token: CacheToken, operation: st
     """
     org_id = token.organization_id
     
-    # Validate scope
-    if not validate_cache_scope(token, operation, org_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Token lacks {operation} scope for org {org_id}",
-        )
-    
-    # Enforce org prefix in repository name
     expected_prefix = f"org-{org_id}/"
+    repo_suffix: Optional[str] = None
     if repository.startswith("org-"):
         if not repository.startswith(expected_prefix):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Repository must be under {expected_prefix}",
+            LOGGER.warning(
+                "registry_repo_mismatch",
+                repository=repository,
+                expected_prefix=expected_prefix,
+                operation=operation,
+                org_id=org_id,
             )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+        repo_suffix = repository[len(expected_prefix):].strip("/")
     else:
         LOGGER.debug(
             "Allowing legacy repository without org prefix",
             repository=repository,
             org_id=org_id,
         )
+
+    if not validate_cache_scope(token, operation, org_id, repo=repo_suffix):
+        LOGGER.warning(
+            "registry_access_denied",
+            repository=repository,
+            repo_suffix=repo_suffix,
+            org_id=org_id,
+            operation=operation,
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(

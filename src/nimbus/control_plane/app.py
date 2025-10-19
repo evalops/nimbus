@@ -131,8 +131,15 @@ class ExportLogRequest(BaseModel):
     justification: str
 
 
-def _default_cache_scope(org_id: int) -> str:
-    return f"pull:org-{org_id},push:org-{org_id}"
+def _default_cache_scope(org_id: int, repo_full_name: Optional[str] = None) -> str:
+    scopes = [f"pull:org-{org_id}", f"push:org-{org_id}"]
+    if repo_full_name:
+        repo_suffix = repo_full_name.split("/", 1)[-1]
+        repo_suffix = repo_suffix.strip()
+        if repo_suffix:
+            scopes.append(f"pull:org-{org_id}/{repo_suffix}")
+            scopes.append(f"push:org-{org_id}/{repo_suffix}")
+    return ",".join(scopes)
 
 
 def _validate_webhook_timestamp(raw_timestamp: str, tolerance_seconds: int, *, now: Optional[int] = None) -> int:
@@ -1053,7 +1060,7 @@ def create_app() -> FastAPI:
                 secret=settings.cache_shared_secret.get_secret_value(),
                 organization_id=org_id,
                 ttl_seconds=settings.cache_token_ttl_seconds,
-                scope=_default_cache_scope(org_id),
+                scope=_default_cache_scope(org_id, payload.repository.full_name),
             )
             # Determine executor from job labels
             executor = "firecracker"  # default
@@ -1128,7 +1135,7 @@ def create_app() -> FastAPI:
                     secret=state.settings.cache_shared_secret.get_secret_value(),
                     organization_id=org_id,
                     ttl_seconds=state.settings.cache_token_ttl_seconds,
-                    scope=_default_cache_scope(org_id),
+                    scope=_default_cache_scope(org_id, assignment.repository.full_name),
                 )
                 assignment.cache_token = cache_token
             

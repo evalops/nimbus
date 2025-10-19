@@ -25,8 +25,13 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def _auth_headers(secret: str) -> dict[str, str]:
-    token = mint_cache_token(secret=secret, organization_id=1, ttl_seconds=int(timedelta(hours=1).total_seconds()))
+async def _auth_headers(secret: str, scope: str | None = None) -> dict[str, str]:
+    token = mint_cache_token(
+        secret=secret,
+        organization_id=1,
+        ttl_seconds=int(timedelta(hours=1).total_seconds()),
+        scope=scope,
+    )
     return {"Authorization": f"Bearer {token.token}"}
 
 
@@ -43,10 +48,11 @@ async def test_blob_upload_and_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     app = create_app()
     client, lifespan = await _create_client(app)
-    headers = await _auth_headers(secret)
+    repo_scope = "pull:org-1,push:org-1,pull:org-1/nimbus,push:org-1/nimbus"
+    headers = await _auth_headers(secret, scope=repo_scope)
 
     try:
-        resp = await client.post("/v2/nimbus/cache/blobs/uploads/", headers=headers)
+        resp = await client.post("/v2/org-1/nimbus/blobs/uploads/", headers=headers)
         assert resp.status_code == 202
         upload_uuid = resp.headers["Docker-Upload-UUID"]
         location = resp.headers["Location"]
@@ -62,11 +68,11 @@ async def test_blob_upload_and_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert resp.status_code == 201
         assert resp.headers["Docker-Content-Digest"] == digest
 
-        blob_resp = await client.get(f"/v2/nimbus/cache/blobs/{digest}", headers=headers)
+        blob_resp = await client.get(f"/v2/org-1/nimbus/blobs/{digest}", headers=headers)
         assert blob_resp.status_code == 200
         assert blob_resp.content == content
 
-        head_resp = await client.head(f"/v2/nimbus/cache/blobs/{digest}", headers=headers)
+        head_resp = await client.head(f"/v2/org-1/nimbus/blobs/{digest}", headers=headers)
         assert head_resp.status_code == 200
         assert head_resp.headers["Docker-Content-Digest"] == digest
         assert head_resp.headers["Content-Length"] == str(len(content))
@@ -88,12 +94,13 @@ async def test_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     app = create_app()
     client, lifespan = await _create_client(app)
-    headers = await _auth_headers(secret)
+    repo_scope = "pull:org-1,push:org-1,pull:org-1/demo,push:org-1/demo"
+    headers = await _auth_headers(secret, scope=repo_scope)
 
     try:
         layer_bytes = b"layerdata"
         digest = f"sha256:{hashlib.sha256(layer_bytes).hexdigest()}"
-        resp = await client.post("/v2/demo/app/blobs/uploads/", headers=headers)
+        resp = await client.post("/v2/org-1/demo/blobs/uploads/", headers=headers)
         upload_location = resp.headers["Location"]
         await client.put(f"{upload_location}?digest={digest}", content=layer_bytes, headers=headers)
 
@@ -115,26 +122,31 @@ async def test_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         }
         manifest_bytes = json.dumps(manifest).encode("utf-8")
         resp = await client.put(
-            "/v2/demo/app/manifests/latest",
+            "/v2/org-1/demo/manifests/latest",
             content=manifest_bytes,
             headers={**headers, "content-type": "application/vnd.docker.distribution.manifest.v2+json"},
         )
         assert resp.status_code == 201
         manifest_digest = resp.headers["Docker-Content-Digest"]
 
-        get_resp = await client.get("/v2/demo/app/manifests/latest", headers=headers)
+        get_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=headers)
         assert get_resp.status_code == 200
         assert json.loads(get_resp.content) == manifest
 
-        digest_resp = await client.get(f"/v2/demo/app/manifests/{manifest_digest}", headers=headers)
+        digest_resp = await client.get(f"/v2/org-1/demo/manifests/{manifest_digest}", headers=headers)
         assert digest_resp.status_code == 200
         assert json.loads(digest_resp.content) == manifest
         assert digest_resp.headers["Docker-Content-Digest"] == manifest_digest
 
-        head_resp = await client.head(f"/v2/demo/app/manifests/{manifest_digest}", headers=headers)
+        head_resp = await client.head(f"/v2/org-1/demo/manifests/{manifest_digest}", headers=headers)
         assert head_resp.status_code == 200
         assert head_resp.headers["Docker-Content-Digest"] == manifest_digest
         assert head_resp.headers["Content-Length"] == str(len(manifest_bytes))
+
+        # repo-scoped denial
+        restricted_headers = await _auth_headers(secret, scope="pull:org-1,push:org-1")
+        deny_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=restricted_headers)
+        assert deny_resp.status_code == 404
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)
@@ -153,16 +165,17 @@ async def test_digest_mismatch_rejected(tmp_path: Path, monkeypatch: pytest.Monk
 
     app = create_app()
     client, lifespan = await _create_client(app)
-    headers = await _auth_headers(secret)
+    repo_scope = "pull:org-1,push:org-1,pull:org-1/demo,push:org-1/demo"
+    headers = await _auth_headers(secret, scope=repo_scope)
 
     try:
-        resp = await client.post("/v2/demo/app/blobs/uploads/", headers=headers)
+        resp = await client.post("/v2/org-1/demo/blobs/uploads/", headers=headers)
         location = resp.headers["Location"]
         bad_digest = "sha256:" + "0" * 64
         resp = await client.put(f"{location}?digest={bad_digest}", content=b"data", headers=headers)
         assert resp.status_code == 400
 
-        blob_resp = await client.get(f"/v2/demo/app/blobs/{bad_digest}", headers=headers)
+        blob_resp = await client.get(f"/v2/org-1/demo/blobs/{bad_digest}", headers=headers)
         assert blob_resp.status_code == 404
     finally:
         await client.aclose()

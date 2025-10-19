@@ -172,7 +172,7 @@ def _decode_payload(encoded_payload: str) -> bytes:
     return base64.urlsafe_b64decode(encoded_payload + padding)
 
 
-def validate_cache_scope(token: CacheToken, operation: str, org_id: int) -> bool:
+def validate_cache_scope(token: CacheToken, operation: str, org_id: int, *, repo: Optional[str] = None) -> bool:
     """
     Check if a cache token has the required scope for an operation on an org.
     
@@ -188,14 +188,23 @@ def validate_cache_scope(token: CacheToken, operation: str, org_id: int) -> bool
         return False
     
     # Legacy tokens with simple scopes
+    scopes = [s.strip() for s in token.scope.split(",") if s.strip()]
+
+    if repo:
+        sanitized = repo.strip("/")
+        required_repo_scope = f"{operation}:org-{org_id}/{sanitized}"
+        if required_repo_scope in scopes:
+            return True
+
     if token.scope == "read_write":
         return True
     if token.scope == "read" and operation == "pull":
         return True
     if token.scope == "write" and operation == "push":
         return True
-    
-    # New scoped format: "pull:org-123,push:org-456"
+
+    if repo:
+        return False
+
     required_scope = f"{operation}:org-{org_id}"
-    scopes = [s.strip() for s in token.scope.split(",")]
     return required_scope in scopes
