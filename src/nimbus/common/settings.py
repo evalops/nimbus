@@ -226,6 +226,12 @@ class HostAgentSettings(BaseSettings):
     sbom_output_path: Optional[Path] = env_field(None, "NIMBUS_AGENT_SBOM_OUTPUT")
     cosign_certificate_authority: Optional[Path] = env_field(None, "NIMBUS_AGENT_COSIGN_CA")
     provenance_required: bool = env_field(True, "NIMBUS_AGENT_PROVENANCE_REQUIRED")
+    
+    # Docker executor settings
+    docker_socket_path: str = env_field("/var/run/docker.sock", "NIMBUS_DOCKER_SOCKET")
+    docker_network_name: str = env_field("nimbus", "NIMBUS_DOCKER_NETWORK") 
+    docker_workspace_path: Path = env_field(Path("/tmp/nimbus-workspaces"), "NIMBUS_DOCKER_WORKSPACE")
+    docker_default_image: str = env_field("ubuntu:22.04", "NIMBUS_DOCKER_DEFAULT_IMAGE")
 
     @field_validator("cpu_affinity", mode="before")
     @classmethod

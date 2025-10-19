@@ -6,10 +6,12 @@ This package provides the abstraction layer that separates how work is executed
 
 from .base import Executor, RunResult
 from .firecracker import FirecrackerExecutor
+from .docker import DockerExecutor
 
 # Registry of all available executors
 EXECUTORS = {
     "firecracker": FirecrackerExecutor(),
+    "docker": DockerExecutor(),
 }
 
-__all__ = ["Executor", "RunResult", "EXECUTORS", "FirecrackerExecutor"]
+__all__ = ["Executor", "RunResult", "EXECUTORS", "FirecrackerExecutor", "DockerExecutor"]

@@ -42,18 +42,17 @@ async def lease_job_with_fence(
     Returns (assignment, fence_token) on success, None if no work or lease acquisition failed.
     Now supports capability matching - agent must have required executor capability.
     """
-    # For simple capability matching, we'll scan the queue for a compatible job
-    max_scan = 100  # Limit to avoid blocking too long
+    # Enhanced capability matching with efficient queue scanning
+    max_scan = 200  # Increased limit for better matching
     checked_jobs = []
     capabilities = capabilities or []
+    found_assignment = None
     
+    # First, try exact executor matching
     for _ in range(max_scan):
         data = await redis.rpop(QUEUE_KEY)
         if not data:
-            # No more jobs, push back any we couldn't handle
-            for job_data in checked_jobs:
-                await redis.lpush(QUEUE_KEY, job_data)
-            return None
+            break
 
         if isinstance(data, bytes):
             payload = data.decode("utf-8")
@@ -65,20 +64,38 @@ async def lease_job_with_fence(
         
         # Check if agent can handle this executor
         required_executor = getattr(assignment, 'executor', 'firecracker')
-        if required_executor in capabilities or not capabilities:
-            # Compatible job found, push back others and continue with this one
-            for job_data in checked_jobs:
+        
+        # Exact capability match
+        if required_executor in capabilities:
+            found_assignment = assignment
+            # Push back incompatible jobs first (LIFO order to maintain queue ordering)
+            for job_data in reversed(checked_jobs):
                 await redis.lpush(QUEUE_KEY, job_data)
             break
         else:
             # Can't handle this job, save it and try next
             checked_jobs.append(payload)
-            continue
-    else:
-        # Scanned max jobs without finding compatible one
-        for job_data in checked_jobs:
-            await redis.lpush(QUEUE_KEY, job_data)
+    
+    # If no exact match found, try fallback logic for empty capabilities (backward compatibility)
+    if not found_assignment and not capabilities:
+        # Agent has no specific capabilities, assume it can handle firecracker
+        for payload in checked_jobs:
+            json_payload = json.loads(payload)
+            assignment = JobAssignment.model_validate(json_payload)
+            required_executor = getattr(assignment, 'executor', 'firecracker')
+            if required_executor == 'firecracker':
+                found_assignment = assignment
+                checked_jobs.remove(payload)
+                break
+    
+    # Restore any unprocessed jobs to queue
+    for job_data in reversed(checked_jobs):
+        await redis.lpush(QUEUE_KEY, job_data)
+    
+    if not found_assignment:
         return None
+    
+    assignment = found_assignment
 
     # Try to acquire DB-backed lease
     fence = await try_acquire_job_lease(session, assignment.job_id, agent_id, ttl_seconds)
