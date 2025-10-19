@@ -95,8 +95,12 @@ def ensure_provenance(
     require_provenance: bool,
 ) -> None:
     policy.ensure_allowed(image_ref)
-    if require_provenance and public_key_path:
+    if require_provenance:
+        if not public_key_path:
+            raise PermissionError("Provenance enforcement enabled but no cosign public key provided")
+        if not public_key_path.exists():
+            raise PermissionError(f"Cosign public key missing: {public_key_path}")
         if any(delim in image_ref for delim in (":", "@", "/")):
             verify_cosign_signature(image_ref, public_key_path=public_key_path)
         else:
-            LOGGER.warning("Skipping cosign verification for non-OCI reference", image=image_ref)
+            raise PermissionError("Provenance enforcement requires OCI reference with tag or digest")
