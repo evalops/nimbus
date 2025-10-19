@@ -40,8 +40,8 @@ audit:
 	./scripts/dependency_audit.sh
 
 coverage:
-	uv pip install pytest pytest-asyncio pytest-cov
-	uv run --no-sync python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=66
+	uv sync --extra dev
+	uv run python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=66
 
 scan-images:
 	@if [ "$(SBOM_OUTPUT)" = "1" ]; then mkdir -p $(SBOM_DIR); fi
