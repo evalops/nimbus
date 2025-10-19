@@ -10,9 +10,6 @@ authors = [
   { name = "EvalOps" }
 ]
 requires-python = ">=3.12,<3.13"
-
-[project.scripts]
-nimbus-create-snapshot = "scripts.create_golden_snapshot:main"
 dependencies = [
   "fastapi>=0.115,<0.117",
   "uvicorn[standard]>=0.30,<0.32",
@@ -45,10 +42,19 @@ dependencies = [
   "opentelemetry-instrumentation-httpx>=0.58b0,<0.59"
 ]
 
+[project.scripts]
+nimbus-create-snapshot = "scripts.create_golden_snapshot:main"
+
 [project.optional-dependencies]
 host = [
   "structlog>=24.1,<26",
   "aiodocker>=0.21,<0.22"
+]
+dev = [
+  "pytest>=8.4,<9.0",
+  "pytest-asyncio>=0.24,<0.25",
+  "pytest-cov>=7.0,<8.0",
+  "coverage>=7.6,<8.0"
 ]
 
 [tool.hatch.build.targets.wheel]
