@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +41,7 @@ class DockerExecutor:
         self._image_policy: Optional[ImagePolicy] = None
         self._cosign_key: Optional[Path] = None
         self._require_provenance: bool = False
+        self._provenance_grace_deadline: Optional[datetime] = None
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the executor with settings."""
@@ -67,6 +68,8 @@ class DockerExecutor:
         )
         self._cosign_key = settings.cosign_certificate_authority
         self._require_provenance = settings.provenance_required
+        if getattr(settings, "provenance_grace_seconds", 0) > 0:
+            self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=settings.provenance_grace_seconds)
         
         # Initialize egress enforcer (similar to HostAgent)
         metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
@@ -295,7 +298,12 @@ class DockerExecutor:
             self._image_policy,
             public_key_path=self._cosign_key,
             require_provenance=self._require_provenance,
+            grace_until=self._provenance_grace_deadline,
+            logger=LOGGER,
         )
+
+    def set_provenance_grace_deadline(self, deadline: Optional[datetime]) -> None:
+        self._provenance_grace_deadline = deadline
     
     async def prepare_warm_instance(self, instance_id: str) -> dict:
         """Prepare a warm Docker instance (primarily pre-pulled images)."""

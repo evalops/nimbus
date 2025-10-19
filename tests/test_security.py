@@ -14,6 +14,7 @@ from nimbus.common.security import (
     decode_agent_token_payload,
     mint_agent_token,
     mint_cache_token,
+    validate_cache_scope,
     verify_cache_token,
 )
 
@@ -58,6 +59,17 @@ def test_verify_cache_token_expired() -> None:
 def test_verify_cache_token_wrong_secret() -> None:
     token = mint_cache_token(secret="first", organization_id=1, ttl_seconds=60)
     assert verify_cache_token("second", token.token) is None
+
+
+def test_validate_cache_scope_repo() -> None:
+    token = mint_cache_token(
+        secret="secret",
+        organization_id=7,
+        ttl_seconds=60,
+        scope="pull:org-7/demo,push:org-7/demo",
+    )
+    assert validate_cache_scope(token, "pull", 7, repo="demo")
+    assert not validate_cache_scope(token, "pull", 7, repo="other")
 
 
 def test_agent_token_roundtrip() -> None:

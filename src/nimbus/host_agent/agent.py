@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -60,6 +60,10 @@ class HostAgent:
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
         self._launcher = FirecrackerLauncher(settings)
+        grace_seconds = settings.provenance_grace_seconds
+        self._provenance_grace_deadline: Optional[datetime] = None
+        if grace_seconds > 0:
+            self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=grace_seconds)
         
         # Initialize executors
         self._executors = {}
@@ -67,6 +71,8 @@ class HostAgent:
             if hasattr(executor, 'initialize'):
                 try:
                     executor.initialize(settings)
+                    if hasattr(executor, "set_provenance_grace_deadline"):
+                        executor.set_provenance_grace_deadline(self._provenance_grace_deadline)
                     self._executors[name] = executor
                     LOGGER.info("Initialized executor", executor=name)
                 except Exception as e:
@@ -343,6 +349,8 @@ class HostAgent:
                     self._image_policy,
                     public_key_path=self._cosign_key,
                     require_provenance=self._require_provenance,
+                    grace_until=self._provenance_grace_deadline,
+                    logger=LOGGER,
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("Runner image provenance verification failed", error=str(exc))

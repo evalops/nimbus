@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import Field, HttpUrl, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -226,6 +226,7 @@ class HostAgentSettings(BaseSettings):
     sbom_output_path: Optional[Path] = env_field(None, "NIMBUS_AGENT_SBOM_OUTPUT")
     cosign_certificate_authority: Optional[Path] = env_field(None, "NIMBUS_AGENT_COSIGN_CA")
     provenance_required: bool = env_field(True, "NIMBUS_AGENT_PROVENANCE_REQUIRED")
+    provenance_grace_seconds: int = env_field(14 * 24 * 3600, "NIMBUS_AGENT_PROVENANCE_GRACE_SECONDS")
     
     # Docker executor settings
     docker_socket_path: str = env_field("/var/run/docker.sock", "NIMBUS_DOCKER_SOCKET")
@@ -235,6 +236,7 @@ class HostAgentSettings(BaseSettings):
     docker_container_user: Optional[str] = env_field(None, "NIMBUS_DOCKER_USER")
     gpu_allowed_profiles: list[str] = Field(default_factory=list, validation_alias="NIMBUS_GPU_ALLOWED_PROFILES")
     gpu_require_mig: bool = env_field(False, "NIMBUS_GPU_REQUIRE_MIG")
+    gpu_enable_cgroup_enforcement: bool = env_field(False, "NIMBUS_GPU_ENABLE_CGROUPS")
     
     # Warm pool settings
     enable_warm_pools: bool = env_field(True, "NIMBUS_WARM_POOLS_ENABLE")
@@ -342,6 +344,10 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_table: str = env_field("ci_logs", "NIMBUS_CLICKHOUSE_TABLE")
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
+    clickhouse_ingest_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_INGEST_USERNAME")
+    clickhouse_ingest_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_INGEST_PASSWORD")
+    clickhouse_query_user_template: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_QUERY_USER_TEMPLATE")
+    clickhouse_query_password_template: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_QUERY_PASSWORD_TEMPLATE")
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
     metrics_token: Optional[SecretStr] = env_field(None, "NIMBUS_LOGGING_METRICS_TOKEN")
     log_query_max_hours: int = env_field(168, "NIMBUS_LOG_QUERY_MAX_HOURS")  # 7 days default
@@ -350,6 +356,12 @@ class LoggingIngestSettings(BaseSettings):
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+
+    def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
+        if self.clickhouse_ingest_username is None:
+            self.clickhouse_ingest_username = self.clickhouse_username
+        if self.clickhouse_ingest_password is None:
+            self.clickhouse_ingest_password = self.clickhouse_password
 
 
 class DockerCacheSettings(BaseSettings):

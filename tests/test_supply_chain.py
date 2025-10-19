@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -91,4 +92,37 @@ def test_ensure_provenance_rejects_non_oci_reference(tmp_path: Path) -> None:
             policy,
             public_key_path=key_path,
             require_provenance=True,
+        )
+
+
+def test_ensure_provenance_grace_period_allows(tmp_path: Path, caplog) -> None:
+    allow = tmp_path / "allow.txt"
+    allow.write_text("registry.internal/image:1\n", encoding="utf-8")
+    policy = supply_chain.ImagePolicy.from_paths(allow, None)
+    grace_until = datetime.now(timezone.utc) + timedelta(days=7)
+
+    supply_chain.ensure_provenance(
+        "registry.internal/image:1",
+        policy,
+        public_key_path=None,
+        require_provenance=True,
+        grace_until=grace_until,
+        logger=supply_chain.LOGGER,
+    )
+
+
+def test_ensure_provenance_grace_expired(tmp_path: Path) -> None:
+    allow = tmp_path / "allow.txt"
+    allow.write_text("registry.internal/image:1\n", encoding="utf-8")
+    policy = supply_chain.ImagePolicy.from_paths(allow, None)
+    grace_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    with pytest.raises(PermissionError):
+        supply_chain.ensure_provenance(
+            "registry.internal/image:1",
+            policy,
+            public_key_path=None,
+            require_provenance=True,
+            grace_until=grace_until,
+            logger=supply_chain.LOGGER,
         )

@@ -24,6 +24,8 @@ def mock_settings():
     settings.provenance_required = False
     settings.gpu_allowed_profiles = []
     settings.gpu_require_mig = False
+    settings.provenance_grace_seconds = 0
+    settings.gpu_enable_cgroup_enforcement = False
     return settings
 
 
@@ -353,6 +355,26 @@ def test_allocate_gpus_mig_profile_missing():
         executor._allocate_gpus(job_id=1, gpu_count=1, profile="2g.10gb")
 
 
+def test_allocate_gpus_mig_profile_success():
+    executor = GPUExecutor()
+    gpu = GPUInfo({"index": 0, "uuid": "GPU-1"})
+    gpu.mig_enabled = True
+    gpu.mig_profiles = ["1g.5gb"]
+    executor._available_gpus = {"GPU-1": gpu}
+    allocated = executor._allocate_gpus(job_id=1, gpu_count=1, profile="1g.5gb")
+    assert allocated == ["GPU-1"]
+
+
+def test_allocate_gpus_mig_profile_missing():
+    executor = GPUExecutor()
+    gpu = GPUInfo({"index": 0, "uuid": "GPU-1"})
+    gpu.mig_enabled = True
+    gpu.mig_profiles = ["1g.5gb"]
+    executor._available_gpus = {"GPU-1": gpu}
+    with pytest.raises(RuntimeError):
+        executor._allocate_gpus(job_id=1, gpu_count=1, profile="2g.10gb")
+
+
 def test_build_gpu_environment(mock_settings, sample_gpu_job):
     """Test GPU environment variable building."""
     executor = GPUExecutor(mock_settings)
@@ -393,6 +415,35 @@ async def test_gpu_executor_prepare(mock_docker, mock_settings, sample_gpu_job):
     assert sample_gpu_job.job_id in executor._job_workspaces
     assert sample_gpu_job.job_id in executor._gpu_allocations
     assert len(executor._gpu_allocations[sample_gpu_job.job_id]) == 2
+
+
+@pytest.mark.asyncio
+@patch('src.nimbus.runners.gpu.docker.DockerClient')
+@patch('src.nimbus.runners.gpu.subprocess.run')
+async def test_gpu_executor_cgroup_enforcement(mock_run, mock_docker, mock_settings, sample_gpu_job):
+    mock_run.return_value = Mock(returncode=0, stdout='{"nvidia": {"path": "runtime"}}')
+
+    def run_side_effect(cmd, **kwargs):
+        if "nvidia-smi" in cmd:
+            return Mock(returncode=0, stdout="0, Tesla V100, GPU-12345, 32768, 30720, 7.0, 470.82")
+        return Mock(returncode=0, stdout='{"nvidia": {"path": "runtime"}}')
+
+    mock_run.side_effect = run_side_effect
+
+    mock_client = Mock()
+    mock_docker.return_value = mock_client
+    mock_client.ping.return_value = True
+    mock_client.containers.create.return_value = Mock(wait=lambda timeout: {'StatusCode': 0}, logs=lambda **kw: b'')
+
+    mock_settings.gpu_enable_cgroup_enforcement = True
+
+    executor = GPUExecutor()
+    executor.initialize(mock_settings)
+
+    with patch('pathlib.Path.mkdir'), patch.object(executor, '_allocate_gpus', return_value=["GPU-1"]):
+        await executor.prepare(sample_gpu_job)
+
+    assert sample_gpu_job.job_id in executor._cgroup_constraints
 
 
 @pytest.mark.asyncio

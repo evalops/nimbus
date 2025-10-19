@@ -56,9 +56,12 @@ class PipelineState:
     def __init__(self, settings: LoggingIngestSettings, http_client: httpx.AsyncClient) -> None:
         self.settings = settings
         self.http = http_client
-        self._auth = None
-        if settings.clickhouse_username and settings.clickhouse_password:
-            self._auth = httpx.BasicAuth(settings.clickhouse_username, settings.clickhouse_password)
+        self._ingest_auth: Optional[httpx.Auth] = None
+        if settings.clickhouse_ingest_username and settings.clickhouse_ingest_password:
+            self._ingest_auth = httpx.BasicAuth(
+                settings.clickhouse_ingest_username,
+                settings.clickhouse_ingest_password,
+            )
 
     async def write_batch(self, rows: Iterable[bytes]) -> None:
         data = b"\n".join(rows)
@@ -74,7 +77,7 @@ class PipelineState:
                 self.settings.clickhouse_url,
                 params={"query": query},
                 content=data,
-                auth=self._auth,
+                auth=self._ingest_auth,
             )
             duration = time.perf_counter() - start
             rows_count = data.count(b"\n") + 1
@@ -107,8 +110,8 @@ class PipelineState:
         limit = max(1, min(limit, 500))
 
         # Require tenant scoping unless querying by job
-        if org_id is None and job_id is None:
-            raise PermissionError("org_id or job_id required for log queries")
+        if org_id is None:
+            raise PermissionError("org_id required for log queries")
         
         # Enforce time window to prevent expensive scans
         if hours_back is None:
@@ -156,11 +159,13 @@ class PipelineState:
             query_params = {"query": query}
             for key, value in params.items():
                 query_params[f"param_{key}"] = value
+            query_params["session_settings[evalops_tenant_id]"] = str(org_id)
 
+            auth = self._build_query_auth(org_id)
             response = await self.http.get(
                 self.settings.clickhouse_url,
                 params=query_params,
-                auth=self._auth,
+                auth=auth,
             )
             if response.is_error:
                 CLICKHOUSE_ERRORS_COUNTER.inc()
@@ -186,6 +191,15 @@ class PipelineState:
                 }
                 for row in rows
             ]
+
+    def _build_query_auth(self, org_id: int) -> Optional[httpx.Auth]:
+        template = self.settings.clickhouse_query_user_template
+        pwd_template = self.settings.clickhouse_query_password_template
+        if template and pwd_template:
+            username = template.format(org_id=org_id)
+            password = pwd_template.format(org_id=org_id)
+            return httpx.BasicAuth(username, password)
+        return self._ingest_auth
 
 
 @asynccontextmanager

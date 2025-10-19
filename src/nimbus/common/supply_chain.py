@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import json
 import structlog
+from structlog.stdlib import BoundLogger
 from sigstore.verify import VerificationMaterials, verifier
 
 
@@ -93,14 +95,29 @@ def ensure_provenance(
     *,
     public_key_path: Optional[Path],
     require_provenance: bool,
+    grace_until: Optional[datetime] = None,
+    logger: Optional[BoundLogger] = None,
 ) -> None:
     policy.ensure_allowed(image_ref)
-    if require_provenance:
+    if not require_provenance:
+        return
+
+    try:
         if not public_key_path:
-            raise PermissionError("Provenance enforcement enabled but no cosign public key provided")
+            raise PermissionError("cosign key missing")
         if not public_key_path.exists():
-            raise PermissionError(f"Cosign public key missing: {public_key_path}")
-        if any(delim in image_ref for delim in (":", "@", "/")):
-            verify_cosign_signature(image_ref, public_key_path=public_key_path)
-        else:
-            raise PermissionError("Provenance enforcement requires OCI reference with tag or digest")
+            raise PermissionError("cosign key missing")
+        if not any(delim in image_ref for delim in (":", "@")):
+            raise PermissionError("non-oci reference")
+        verify_cosign_signature(image_ref, public_key_path=public_key_path)
+    except Exception as exc:
+        if grace_until and datetime.now(timezone.utc) < grace_until:
+            if logger:
+                logger.warning(
+                    "provenance_grace",
+                    image=image_ref,
+                    error=str(exc),
+                    grace_until=grace_until.isoformat(),
+                )
+            return
+        raise PermissionError(f"Provenance verification failed: {exc}")

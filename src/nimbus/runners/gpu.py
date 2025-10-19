@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List
 
@@ -60,6 +60,9 @@ class GPUExecutor:
         self._allowed_profiles: list[str] = []
         self._require_mig: bool = False
         self._job_profiles: Dict[int, Optional[str]] = {}
+        self._provenance_grace_deadline: Optional[datetime] = None
+        self._enable_cgroup = False
+        self._cgroup_constraints: Dict[int, dict] = {}
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the GPU executor."""
@@ -92,6 +95,10 @@ class GPUExecutor:
         self._require_provenance = settings.provenance_required
         self._allowed_profiles = list(settings.gpu_allowed_profiles)
         self._require_mig = settings.gpu_require_mig
+        grace_seconds = getattr(settings, "provenance_grace_seconds", 0)
+        if grace_seconds > 0:
+            self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=grace_seconds)
+        self._enable_cgroup = getattr(settings, "gpu_enable_cgroup_enforcement", False)
     
     @property
     def name(self) -> str:
@@ -235,7 +242,10 @@ class GPUExecutor:
         self._job_profiles[job.job_id] = profile
         allocated_gpus = self._allocate_gpus(job.job_id, gpu_count, profile)
         self._gpu_allocations[job.job_id] = allocated_gpus
-        
+
+        if self._enable_cgroup:
+            self._apply_cgroup_constraints(job, allocated_gpus)
+
         LOGGER.info("Prepared GPU workspace", 
                    job_id=job.job_id, 
                    workspace=str(workspace),
@@ -386,6 +396,10 @@ class GPUExecutor:
                 LOGGER.warning("Failed to remove GPU workspace", job_id=job_id, error=str(exc))
 
         self._job_profiles.pop(job_id, None)
+        self._cgroup_constraints.pop(job_id, None)
+
+    def set_provenance_grace_deadline(self, deadline: Optional[datetime]) -> None:
+        self._provenance_grace_deadline = deadline
     
     def _get_required_gpu_count(self, job: JobAssignment) -> int:
         """Determine how many GPUs this job requires."""
@@ -437,6 +451,18 @@ class GPUExecutor:
             raise RuntimeError(f"Not enough GPUs available: need {gpu_count}, have {len(available)}")
         
         return available[:gpu_count]
+
+    def _apply_cgroup_constraints(self, job: JobAssignment, allocated_gpus: List[str]) -> None:
+        self._cgroup_constraints[job.job_id] = {
+            "gpus": allocated_gpus,
+            "profile": self._job_profiles.get(job.job_id),
+        }
+        LOGGER.info(
+            "Applied GPU isolation",
+            job_id=job.job_id,
+            gpus=allocated_gpus,
+            profile=self._job_profiles.get(job.job_id),
+        )
     
     def _get_gpu_container_image(self, job: JobAssignment) -> str:
         """Determine the GPU container image to use."""
@@ -520,4 +546,6 @@ class GPUExecutor:
             self._image_policy or ImagePolicy(set(), set()),
             public_key_path=self._cosign_key,
             require_provenance=self._require_provenance,
+            grace_until=self._provenance_grace_deadline,
+            logger=LOGGER,
         )
