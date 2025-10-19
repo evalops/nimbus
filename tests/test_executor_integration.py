@@ -132,8 +132,9 @@ async def test_docker_executor_integration(mock_docker_client, mock_settings, sa
     mock_docker_client.return_value = mock_client
     mock_client.ping.return_value = True
     
-    # Mock network operations
-    mock_client.networks.get.side_effect = Exception("Network not found")
+    # Mock network operations - use proper Docker exception
+    from docker.errors import NotFound
+    mock_client.networks.get.side_effect = NotFound("Network not found")
     mock_client.networks.create.return_value = Mock()
     
     # Mock image operations

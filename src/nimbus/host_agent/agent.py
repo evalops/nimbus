@@ -62,10 +62,18 @@ class HostAgent:
         self._launcher = FirecrackerLauncher(settings)
         
         # Initialize executors
-        self._executors = dict(EXECUTORS)
-        for executor in self._executors.values():
+        self._executors = {}
+        for name, executor in EXECUTORS.items():
             if hasattr(executor, 'initialize'):
-                executor.initialize(settings)
+                try:
+                    executor.initialize(settings)
+                    self._executors[name] = executor
+                    LOGGER.info("Initialized executor", executor=name)
+                except Exception as e:
+                    LOGGER.warning("Failed to initialize executor", executor=name, error=str(e))
+                    # Skip this executor
+            else:
+                self._executors[name] = executor
         
         # Initialize resource tracker
         self._resource_tracker = ResourceTracker()
@@ -404,7 +412,25 @@ class HostAgent:
                 )
                 self._performance_monitor.record_job_start(assignment.job_id)
                 
-                result = await executor.run(assignment, timeout_seconds=timeout_seconds)
+                # Executor execution with timeout handling
+                try:
+                    # Wrap executor run with timeout enforcement
+                    if timeout_seconds:
+                        result = await asyncio.wait_for(
+                            executor.run(assignment, timeout_seconds=timeout_seconds),
+                            timeout=timeout_seconds
+                        )
+                    else:
+                        result = await executor.run(assignment, timeout_seconds=timeout_seconds)
+                except (asyncio.TimeoutError, TimeoutError) as timeout_exc:
+                    # Handle timeout - convert to FirecrackerError
+                    fc_result = FirecrackerResult(
+                        job_id=assignment.job_id,
+                        exit_code=-1,
+                        log_lines=[],
+                        metrics=None,
+                    )
+                    raise FirecrackerError("job execution timed out", result=fc_result) from timeout_exc
                 
                 # Convert RunResult to FirecrackerResult for compatibility
                 fc_result = FirecrackerResult(
@@ -414,30 +440,43 @@ class HostAgent:
                     metrics=result.metrics,
                 )
                 
+            # -----------------------------------------------------------------
+            # NB: FirecrackerError *must* be handled before RuntimeError because
+            #     FirecrackerError is a subclass of RuntimeError.
+            # -----------------------------------------------------------------
+            except FirecrackerError as exc:
+                await self._emit_logs(assignment, exc.result)
+                message = str(exc)
+                if "timed out" in message.lower():
+                    LOGGER.warning(
+                        "Job timed out",
+                        job_id=assignment.job_id,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    JOB_TIMEOUT_COUNTER.inc()
+                    JOB_TIMEOUT_LAST_TS.set(time.time())
+                else:
+                    LOGGER.exception("Job failed", job_id=assignment.job_id)
+
+                status_kwargs = {"message": message}
+                if fence_token is not None:
+                    status_kwargs["fence_token"] = fence_token
+                await self._submit_status(assignment, "failed", **status_kwargs)
+                JOB_FAILED_COUNTER.inc()
+                return
+
             except RuntimeError as exc:
-                # Convert executor errors to FirecrackerError for compatibility
+                # Convert generic executor errors to FirecrackerError and
+                # route them through the same handling logic above.
                 fc_result = FirecrackerResult(
                     job_id=assignment.job_id,
                     exit_code=-1,
                     log_lines=[],
                     metrics=None,
                 )
-                raise FirecrackerError(str(exc), result=fc_result) from exc
-            except FirecrackerError as exc:
-                await self._emit_logs(assignment, exc.result)
-                message = str(exc)
-                if "timed out" in message.lower():
-                    LOGGER.warning("Job timed out", job_id=assignment.job_id, timeout_seconds=timeout_seconds)
-                    JOB_TIMEOUT_COUNTER.inc()
-                    JOB_TIMEOUT_LAST_TS.set(time.time())
-                else:
-                    LOGGER.exception("Job failed", job_id=assignment.job_id)
-                status_kwargs = {"message": str(exc)}
-                if fence_token is not None:
-                    status_kwargs["fence_token"] = fence_token
-                await self._submit_status(assignment, "failed", **status_kwargs)
-                JOB_FAILED_COUNTER.inc()
-                return
+                exc = FirecrackerError(str(exc), result=fc_result)
+                # Re-raise so it's caught by the FirecrackerError block
+                raise exc
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Job failed", job_id=assignment.job_id)
                 await self._emit_logs(assignment, None)

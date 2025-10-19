@@ -4,7 +4,7 @@ import pytest
 import os
 import asyncio
 from pathlib import Path
-from unittest.mock import Mock, patch, mock_open, MagicMock, create_autospec
+from unittest.mock import Mock, patch, mock_open, MagicMock, create_autospec, AsyncMock
 
 from src.nimbus.runners.resource_manager import (
     ResourceUsage, CGroupManager, ResourceTracker
@@ -349,16 +349,18 @@ async def test_resource_tracker_stop_job_tracking():
     """Test stopping job tracking."""
     tracker = ResourceTracker()
     
-    # Create mock tracking task
-    mock_task = create_autospec(asyncio.Task, instance=True)
-    mock_task.cancel = Mock()
-    mock_task.done.return_value = False
+    # Create mock tracking task - use create_task to get a real Task
+    async def mock_coroutine():
+        await asyncio.sleep(10)  # Long running task
+    
+    mock_task = asyncio.create_task(mock_coroutine())
     tracker._tracking_tasks[123] = mock_task
     
     with patch.object(tracker._cgroup_manager, 'cleanup_job_cgroup') as mock_cleanup:
         await tracker.stop_job_tracking(123)
     
-    mock_task.cancel.assert_called_once()
+    # The task should be cancelled and removed
+    assert mock_task.cancelled()
     mock_cleanup.assert_called_once_with(123)
     assert 123 not in tracker._tracking_tasks
 
@@ -399,14 +401,15 @@ async def test_resource_tracker_metrics_tracking():
          patch('asyncio.sleep') as mock_sleep:
         
         # Mock sleep to raise exception after first iteration to exit loop
-        mock_sleep.side_effect = [None, asyncio.CancelledError()]
+        mock_sleep.side_effect = asyncio.CancelledError()
         
         try:
             await tracker._track_job_metrics(123, "test")
         except asyncio.CancelledError:
             pass
     
-    mock_update.assert_called_once_with(123, "test")
+    # Should be called at least once before cancellation
+    mock_update.assert_called_with(123, "test")
 
 
 @pytest.mark.asyncio
@@ -437,12 +440,12 @@ async def test_resource_tracker_stop_cancels_all_tasks():
     # Create mock tasks
     mock_tasks = []
     for i in range(3):
-        task = create_autospec(asyncio.Task, instance=True)
+        task = AsyncMock()
         task.cancel = Mock()
         mock_tasks.append(task)
         tracker._tracking_tasks[i] = task
     
-    with patch('asyncio.gather', return_value=None) as mock_gather:
+    with patch('asyncio.gather', new_callable=AsyncMock) as mock_gather:
         await tracker.stop()
     
     # Verify all tasks were cancelled

@@ -236,8 +236,12 @@ class ResourceTracker:
     async def start(self) -> None:
         """Start the resource tracking system."""
         self._running = True
-        await self._cgroup_manager.initialize()
-        LOGGER.info("Resource tracker started")
+        try:
+            await self._cgroup_manager.initialize()
+            LOGGER.info("Resource tracker started")
+        except Exception as e:
+            LOGGER.warning("Failed to initialize cgroup manager", error=str(e))
+            # Continue running without cgroup support
     
     async def stop(self) -> None:
         """Stop the resource tracking system."""

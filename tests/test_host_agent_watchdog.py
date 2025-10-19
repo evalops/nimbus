@@ -64,6 +64,33 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
 
     agent = HostAgent(settings)
     agent._launcher = TimeoutLauncher()  # type: ignore[assignment]
+    
+    # Create a mock executor that simulates timeout
+    from unittest.mock import AsyncMock
+    from src.nimbus.runners.base import RunResult
+    
+    mock_executor = AsyncMock()
+    mock_executor.name = "timeout-executor"
+    mock_executor.capabilities = ["timeout"]
+    mock_executor.prepare = AsyncMock()
+    # Make the run method timeout
+    async def timeout_run(*args, **kwargs):
+        timeout_seconds = kwargs.get('timeout_seconds', 10)
+        await asyncio.sleep(timeout_seconds + 1)  # Sleep longer than timeout
+        return RunResult(
+            success=False,
+            exit_code=-1,
+            log_lines=[],
+            metrics=None,
+            duration_seconds=timeout_seconds + 1,
+            started_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+        )
+    mock_executor.run = timeout_run
+    mock_executor.cleanup = AsyncMock()
+    
+    # Replace the executor
+    agent._executors["timeout-executor"] = mock_executor
 
     statuses: list[tuple[str, str | None]] = []
 
@@ -85,12 +112,13 @@ async def test_host_agent_watchdog_records_timeout(tmp_path, monkeypatch):
         run_id=202,
         run_attempt=1,
         repository=repo,
-        labels=["firecracker"],
+        labels=["timeout"],
         runner_registration=RunnerRegistrationToken(
             token="runner",
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         ),
         cache_token=None,
+        executor="timeout-executor",
     )
 
     await agent._process_job(assignment)
