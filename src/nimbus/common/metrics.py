@@ -12,8 +12,10 @@ class Counter:
         self.description = description
         self._value = 0.0
 
-    def inc(self, amount: float = 1.0) -> None:
+    def inc(self, amount: float = 1.0, *, labels: list[str] | None = None) -> None:
+        """Increase the counter; `labels` is accepted for API compatibility."""
         self._value += amount
+        # Labels are ignored for now – can be stored later if needed.
 
     def render(self) -> str:
         return f"# HELP {self.name} {self.description}\n# TYPE {self.name} counter\n{self.name} {self._value}\n"
@@ -26,8 +28,10 @@ class Gauge:
         self._value = 0.0
         self._supplier = supplier
 
-    def set(self, value: float) -> None:
+    def set(self, value: float, *, labels: list[str] | None = None) -> None:
+        """Set the gauge; `labels` is accepted for API compatibility."""
         self._value = value
+        # Labels are ignored for now – can be stored later if needed.
 
     def render(self) -> str:
         value = self._supplier() if self._supplier else self._value

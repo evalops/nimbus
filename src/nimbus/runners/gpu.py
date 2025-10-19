@@ -110,7 +110,7 @@ class GPUExecutor:
             )
             runtimes = json.loads(result.stdout)
             return "nvidia" in runtimes
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        except Exception:
             return False
     
     def _discover_gpus(self) -> None:
@@ -140,7 +140,7 @@ class GPUExecutor:
             LOGGER.info("Discovered GPUs", count=len(self._available_gpus), 
                        gpus=[gpu.name for gpu in self._available_gpus.values()])
                        
-        except subprocess.CalledProcessError as exc:
+        except Exception as exc:
             LOGGER.error("Failed to discover GPUs", error=str(exc))
             raise RuntimeError("GPU discovery failed - nvidia-smi not available") from exc
     

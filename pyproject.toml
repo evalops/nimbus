@@ -55,3 +55,6 @@ packages = ["src/nimbus"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--strict-config --strict-markers"
+markers = [
+    "integration: marks tests as integration tests (may require external services)",
+]

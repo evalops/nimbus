@@ -47,7 +47,7 @@ class DockerExecutor:
             # Test connection
             self._docker_client.ping()
             LOGGER.info("Docker client initialized", socket=settings.docker_socket_path)
-        except DockerException as e:
+        except (DockerException, Exception) as e:
             LOGGER.error("Failed to initialize Docker client", error=str(e))
             raise RuntimeError(f"Docker initialization failed: {e}") from e
         

@@ -36,18 +36,18 @@ class CGroupManager:
         self._nimbus_slice = cgroup_root / "nimbus-jobs.slice"
         self._active_jobs: Dict[int, Path] = {}
         
-        # Metrics
+        # Metrics (labels will be provided at metric update time)
         self._cpu_usage_gauge = GLOBAL_REGISTRY.register(
-            Gauge("nimbus_job_cpu_seconds_total", "CPU time used by job", labels=["job_id", "executor"])
+            Gauge("nimbus_job_cpu_seconds_total", "CPU time used by job")
         )
         self._memory_usage_gauge = GLOBAL_REGISTRY.register(
-            Gauge("nimbus_job_memory_bytes", "Memory used by job", labels=["job_id", "executor"])
+            Gauge("nimbus_job_memory_bytes", "Memory used by job")
         )
         self._io_read_counter = GLOBAL_REGISTRY.register(
-            Counter("nimbus_job_io_read_bytes_total", "IO read by job", labels=["job_id", "executor"])
+            Counter("nimbus_job_io_read_bytes_total", "IO read by job")
         )
         self._io_write_counter = GLOBAL_REGISTRY.register(
-            Counter("nimbus_job_io_write_bytes_total", "IO write by job", labels=["job_id", "executor"])
+            Counter("nimbus_job_io_write_bytes_total", "IO write by job")
         )
     
     async def initialize(self) -> None:

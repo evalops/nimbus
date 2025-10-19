@@ -113,7 +113,7 @@ class PoolManager:
     
     async def get_warm_instance(self, executor_name: str, job: JobAssignment) -> Optional[WarmInstance]:
         """Get a warm executor instance for the specified job, if available."""
-        if not self._running or executor_name not in self._pools:
+        if executor_name not in self._executors:
             return None
         
         pool = self._pools[executor_name]
@@ -300,15 +300,25 @@ class PoolManager:
             reserved = sum(1 for i in pool.values() if i.reserved_for_job is not None)
             unhealthy = sum(1 for i in pool.values() if not i.is_healthy)
             
+            # Get config or use defaults
+            config = self._pool_configs.get(executor_name)
+            if config:
+                config_info = {
+                    "min_warm": config.min_warm,
+                    "max_warm": config.max_warm,
+                }
+            else:
+                config_info = {
+                    "min_warm": 0,
+                    "max_warm": 2,
+                }
+            
             stats[executor_name] = {
                 "total": len(pool),
                 "available": available,
                 "reserved": reserved,
                 "unhealthy": unhealthy,
-                "config": {
-                    "min_warm": self._pool_configs[executor_name].min_warm,
-                    "max_warm": self._pool_configs[executor_name].max_warm,
-                }
+                "config": config_info
             }
         
         return stats
