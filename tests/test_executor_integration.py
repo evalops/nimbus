@@ -32,6 +32,10 @@ def mock_settings():
     settings.egress_policy_pack = None
     settings.offline_mode = False
     settings.artifact_registry_allow_list = []
+    settings.image_allow_list_path = None
+    settings.image_deny_list_path = None
+    settings.cosign_certificate_authority = None
+    settings.provenance_required = False
     return settings
 
 

@@ -17,6 +17,7 @@ from docker.errors import DockerException, APIError
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
+from ..common.supply_chain import ImagePolicy, ensure_provenance
 from ..common.networking import (
     MetadataEndpointDenylist,
     EgressPolicyPack,
@@ -37,6 +38,9 @@ class DockerExecutor:
         self._job_workspaces: dict[int, Path] = {}
         self._egress_enforcer: Optional[OfflineEgressEnforcer] = None
         self._container_user: Optional[str] = None
+        self._image_policy: Optional[ImagePolicy] = None
+        self._cosign_key: Optional[Path] = None
+        self._require_provenance: bool = False
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the executor with settings."""
@@ -58,6 +62,11 @@ class DockerExecutor:
         # Create workspace directory
         settings.docker_workspace_path.mkdir(parents=True, exist_ok=True)
         self._container_user = settings.docker_container_user
+        self._image_policy = ImagePolicy.from_paths(
+            settings.image_allow_list_path, settings.image_deny_list_path
+        )
+        self._cosign_key = settings.cosign_certificate_authority
+        self._require_provenance = settings.provenance_required
         
         # Initialize egress enforcer (similar to HostAgent)
         metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
@@ -137,6 +146,7 @@ class DockerExecutor:
         try:
             # Determine container image
             image = self._get_container_image(job)
+            self._verify_image(image)
             
             # Pull image if not present locally (for better performance)
             await self._ensure_image(image)
@@ -275,6 +285,17 @@ class DockerExecutor:
             except Exception as exc:
                 LOGGER.error("Failed to pull image", image=image, error=str(exc))
                 raise RuntimeError(f"Failed to pull image {image}: {exc}") from exc
+    def _verify_image(self, image: str) -> None:
+        if not self._image_policy:
+            self._image_policy = ImagePolicy.from_paths(
+                self._settings.image_allow_list_path, self._settings.image_deny_list_path  # type: ignore[union-attr]
+            )
+        ensure_provenance(
+            image,
+            self._image_policy,
+            public_key_path=self._cosign_key,
+            require_provenance=self._require_provenance,
+        )
     
     async def prepare_warm_instance(self, instance_id: str) -> dict:
         """Prepare a warm Docker instance (primarily pre-pulled images)."""

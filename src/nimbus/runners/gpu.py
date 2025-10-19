@@ -19,6 +19,7 @@ from docker.errors import DockerException
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
+from ..common.supply_chain import ImagePolicy, ensure_provenance
 from .base import Executor, RunResult
 
 LOGGER = structlog.get_logger("nimbus.runners.gpu")
@@ -53,6 +54,9 @@ class GPUExecutor:
         self._available_gpus: Dict[str, GPUInfo] = {}
         self._gpu_allocations: Dict[int, List[str]] = {}  # job_id -> gpu_uuids
         self._container_user: Optional[str] = None
+        self._image_policy: Optional[ImagePolicy] = None
+        self._cosign_key: Optional[Path] = None
+        self._require_provenance: bool = False
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the GPU executor."""
@@ -78,6 +82,11 @@ class GPUExecutor:
         # Create workspace directory
         settings.docker_workspace_path.mkdir(parents=True, exist_ok=True)
         self._container_user = settings.docker_container_user
+        self._image_policy = ImagePolicy.from_paths(
+            settings.image_allow_list_path, settings.image_deny_list_path
+        )
+        self._cosign_key = settings.cosign_certificate_authority
+        self._require_provenance = settings.provenance_required
     
     @property
     def name(self) -> str:
@@ -226,6 +235,7 @@ class GPUExecutor:
         try:
             # Get container image
             image = self._get_gpu_container_image(job)
+            self._verify_image(image)
             
             # Ensure image is available
             await self._ensure_image(image)
@@ -449,3 +459,15 @@ class GPUExecutor:
             except Exception as exc:
                 LOGGER.error("Failed to pull GPU image", image=image, error=str(exc))
                 raise RuntimeError(f"Failed to pull GPU image {image}: {exc}") from exc
+
+    def _verify_image(self, image: str) -> None:
+        if not self._image_policy and self._settings:
+            self._image_policy = ImagePolicy.from_paths(
+                self._settings.image_allow_list_path, self._settings.image_deny_list_path
+            )
+        ensure_provenance(
+            image,
+            self._image_policy or ImagePolicy(set(), set()),
+            public_key_path=self._cosign_key,
+            require_provenance=self._require_provenance,
+        )

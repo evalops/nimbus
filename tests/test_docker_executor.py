@@ -25,6 +25,10 @@ def mock_settings():
     settings.egress_policy_pack = None
     settings.offline_mode = False
     settings.artifact_registry_allow_list = []
+    settings.image_allow_list_path = None
+    settings.image_deny_list_path = None
+    settings.cosign_certificate_authority = None
+    settings.provenance_required = False
     return settings
 
 
@@ -181,6 +185,39 @@ def test_get_container_image_default(mock_settings, sample_job):
     sample_job.labels = ["random", "labels"]
     image = executor._get_container_image(sample_job)
     assert image == mock_settings.docker_default_image
+
+
+@pytest.mark.asyncio
+@patch('src.nimbus.runners.docker.docker.DockerClient')
+async def test_docker_executor_enforces_provenance(mock_docker_client, tmp_path, mock_settings, sample_job, monkeypatch):
+    cosign_key = tmp_path / "cosign.pub"
+    cosign_key.write_text("public key", encoding="utf-8")
+
+    mock_settings.image_allow_list_path = None
+    mock_settings.image_deny_list_path = None
+    mock_settings.cosign_certificate_authority = cosign_key
+    mock_settings.provenance_required = True
+
+    executor = DockerExecutor()
+
+    mock_client = Mock()
+    mock_docker_client.return_value = mock_client
+    mock_client.ping.return_value = True
+    mock_client.networks.get.return_value = Mock()
+    mock_client.containers.create.return_value = Mock(wait=lambda timeout: {'StatusCode': 0}, logs=lambda **kw: b'')
+
+    with patch('src.nimbus.runners.docker.EgressPolicyPack'), patch('src.nimbus.runners.docker.MetadataEndpointDenylist'):
+        executor.initialize(mock_settings)
+
+    sample_job.labels = ["nimbus", "docker"]
+
+    with patch('src.nimbus.runners.docker.ensure_provenance') as ensure_mock:
+        ensure_mock.return_value = None
+        with patch.object(executor, '_ensure_image'):
+            await executor.prepare(sample_job)
+            await executor.run(sample_job, timeout_seconds=1)
+
+        ensure_mock.assert_called()
 
 
 def test_build_environment_variables(mock_settings, sample_job):

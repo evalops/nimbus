@@ -18,6 +18,10 @@ def mock_settings():
     settings.docker_socket_path = "/var/run/docker.sock"
     settings.docker_workspace_path = Path("/tmp/test-gpu-workspaces")
     settings.docker_container_user = None
+    settings.image_allow_list_path = None
+    settings.image_deny_list_path = None
+    settings.cosign_certificate_authority = None
+    settings.provenance_required = False
     return settings
 
 
@@ -86,6 +90,47 @@ def test_gpu_executor_properties():
     assert "nvidia" in capabilities
     assert "cuda" in capabilities
     assert "container" in capabilities
+
+
+@pytest.mark.asyncio
+@patch('src.nimbus.runners.gpu.docker.DockerClient')
+@patch('src.nimbus.runners.gpu.subprocess.run')
+async def test_gpu_executor_enforces_provenance(mock_run, mock_docker_client, tmp_path, mock_settings, sample_gpu_job):
+    mock_run.return_value = Mock(returncode=0, stdout='{"nvidia": {"path": "runtime"}}')
+
+    def run_side_effect(cmd, **kwargs):
+        if "nvidia-smi" in cmd:
+            return Mock(returncode=0, stdout="0, Tesla V100, GPU-12345, 32768, 30720, 7.0, 470.82")
+        return Mock(returncode=0, stdout='{"nvidia": {"path": "runtime"}}')
+
+    mock_run.side_effect = run_side_effect
+
+    mock_client = Mock()
+    mock_docker_client.return_value = mock_client
+    mock_client.ping.return_value = True
+    mock_client.containers.create.return_value = Mock(
+        wait=lambda timeout: {'StatusCode': 0},
+        logs=lambda **kw: b'',
+    )
+
+    cosign_key = tmp_path / "cosign.pub"
+    cosign_key.write_text("public key", encoding="utf-8")
+
+    mock_settings.cosign_certificate_authority = cosign_key
+    mock_settings.provenance_required = True
+
+    executor = GPUExecutor()
+    executor.initialize(mock_settings)
+
+    sample_gpu_job.labels = ["gpu", "pytorch"]
+
+    with patch('src.nimbus.runners.gpu.ensure_provenance') as ensure_mock:
+        ensure_mock.return_value = None
+        with patch.object(executor, '_ensure_image'):
+            await executor.prepare(sample_gpu_job)
+            await executor.run(sample_gpu_job, timeout_seconds=1)
+
+        ensure_mock.assert_called()
 
 
 @patch('subprocess.run')
