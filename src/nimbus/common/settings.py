@@ -87,6 +87,7 @@ class ControlPlaneSettings(BaseSettings):
     )
     itar_export_log_retention_days: int = env_field(365, "NIMBUS_ITAR_EXPORT_LOG_RETENTION")
     ca_bundle_path: Optional[Path] = env_field(None, "NIMBUS_CA_BUNDLE")
+    job_policy_path: Optional[Path] = env_field(None, "NIMBUS_JOB_POLICY_PATH")
 
     @field_validator("admin_allowed_subjects", mode="before")
     @classmethod

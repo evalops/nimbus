@@ -61,6 +61,10 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 - Structured logging uses `structlog`; adjust verbosity with `NIMBUS_LOG_LEVEL`.
 - Enable OpenTelemetry export with `NIMBUS_OTEL_EXPORTER_ENDPOINT`, `NIMBUS_OTEL_EXPORTER_HEADERS`, and `NIMBUS_OTEL_SAMPLER_RATIO`.
 
+## Policy Enforcement
+
+Set `NIMBUS_JOB_POLICY_PATH` to a YAML document to run admission checks on incoming GitHub workflow jobs. The policy can reject forbidden labels, require safety reviews, restrict execution to approved repositories, or block risky workflow titles. See [Policy-as-Code](./policy-as-code.md) for supported fields and examples.
+
 ## Reporting CLI
 
 Generate operational snapshots from the CLI:
@@ -131,3 +135,4 @@ PARTITION BY toYYYYMM(ts);
 - [Getting Started](./getting-started.md)
 - [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md)
 - [Runbook](./runbook.md)
+- [Policy-as-Code](./policy-as-code.md)

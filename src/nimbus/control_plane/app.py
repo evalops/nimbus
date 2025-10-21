@@ -60,6 +60,7 @@ from ..common.networking import (
     create_guarded_async_client,
     load_allowed_registries,
 )
+from .policy import JobPolicy, load_job_policy
 from .identity_store import (
     ensure_schema as ensure_identity_schema,
     load_rbac_policy,
@@ -265,6 +266,7 @@ class AppState:
         itar_regions: Optional[list[str]] = None,
         compliance_retention_days: int = 365,
         egress_enforcer: Optional[OfflineEgressEnforcer] = None,
+        job_policy: Optional[JobPolicy] = None,
     ) -> None:
         self.settings = settings
         self.redis = redis
@@ -286,6 +288,7 @@ class AppState:
         self.itar_regions = itar_regions or []
         self.compliance_retention_days = compliance_retention_days
         self.egress_enforcer = egress_enforcer
+        self.job_policy = job_policy
 
 
 def _get_state(request: Request) -> AppState:
@@ -483,6 +486,12 @@ async def lifespan(app: FastAPI):
         if settings.scim_token
         else None
     )
+    try:
+        job_policy = load_job_policy(settings.job_policy_path)
+    except Exception as exc:
+        LOGGER.error("Failed to load job policy", error=str(exc))
+        raise
+
     container = AppState(
         settings=settings,
         redis=redis,
@@ -501,6 +510,7 @@ async def lifespan(app: FastAPI):
         itar_regions=settings.itar_permitted_regions,
         compliance_retention_days=settings.itar_export_log_retention_days,
         egress_enforcer=egress_enforcer,
+        job_policy=job_policy,
     )
     app.state.container = container
     
@@ -1025,6 +1035,21 @@ def create_app() -> FastAPI:
 
             repo = payload.repository
             span.set_attribute("nimbus.repo", repo.full_name)
+
+            policy = getattr(state, "job_policy", None)
+            if policy:
+                result = policy.evaluate(payload)
+                if not result.allowed:
+                    LOGGER.warning(
+                        "Job blocked by policy",
+                        job_id=payload.workflow_job.id,
+                        repo=repo.full_name,
+                        reason=result.reason,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Job blocked by policy: {result.reason}",
+                    )
             
             # Check per-org rate limit using distributed limiter
             org_id = repo.owner_id or repo.id

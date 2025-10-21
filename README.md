@@ -10,6 +10,7 @@ Nimbus is a self-hosted CI platform built around Firecracker microVMs, org-scope
 - [Firecracker Security Hardening](docs/FIRECRACKER_SECURITY.md)
 - [ClickHouse Schema](docs/CLICKHOUSE_SCHEMA.md)
 - [Runbook](docs/runbook.md)
+- [Policy-as-Code](docs/policy-as-code.md)
 
 ## Architecture Overview
 
