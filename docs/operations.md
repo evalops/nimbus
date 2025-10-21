@@ -71,9 +71,11 @@ Generate operational snapshots from the CLI:
 
 - Org analytics: `python -m nimbus.cli.report orgs --base-url http://localhost:8000 --token $NIMBUS_ADMIN_JWT`
 - Jobs summary (includes top metadata tags): `python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET`
+- Jobs summary filtered by metadata: `python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --metadata-key lr --metadata-value 0.1`
 - Cache usage: `python -m nimbus.cli.report cache --cache-url http://localhost:8001`
 - Log ingestion overview: `python -m nimbus.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50`
 - Full overview: `python -m nimbus.cli.report overview --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --cache-url http://localhost:8001 --logs-url http://localhost:8002`
+- Full overview filtered by metadata: `python -m nimbus.cli.report overview --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --cache-url http://localhost:8001 --logs-url http://localhost:8002 --job-metadata-key lr --job-metadata-value 0.1`
 
 ## Production Checklist
 

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from nimbus.cli.report import (
     summarize_agent_tokens,
     summarize_cache,
     summarize_jobs,
     summarize_logs,
+    run_jobs,
+    run_overview,
 )
 
 
@@ -139,3 +144,85 @@ def test_summarize_logs_counts_levels_and_samples() -> None:
     assert summary["jobs"][1] == 2
     assert summary["jobs"][2] == 1
     assert len(summary["samples"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_run_jobs_passes_metadata_filters(monkeypatch, capsys):
+    async def fake_fetch_recent(
+        base_url: str,
+        token: str,
+        limit: int,
+        *,
+        label=None,
+        status=None,
+        metadata_key=None,
+        metadata_value=None,
+    ):
+        assert metadata_key == "lr"
+        assert metadata_value == "0.1"
+        return []
+
+    async def fake_fetch_status(base_url: str, token: str):
+        return {"queue_length": 0, "jobs_by_status": {}}
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_recent_jobs", fake_fetch_recent)
+    monkeypatch.setattr("nimbus.cli.report.fetch_status", fake_fetch_status)
+
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        limit=10,
+        metadata_key="lr",
+        metadata_value="0.1",
+        json=True,
+    )
+    await run_jobs(args)
+    payload = capsys.readouterr().out.strip()
+    assert payload  # JSON payload printed
+
+
+@pytest.mark.asyncio
+async def test_run_overview_passes_metadata_filters(monkeypatch, capsys):
+    async def fake_fetch_recent(
+        base_url: str,
+        token: str,
+        limit: int,
+        *,
+        label=None,
+        status=None,
+        metadata_key=None,
+        metadata_value=None,
+    ):
+        assert metadata_key == "lr"
+        assert metadata_value == "0.1"
+        return []
+
+    async def fake_fetch_status(base_url: str, token: str):
+        return {"queue_length": 0, "jobs_by_status": {}}
+
+    async def fake_fetch_cache(cache_url: str, cache_token: str | None):
+        return {"top_entries": []}
+
+    async def fake_fetch_logs(logs_url: str, job_id: int | None, contains: str | None, limit: int):
+        return []
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_recent_jobs", fake_fetch_recent)
+    monkeypatch.setattr("nimbus.cli.report.fetch_status", fake_fetch_status)
+    monkeypatch.setattr("nimbus.cli.report.fetch_cache_status", fake_fetch_cache)
+    monkeypatch.setattr("nimbus.cli.report.fetch_logs", fake_fetch_logs)
+
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        cache_url="https://cache",
+        cache_token=None,
+        logs_url="https://logs",
+        job_limit=5,
+        job_metadata_key="lr",
+        job_metadata_value="0.1",
+        log_limit=5,
+        json=True,
+    )
+    await run_overview(args)
+    payload = capsys.readouterr().out.strip()
+    assert payload  # JSON payload printed

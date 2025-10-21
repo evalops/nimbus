@@ -29,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     jobs_parser.add_argument("--base-url", required=True, help="Control plane base URL")
     jobs_parser.add_argument("--token", required=True, help="Control plane bearer token")
     jobs_parser.add_argument("--limit", type=int, default=50, help="Number of recent jobs to inspect")
+    jobs_parser.add_argument("--metadata-key", help="Only include jobs with this metadata key")
+    jobs_parser.add_argument(
+        "--metadata-value",
+        help="Only include jobs where the metadata key matches this value (requires --metadata-key)",
+    )
     jobs_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     cache_parser = subparsers.add_parser("cache", help="Summarize cache proxy usage")
@@ -57,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     )
     overview_parser.add_argument("--logs-url", required=True, help="Logging pipeline base URL")
     overview_parser.add_argument("--job-limit", type=int, default=50, help="Recent jobs to inspect")
+    overview_parser.add_argument("--job-metadata-key", help="Filter overview job summary by metadata key")
+    overview_parser.add_argument("--job-metadata-value", help="Filter overview job summary by metadata value")
     overview_parser.add_argument("--log-limit", type=int, default=100, help="Recent logs to inspect")
     overview_parser.add_argument("--json", action="store_true", help="Output JSON")
 
@@ -446,7 +453,13 @@ def print_org_summary(summary: dict[str, Any]) -> None:
 
 async def run_jobs(args: argparse.Namespace) -> None:
     recent_jobs, status_payload = await asyncio.gather(
-        fetch_recent_jobs(args.base_url, args.token, args.limit),
+        fetch_recent_jobs(
+            args.base_url,
+            args.token,
+            args.limit,
+            metadata_key=getattr(args, "metadata_key", None),
+            metadata_value=getattr(args, "metadata_value", None),
+        ),
         fetch_status(args.base_url, args.token),
     )
     summary = summarize_jobs(status_payload, recent_jobs)
@@ -493,11 +506,15 @@ async def run_orgs(args: argparse.Namespace) -> None:
 
 
 async def run_overview(args: argparse.Namespace) -> None:
-    jobs_task = asyncio.create_task(
-        asyncio.gather(
-            fetch_recent_jobs(args.base_url, args.token, args.job_limit),
-            fetch_status(args.base_url, args.token),
-        )
+    jobs_task = asyncio.gather(
+        fetch_recent_jobs(
+            args.base_url,
+            args.token,
+            args.job_limit,
+            metadata_key=getattr(args, "job_metadata_key", None),
+            metadata_value=getattr(args, "job_metadata_value", None),
+        ),
+        fetch_status(args.base_url, args.token),
     )
     cache_task = asyncio.create_task(fetch_cache_status(args.cache_url, args.cache_token))
     logs_task = asyncio.create_task(fetch_logs(args.logs_url, None, None, args.log_limit))
