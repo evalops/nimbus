@@ -202,8 +202,8 @@ class PipelineState:
                     org_id=org_id,
                     hours_back=hours_back,
                 )
-            except HTTPException:
-                raise
+            except HTTPException as exc:
+                LOGGER.warning("Metadata aggregation query failed", error=str(exc.detail))
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Metadata aggregation query failed", error=str(exc))
 

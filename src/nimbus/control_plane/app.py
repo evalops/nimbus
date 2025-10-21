@@ -11,7 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
-from typing import Optional
+from typing import Optional, cast
 from uuid import uuid4
 from urllib.parse import urlparse
 
@@ -315,6 +315,8 @@ class AppState:
         self.egress_enforcer = egress_enforcer
         self.job_policy = job_policy
         self.metadata_sink_url = metadata_sink_url
+        self._metadata_cache: dict[tuple, tuple[float, list[dict[str, object]]]] = {}
+        self._metadata_cache_ttl = 30.0
 
     async def publish_job_metadata(
         self,
@@ -328,11 +330,12 @@ class AppState:
         metadata: dict[str, str],
         status: Optional[str] = None,
     ) -> None:
-        if not metadata or not self.metadata_sink_url or not self.settings.cache_shared_secret:
+        secret_obj = getattr(self.settings, "cache_shared_secret", None)
+        if not metadata or not self.metadata_sink_url or secret_obj is None:
             return
 
         token = mint_cache_token(
-            secret=self.settings.cache_shared_secret.get_secret_value(),
+            secret=secret_obj.get_secret_value(),
             organization_id=org_id,
             ttl_seconds=60,
             scope=f"push:org-{org_id}",
@@ -372,6 +375,21 @@ class AppState:
                 url=url,
                 error=str(exc),
             )
+        finally:
+            self._metadata_cache.clear()
+
+    def _metadata_cache_get(self, key: tuple) -> Optional[list[dict[str, object]]]:
+        entry = self._metadata_cache.get(key)
+        if not entry:
+            return None
+        ts, value = entry
+        if time.time() - ts > self._metadata_cache_ttl:
+            self._metadata_cache.pop(key, None)
+            return None
+        return value
+
+    def _metadata_cache_set(self, key: tuple, value: list[dict[str, object]]) -> None:
+        self._metadata_cache[key] = (time.time(), value)
 
     async def fetch_metadata_summary(
         self,
@@ -381,14 +399,19 @@ class AppState:
         limit: int,
         hours_back: Optional[int],
     ) -> list[dict[str, object]]:
+        cache_key = ("summary", key, org_id, hours_back, limit)
+        cached = self._metadata_cache_get(cache_key)
+        if cached is not None:
+            return cached
         if not self.metadata_sink_url:
             return []
         secret = self.settings.cache_shared_secret.get_secret_value()
+        org = org_id or 0
         token = mint_cache_token(
             secret=secret,
-            organization_id=org_id or 0,
+            organization_id=org,
             ttl_seconds=60,
-            scope="read_write",
+            scope=f"read:org-{org}",
         )
         params: dict[str, object] = {"key": key, "limit": limit}
         if hours_back is not None:
@@ -402,8 +425,9 @@ class AppState:
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, list):
-                return payload
-            return []
+                summary = payload
+            else:
+                summary = []
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to fetch metadata summary",
@@ -412,6 +436,10 @@ class AppState:
                 error=str(exc),
             )
             return []
+        self._metadata_cache_set(cache_key, summary)
+        return summary
+        self._metadata_cache_set(cache_key, summary)
+        return summary
 
     async def fetch_metadata_outcomes(
         self,
@@ -421,6 +449,10 @@ class AppState:
         hours_back: Optional[int],
         limit: int,
     ) -> list[dict[str, object]]:
+        cache_key = ("outcomes", key, org_id, hours_back, limit)
+        cached = self._metadata_cache_get(cache_key)
+        if cached is not None:
+            return cached
         async with self.session_factory() as session:  # type: ignore[call-arg]
             rows = await db.metadata_outcomes(
                 session,
@@ -429,6 +461,7 @@ class AppState:
                 hours_back=hours_back,
                 limit=limit,
             )
+            self._metadata_cache_set(cache_key, rows)
             return rows
 
     async def fetch_metadata_trend(
@@ -439,6 +472,10 @@ class AppState:
         hours_back: Optional[int],
         bucket_hours: int,
     ) -> list[dict[str, object]]:
+        cache_key = ("trend", key, org_id, hours_back, bucket_hours)
+        cached = self._metadata_cache_get(cache_key)
+        if cached is not None:
+            return cached
         if not self.metadata_sink_url:
             return []
         secret = self.settings.cache_shared_secret.get_secret_value()
@@ -464,8 +501,9 @@ class AppState:
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, list):
-                return payload
-            return []
+                summary = payload
+            else:
+                summary = []
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to fetch metadata trend",
@@ -474,6 +512,8 @@ class AppState:
                 error=str(exc),
             )
             return []
+        self._metadata_cache_set(cache_key, summary)
+        return summary
 
 
 def _get_state(request: Request) -> AppState:
@@ -1594,6 +1634,7 @@ def create_app() -> FastAPI:
 
         metadata_top: dict[int, list[dict]] = {}
         metadata_outcomes_map: dict[int, list[dict]] = {}
+        metadata_trend_map: dict[int, list[dict]] = {}
         trimmed_key = metadata_key.strip() if metadata_key else None
         if trimmed_key:
             for org_id in org_ids:
@@ -1613,6 +1654,14 @@ def create_app() -> FastAPI:
                 )
                 if outcomes:
                     metadata_outcomes_map[org_id] = outcomes
+                trend = await state.fetch_metadata_trend(
+                    key=trimmed_key,
+                    org_id=org_id,
+                    hours_back=hours_back,
+                    bucket_hours=6,
+                )
+                if trend:
+                    metadata_trend_map[org_id] = trend
         summaries = build_org_overview(
             org_ids,
             status_rows=status_rows,
@@ -1621,6 +1670,7 @@ def create_app() -> FastAPI:
             failures=failures,
             metadata_top=metadata_top,
             metadata_outcomes=metadata_outcomes_map,
+            metadata_trend=metadata_trend_map,
         )
         return summaries
 

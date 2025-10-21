@@ -19,6 +19,7 @@ def build_org_overview(
     failures: dict[int, list[dict]],
     metadata_top: dict[int, list[dict]] | None = None,
     metadata_outcomes: dict[int, list[dict]] | None = None,
+    metadata_trend: dict[int, list[dict]] | None = None,
 ) -> list[dict]:
     status_map: dict[int, dict[str, int]] = {}
     for row in status_rows:
@@ -36,6 +37,7 @@ def build_org_overview(
                 "recent_failures": failures.get(org_id, []),
                 "metadata_top": (metadata_top or {}).get(org_id, []),
                 "metadata_outcomes": (metadata_outcomes or {}).get(org_id, []),
+                "metadata_trend": (metadata_trend or {}).get(org_id, []),
             }
         )
     return summaries

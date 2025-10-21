@@ -228,18 +228,32 @@ export function ObservabilityPage() {
                     failed: entry.failed,
                   });
                 });
+                const trendEntries = new Map<string, Array<{ window_start: string; total: number; succeeded: number }>>();
+                (org.metadata_trend ?? []).forEach((entry) => {
+                  const key = entry.value ?? "";
+                  const list = trendEntries.get(key) || [];
+                  list.push({
+                    window_start: entry.window_start,
+                    total: entry.total,
+                    succeeded: entry.succeeded,
+                  });
+                  trendEntries.set(key, list);
+                });
                 return (
                   <div key={org.org_id} className="observability__metadata-card">
                     <h3>Org {org.org_id}</h3>
                     <ul>
                       {topValues.map((item) => {
-                        const outcome = outcomeMap.get(item.value ?? "") || { total: item.count, succeeded: 0, failed: 0 };
+                        const valueKey = item.value ?? "";
+                        const outcome = outcomeMap.get(valueKey) || { total: item.count, succeeded: 0, failed: 0 };
                         const successRate = outcome.total ? (outcome.succeeded / outcome.total) * 100 : 0;
+                        const trend = trendEntries.get(valueKey) || [];
                         return (
                           <li key={`${org.org_id}-${item.value}`}>
                             <span className="observability__metadata-value">{item.value || "(empty)"}</span>
                             <span className="observability__metadata-count">{item.count} runs</span>
                             <span className="observability__metadata-success">{successRate.toFixed(1)}% success</span>
+                            {trend.length > 0 && <MetadataSparkline points={trend} />}
                           </li>
                         );
                       })}
@@ -251,6 +265,28 @@ export function ObservabilityPage() {
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+function MetadataSparkline({ points }: { points: Array<{ window_start: string; total: number; succeeded: number }> }) {
+  if (points.length === 0) {
+    return null;
+  }
+  const ratios = points.map((point) => {
+    const total = point.total || 0;
+    return total ? (point.succeeded / total) * 100 : 0;
+  });
+  const max = Math.max(...ratios, 100);
+  return (
+    <div className="observability__sparkline">
+      {ratios.map((ratio, index) => (
+        <span
+          key={`${points[index].window_start}-${index}`}
+          style={{ height: `${Math.max(6, (ratio / max) * 100)}%` }}
+          title={`${ratio.toFixed(1)}% success`}
+        />
+      ))}
     </div>
   );
 }

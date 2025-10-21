@@ -191,6 +191,22 @@
   color: #047857;
 }
 
+.observability__sparkline {
+  margin-top: 6px;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 32px;
+}
+
+.observability__sparkline span {
+  display: block;
+  width: 6px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.7), rgba(59, 130, 246, 0.2));
+  border-radius: 3px 3px 0 0;
+  transition: height 0.4s ease;
+}
+
 @media (max-width: 768px) {
   .observability__header {
     flex-direction: column;

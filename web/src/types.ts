@@ -30,6 +30,7 @@ export interface OrgStatusSummary {
   recent_failures: JobRecord[];
   metadata_top?: Array<{ value: string; count: number }>;
   metadata_outcomes?: Array<{ value: string | null; total: number; succeeded: number; failed: number }>;
+  metadata_trend?: Array<{ window_start: string; window_end?: string; value: string | null; total: number; succeeded: number; failed: number }>;
 }
 
 export interface AgentTokenRecord {
