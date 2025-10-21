@@ -224,7 +224,12 @@ async def record_status_update(session: AsyncSession, update_payload: JobStatusU
 
 
 async def list_recent_jobs(
-    session: AsyncSession, limit: int = 50, org_id: Optional[int] = None
+    session: AsyncSession,
+    limit: int = 50,
+    org_id: Optional[int] = None,
+    *,
+    status: Optional[str] = None,
+    label: Optional[str] = None,
 ) -> Iterable[dict]:
     stmt = (
         select(jobs_table)
@@ -235,7 +240,16 @@ async def list_recent_jobs(
         stmt = stmt.where(jobs_table.c.org_id == org_id)
     result = await session.execute(stmt)
     rows = [dict(row) for row in result.mappings()]
-    return _normalise_job_rows(rows)
+    normalised = _normalise_job_rows(rows)
+    if status:
+        normalised = [row for row in normalised if row.get("status") == status]
+    if label:
+        normalised = [
+            row
+            for row in normalised
+            if label in (row.get("labels") or [])
+        ]
+    return normalised
 
 
 async def job_status_counts(

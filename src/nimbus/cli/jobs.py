@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
 
     recent_parser = subparsers.add_parser("recent", help="List recent jobs")
     recent_parser.add_argument("--limit", type=int, default=20, help="Number of jobs to fetch")
+    recent_parser.add_argument("--label", help="Filter jobs by label")
+    recent_parser.add_argument("--status", dest="status", help="Filter jobs by status")
     recent_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     status_parser = subparsers.add_parser("status", help="Show queue depth and job counts")
@@ -28,12 +30,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def fetch_recent_jobs(base_url: str, token: str, limit: int) -> list[dict[str, Any]]:
+async def fetch_recent_jobs(
+    base_url: str,
+    token: str,
+    limit: int,
+    *,
+    label: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=10.0) as client:
+        params: dict[str, Any] = {"limit": limit}
+        if label:
+            params["label"] = label
+        if status:
+            params["status"] = status
         response = await client.get(
             f"{base_url.rstrip('/')}/api/jobs/recent",
             headers={"Authorization": f"Bearer {token}"},
-            params={"limit": limit},
+            params=params,
         )
         response.raise_for_status()
         return response.json()
@@ -87,7 +101,13 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 async def run() -> None:
     args = parse_args()
     if args.command == "recent":
-        jobs = await fetch_recent_jobs(args.base_url, args.token, args.limit)
+        jobs = await fetch_recent_jobs(
+            args.base_url,
+            args.token,
+            args.limit,
+            label=getattr(args, "label", None),
+            status=getattr(args, "status", None),
+        )
         if args.json:
             print(json.dumps(jobs, indent=2))
         else:

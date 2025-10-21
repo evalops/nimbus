@@ -25,8 +25,10 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
         }
     ]
 
-    async def fake_recent(base_url: str, token: str, limit: int):  # noqa: ANN001
+    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
         assert limit == 3
+        assert label is None
+        assert status is None
         return sample_jobs
 
     monkeypatch.setattr(
@@ -37,6 +39,8 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
             token="secret",
             command="recent",
             limit=3,
+            label=None,
+            status=None,
             json=False,
         ),
     )
@@ -51,7 +55,9 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_cli_jobs_recent_json(monkeypatch, capsys):
-    async def fake_recent(base_url: str, token: str, limit: int):  # noqa: ANN001
+    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
+        assert label == "gpu"
+        assert status == "running"
         return [{"job_id": 2}]
 
     monkeypatch.setattr(
@@ -62,6 +68,8 @@ async def test_cli_jobs_recent_json(monkeypatch, capsys):
             token="secret",
             command="recent",
             limit=1,
+            label="gpu",
+            status="running",
             json=True,
         ),
     )

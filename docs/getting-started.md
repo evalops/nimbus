@@ -65,6 +65,8 @@ Nimbus publishes curated images for common workflows. Example: `nimbus/ai-eval-r
 ```bash
 # Recent jobs
 python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --limit 10
+python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --status running
+python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --label gpu
 
 # Queue health
 python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET

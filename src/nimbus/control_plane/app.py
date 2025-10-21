@@ -16,7 +16,7 @@ from uuid import uuid4
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 import jwt
 from pydantic import BaseModel, Field
@@ -1251,12 +1251,20 @@ def create_app() -> FastAPI:
     async def recent_jobs(
         limit: int = 50,
         org_id: Optional[int] = None,
+        job_status: Optional[str] = Query(None, alias="status"),
+        label: Optional[str] = None,
         _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> list[JobRecord]:
         REQUEST_COUNTER.inc()
         limit = max(1, min(limit, 200))
-        rows = await db.list_recent_jobs(session, limit=limit, org_id=org_id)
+        rows = await db.list_recent_jobs(
+            session,
+            limit=limit,
+            org_id=org_id,
+            status=job_status,
+            label=label,
+        )
         return [JobRecord.model_validate(row) for row in rows]
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)

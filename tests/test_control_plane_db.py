@@ -28,15 +28,17 @@ async def session():
         await engine.dispose()
 
 
-def _make_assignment(job_id: int = 100, owner_id: int = 123) -> JobAssignment:
+def _make_assignment(job_id: int = 100, owner_id: int = 123, labels: list[str] | None = None) -> JobAssignment:
     repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False, owner_id=owner_id)
     registration = RunnerRegistrationToken(token="tok", expires_at=datetime.now(timezone.utc))
+    if labels is None:
+        labels = ["linux"]
     return JobAssignment(
         job_id=job_id,
         run_id=111,
         run_attempt=1,
         repository=repo,
-        labels=["linux"],
+        labels=labels,
         runner_registration=registration,
     )
 
@@ -56,6 +58,31 @@ async def test_record_job_queued_and_list_recent_jobs(session):
     scoped_rows = await db.list_recent_jobs(session, limit=5, org_id=assignment.repository.owner_id)
     assert scoped_rows
     assert scoped_rows[0]["org_id"] == assignment.repository.owner_id
+
+
+@pytest.mark.asyncio
+async def test_list_recent_jobs_filters(session):
+    gpu_assignment = _make_assignment(210, labels=["nimbus", "gpu"])
+    cpu_assignment = _make_assignment(211, labels=["nimbus", "cpu"])
+    await db.record_job_queued(session, gpu_assignment)
+    await db.record_job_queued(session, cpu_assignment)
+    await session.commit()
+
+    update_payload = JobStatusUpdate(
+        agent_id="agent-1",
+        job_id=211,
+        status="running",
+    )
+    await db.record_status_update(session, update_payload)
+    await session.commit()
+
+    gpu_rows = await db.list_recent_jobs(session, limit=10, label="gpu")
+    assert len(gpu_rows) == 1
+    assert gpu_rows[0]["job_id"] == 210
+
+    running_rows = await db.list_recent_jobs(session, limit=10, status="running")
+    assert len(running_rows) == 1
+    assert running_rows[0]["job_id"] == 211
 
 
 @pytest.mark.asyncio
