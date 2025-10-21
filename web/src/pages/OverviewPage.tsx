@@ -326,7 +326,7 @@ export function OverviewPage() {
             </span>
           </header>
           {metadataSummary.length > 0 ? (
-            <MetadataChart data={metadataSummary} outcomes={outcomeMap} />
+            <MetadataChart data={metadataSummary} outcomes={outcomeMap} trend={metadataTrend} />
           ) : (
             <p className="overview__empty">No metadata recorded for this key.</p>
           )}
@@ -361,8 +361,23 @@ function StatCard({ label, value }: { label: string; value: number }) {
   );
 }
 
-function MetadataChart({ data, outcomes }: { data: MetadataBucket[]; outcomes: Record<string, MetadataOutcome> }) {
+function MetadataChart({
+  data,
+  outcomes,
+  trend,
+}: {
+  data: MetadataBucket[];
+  outcomes: Record<string, MetadataOutcome>;
+  trend: Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>;
+}) {
   const maxCount = Math.max(...data.map((bucket) => Number(bucket.count) || 0), 1);
+  const trendMap = new Map<string, Array<{ window_start: string; total: number; succeeded: number }>>();
+  trend.forEach((entry) => {
+    const key = entry.value ?? "";
+    const list = trendMap.get(key) || [];
+    list.push({ window_start: entry.window_start, total: entry.total, succeeded: entry.succeeded });
+    trendMap.set(key, list);
+  });
 
   return (
     <ul className="overview__metadata-list">
@@ -373,6 +388,8 @@ function MetadataChart({ data, outcomes }: { data: MetadataBucket[]; outcomes: R
         const succeeded = outcome?.succeeded ?? 0;
         const failed = outcome?.failed ?? 0;
         const successRate = total ? (succeeded / total) * 100 : 0;
+        const valueKey = bucket.value ?? "";
+        const sparklinePoints = trendMap.get(valueKey) || [];
         return (
           <li key={`${bucket.value}-${bucket.count}`}>
             <div className="overview__metadata-label">
@@ -389,6 +406,7 @@ function MetadataChart({ data, outcomes }: { data: MetadataBucket[]; outcomes: R
                 <span className="overview__metadata-breakdown">✔ {succeeded} · ✖ {failed}</span>
               </div>
             )}
+            {sparklinePoints.length > 0 && <MetadataSparkline points={sparklinePoints} />}
           </li>
         );
       })}
