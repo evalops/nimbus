@@ -122,6 +122,23 @@ class JobRecord(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class JobMetadataRecord(BaseModel):
+    job_id: int
+    run_id: int
+    run_attempt: int
+    org_id: int
+    repo_id: int
+    key: str
+    value: str
+    executor: Optional[str] = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class JobMetadataBatch(BaseModel):
+    records: list[JobMetadataRecord]
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
 class LogEntry(BaseModel):
     """Log record emitted by a job or microVM."""
 

@@ -87,6 +87,7 @@ class ControlPlaneSettings(BaseSettings):
     )
     itar_export_log_retention_days: int = env_field(365, "NIMBUS_ITAR_EXPORT_LOG_RETENTION")
     ca_bundle_path: Optional[Path] = env_field(None, "NIMBUS_CA_BUNDLE")
+    metadata_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_METADATA_SINK_URL")
     job_policy_path: Optional[Path] = env_field(None, "NIMBUS_JOB_POLICY_PATH")
 
     @field_validator("admin_allowed_subjects", mode="before")
@@ -356,6 +357,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_url: HttpUrl = env_field(..., "NIMBUS_CLICKHOUSE_URL")
     clickhouse_database: str = env_field("nimbus", "NIMBUS_CLICKHOUSE_DATABASE")
     clickhouse_table: str = env_field("ci_logs", "NIMBUS_CLICKHOUSE_TABLE")
+    clickhouse_metadata_table: str = env_field("job_metadata", "NIMBUS_CLICKHOUSE_METADATA_TABLE")
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_ingest_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_INGEST_USERNAME")

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { useApi } from "../hooks/useApi";
 import type { JobRecord, ServiceStatus } from "../types";
@@ -14,19 +14,31 @@ export function OverviewPage() {
   const [metrics, setMetrics] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [metadataKey, setMetadataKey] = useState("");
+  const [metadataValue, setMetadataValue] = useState("");
+  const [appliedMetadataKey, setAppliedMetadataKey] = useState("");
+  const [appliedMetadataValue, setAppliedMetadataValue] = useState("");
 
   const hasAgentToken = Boolean(settings.agentToken);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (!hasAgentToken) {
       return;
     }
     setLoading(true);
     setError(null);
     try {
+      const params = new URLSearchParams({ limit: "100" });
+      if (appliedMetadataKey) {
+        params.set("meta_key", appliedMetadataKey);
+      }
+      if (appliedMetadataValue) {
+        params.set("meta_value", appliedMetadataValue);
+      }
+      const query = params.toString();
       const [statusResponse, jobsResponse, metricsText] = await Promise.all([
         controlGet("/api/status"),
-        controlGet("/api/jobs/recent?limit=100"),
+        controlGet(`/api/jobs/recent?${query}`),
         fetchMetricsText().catch(() => ""),
       ]);
       setStatus(statusResponse as ServiceStatus);
@@ -37,12 +49,26 @@ export function OverviewPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [appliedMetadataKey, appliedMetadataValue, controlGet, fetchMetricsText, hasAgentToken]);
 
   useEffect(() => {
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAgentToken]);
+    if (hasAgentToken) {
+      void refresh();
+    }
+  }, [hasAgentToken, refresh]);
+
+  const handleApplyFilters = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAppliedMetadataKey(metadataKey.trim());
+    setAppliedMetadataValue(metadataValue.trim());
+  };
+
+  const handleClearFilters = () => {
+    setMetadataKey("");
+    setMetadataValue("");
+    setAppliedMetadataKey("");
+    setAppliedMetadataValue("");
+  };
 
   const jobCounts = useMemo(() => {
     if (!status) {
@@ -79,6 +105,48 @@ export function OverviewPage() {
           <h2>Job Activity</h2>
           <span>{jobs.length} recent jobs</span>
         </header>
+        <form className="overview__filters" onSubmit={handleApplyFilters}>
+          <div className="overview__filter-field">
+            <label htmlFor="metadata-key">Metadata key</label>
+            <input
+              id="metadata-key"
+              type="text"
+              placeholder="e.g. lr"
+              value={metadataKey}
+              onChange={(event) => setMetadataKey(event.target.value)}
+            />
+          </div>
+          <div className="overview__filter-field">
+            <label htmlFor="metadata-value">Metadata value</label>
+            <input
+              id="metadata-value"
+              type="text"
+              placeholder="optional"
+              value={metadataValue}
+              onChange={(event) => setMetadataValue(event.target.value)}
+            />
+          </div>
+          <div className="overview__filter-actions">
+            <button type="submit" disabled={loading}>
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              disabled={
+                loading || (!metadataKey && !metadataValue && !appliedMetadataKey && !appliedMetadataValue)
+              }
+            >
+              Clear
+            </button>
+          </div>
+          {(appliedMetadataKey || appliedMetadataValue) && (
+            <div className="overview__filter-active">
+              Active filter: {appliedMetadataKey || "any"}
+              {appliedMetadataValue ? `=${appliedMetadataValue}` : " (any value)"}
+            </div>
+          )}
+        </form>
         <div className="overview__table-wrapper">
           <table>
             <thead>
@@ -86,6 +154,7 @@ export function OverviewPage() {
                 <th>Job ID</th>
                 <th>Repository</th>
                 <th>Status</th>
+                <th>Metadata</th>
                 <th>Agent</th>
                 <th>Queued</th>
                 <th>Last Message</th>
@@ -97,6 +166,13 @@ export function OverviewPage() {
                   <td>#{job.job_id}</td>
                   <td>{job.repo_full_name}</td>
                   <td className={`status status--${job.status.toLowerCase()}`}>{job.status}</td>
+                  <td className="overview__metadata">
+                    {job.metadata && Object.keys(job.metadata).length > 0
+                      ? Object.entries(job.metadata)
+                          .map(([key, value]) => `${key}=${value}`)
+                          .join(", ")
+                      : "–"}
+                  </td>
                   <td>{job.agent_id ?? "–"}</td>
                   <td>{new Date(job.queued_at).toLocaleString()}</td>
                   <td className="overview__message">{job.last_message ?? ""}</td>
@@ -104,7 +180,7 @@ export function OverviewPage() {
               ))}
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="overview__empty">
+                  <td colSpan={7} className="overview__empty">
                     No job data available. Ensure the dashboard agent token has access.
                   </td>
                 </tr>

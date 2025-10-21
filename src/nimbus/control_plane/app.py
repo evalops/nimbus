@@ -291,6 +291,7 @@ class AppState:
         compliance_retention_days: int = 365,
         egress_enforcer: Optional[OfflineEgressEnforcer] = None,
         job_policy: Optional[JobPolicy] = None,
+        metadata_sink_url: Optional[str] = None,
     ) -> None:
         self.settings = settings
         self.redis = redis
@@ -313,6 +314,52 @@ class AppState:
         self.compliance_retention_days = compliance_retention_days
         self.egress_enforcer = egress_enforcer
         self.job_policy = job_policy
+        self.metadata_sink_url = metadata_sink_url
+
+    async def publish_job_metadata(self, assignment: JobAssignment, metadata: dict[str, str]) -> None:
+        if not metadata or not self.metadata_sink_url:
+            return
+
+        org_id = assignment.repository.owner_id or assignment.repository.id
+        if not org_id:
+            return
+
+        token_value = assignment.cache_token.token if assignment.cache_token else None
+        if not token_value:
+            LOGGER.debug("Metadata publication skipped: missing cache token", job_id=assignment.job_id)
+            return
+
+        records = []
+        for key, value in metadata.items():
+            records.append(
+                {
+                    "job_id": assignment.job_id,
+                    "run_id": assignment.run_id,
+                    "run_attempt": assignment.run_attempt,
+                    "org_id": org_id,
+                    "repo_id": assignment.repository.id,
+                    "key": key,
+                    "value": value,
+                    "executor": assignment.executor,
+                }
+            )
+
+        if not records:
+            return
+
+        url = self.metadata_sink_url.rstrip("/") + "/metadata/jobs"
+        headers = {"Authorization": f"Bearer {token_value}"}
+        payload = {"records": records}
+        try:
+            response = await self.http_client.post(url, json=payload, headers=headers, timeout=5.0)
+            response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to publish job metadata",
+                job_id=assignment.job_id,
+                url=url,
+                error=str(exc),
+            )
 
 
 def _get_state(request: Request) -> AppState:
@@ -535,6 +582,7 @@ async def lifespan(app: FastAPI):
         compliance_retention_days=settings.itar_export_log_retention_days,
         egress_enforcer=egress_enforcer,
         job_policy=job_policy,
+        metadata_sink_url=str(settings.metadata_sink_url) if settings.metadata_sink_url else None,
     )
     app.state.container = container
     
@@ -1137,6 +1185,7 @@ def create_app() -> FastAPI:
             await enqueue_job(state.redis, assignment)
             await db.record_job_queued(session, assignment)
             await session.commit()
+            await state.publish_job_metadata(assignment, metadata)
             queue_length = await state.redis.llen(QUEUE_KEY)
             QUEUE_LENGTH_GAUGE.set(queue_length)
             span.set_attribute("nimbus.queue_length", queue_length)

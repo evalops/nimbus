@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 import structlog
 from opentelemetry import trace
 
-from ..common.schemas import CacheToken, LogIngestRequest
+from ..common.schemas import CacheToken, LogIngestRequest, JobMetadataBatch
 from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.settings import LoggingIngestSettings
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Histogram
@@ -27,6 +27,7 @@ DROPPED_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_rows_dro
 BATCH_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_batches_total", "Batches flushed to ClickHouse"))
 BATCH_BYTES_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_batch_bytes_total", "Bytes sent to ClickHouse"))
 CLICKHOUSE_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_clickhouse_errors_total", "ClickHouse request errors"))
+METADATA_ROWS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_metadata_rows_total", "Metadata rows ingested"))
 QUERY_REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_query_requests_total", "Log query requests"))
 QUERY_ERRORS_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_logging_query_errors_total", "Log query failures"))
 BATCH_LATENCY_HISTOGRAM = GLOBAL_REGISTRY.register(
@@ -96,6 +97,34 @@ class PipelineState:
             BATCH_BYTES_COUNTER.inc(len(data))
             BATCH_LATENCY_HISTOGRAM.observe(duration)
             span.set_attribute("nimbus.batch_latency_seconds", duration)
+
+    async def write_metadata(self, rows: Iterable[bytes]) -> None:
+        data = b"\n".join(rows)
+        if not data:
+            return
+        query = (
+            f"INSERT INTO {self.settings.clickhouse_database}.{self.settings.clickhouse_metadata_table} "
+            "FORMAT JSONEachRow"
+        )
+        with TRACER.start_as_current_span("logging_pipeline.write_metadata") as span:
+            start = time.perf_counter()
+            response = await self.http.post(
+                self.settings.clickhouse_url,
+                params={"query": query},
+                content=data,
+                auth=self._ingest_auth,
+            )
+            duration = time.perf_counter() - start
+            span.set_attribute("nimbus.metadata_rows", data.count(b"\n") + 1)
+            span.set_attribute("nimbus.metadata_bytes", len(data))
+            if response.is_error:
+                CLICKHOUSE_ERRORS_COUNTER.inc()
+                LOGGER.error(
+                    "ClickHouse metadata insert failed",
+                    status=response.status_code,
+                    body=response.text[:2000],
+                )
+                raise HTTPException(status_code=502, detail="ClickHouse metadata insert failed")
 
     async def query_logs(
         self,
@@ -342,6 +371,31 @@ def create_app() -> FastAPI:
                 await state.write_batch(batch)
                 batches_flushed += 1
             span.set_attribute("nimbus.ingest.batches", batches_flushed)
+
+    @app.post("/metadata/jobs", status_code=status.HTTP_202_ACCEPTED)
+    async def ingest_job_metadata(
+        request: JobMetadataBatch,
+        token: CacheToken = Depends(require_cache_token),
+        state: PipelineState = Depends(get_state),
+    ) -> None:
+        if not request.records:
+            return
+        org_id = token.organization_id
+        if not validate_cache_scope(token, "push", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks push scope")
+
+        rows: list[bytes] = []
+        for record in request.records:
+            if record.org_id != org_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Record org_id mismatch: expected {org_id}, got {record.org_id}",
+                )
+            serialized = json.dumps(record.model_dump(mode="json"))
+            rows.append(serialized.encode("utf-8"))
+            METADATA_ROWS_COUNTER.inc()
+
+        await state.write_metadata(rows)
 
     @app.get("/status", status_code=status.HTTP_200_OK)
     async def status_probe(state: PipelineState = Depends(get_state)) -> dict[str, str]:

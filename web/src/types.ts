@@ -13,6 +13,7 @@ export interface JobRecord {
   completed_at?: string | null;
   last_message?: string | null;
   updated_at: string;
+  metadata?: Record<string, string>;
 }
 
 export interface ServiceStatus {

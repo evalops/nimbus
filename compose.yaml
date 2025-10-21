@@ -39,6 +39,7 @@ services:
       NIMBUS_AGENT_TOKEN_RATE_LIMIT: ${NIMBUS_AGENT_TOKEN_RATE_LIMIT:-15}
       NIMBUS_AGENT_TOKEN_RATE_INTERVAL: ${NIMBUS_AGENT_TOKEN_RATE_INTERVAL:-60}
       NIMBUS_LOG_LEVEL: ${NIMBUS_LOG_LEVEL:-INFO}
+      NIMBUS_METADATA_SINK_URL: http://logging-pipeline:8090
     depends_on:
       - redis
       - clickhouse

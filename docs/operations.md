@@ -60,6 +60,7 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 - Metrics endpoints require either `NIMBUS_*_METRICS_TOKEN` plus an `Authorization: Bearer` header or loopback access.
 - Structured logging uses `structlog`; adjust verbosity with `NIMBUS_LOG_LEVEL`.
 - Enable OpenTelemetry export with `NIMBUS_OTEL_EXPORTER_ENDPOINT`, `NIMBUS_OTEL_EXPORTER_HEADERS`, and `NIMBUS_OTEL_SAMPLER_RATIO`.
+- Set `NIMBUS_METADATA_SINK_URL` to the logging pipeline (`http://logging-pipeline:8090`) so job metadata is forwarded to ClickHouse.
 
 ## Policy Enforcement
 

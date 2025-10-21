@@ -124,6 +124,47 @@ ORDER BY ts DESC
 LIMIT 100;
 ```
 
+## Table: job_metadata
+
+The `job_metadata` table stores extracted key/value metadata for each job (for example hyperparameters such as learning rate or batch size).
+
+### Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS nimbus.job_metadata (
+    job_id UInt64,
+    run_id UInt64,
+    run_attempt UInt32,
+    org_id UInt64,
+    repo_id UInt64,
+    key String,
+    value String,
+    executor Nullable(String),
+    recorded_at DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (org_id, repo_id, job_id, key)
+PARTITION BY toYYYYMM(recorded_at)
+SETTINGS index_granularity = 4096;
+```
+
+### Usage Notes
+
+- Each metadata key/value pair from a job is stored as a separate row.
+- The control plane sends metadata to the logging pipeline, which inserts records into this table.
+- Queries should always scope by `org_id` to preserve tenant isolation.
+
+### Example Analytics Query
+
+```sql
+SELECT value AS learning_rate, count() AS jobs
+FROM job_metadata
+WHERE org_id = 12345
+  AND key = 'lr'
+  AND recorded_at >= now() - INTERVAL 30 DAY
+GROUP BY value
+ORDER BY jobs DESC;
+```
+
 ### Migration from Old Schema
 
 If migrating from a schema without `org_id` and `repo_id`:

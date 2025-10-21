@@ -70,6 +70,60 @@
   overflow-x: auto;
 }
 
+.overview__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  align-items: flex-end;
+}
+
+.overview__filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 160px;
+}
+
+.overview__filter-field label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.overview__filter-field input {
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.85);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.overview__filter-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.overview__filter-actions button {
+  padding: 0.6rem 1rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: rgba(59, 130, 246, 0.15);
+  color: rgba(191, 219, 254, 0.95);
+  cursor: pointer;
+}
+
+.overview__filter-actions button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.overview__filter-active {
+  font-size: 0.85rem;
+  color: rgba(191, 219, 254, 0.7);
+}
+
 .overview__message {
   max-width: 320px;
   white-space: nowrap;
@@ -82,6 +136,15 @@
   text-align: center;
   padding: 2rem 0;
   color: rgba(226, 232, 240, 0.65);
+}
+
+.overview__metadata {
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9rem;
+  color: rgba(191, 219, 254, 0.85);
 }
 
 .overview__status-list {
