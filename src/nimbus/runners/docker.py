@@ -17,7 +17,7 @@ from docker.errors import DockerException, APIError
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
-from ..common.supply_chain import ImagePolicy, ensure_provenance
+from ..common.supply_chain import ImagePolicy, SLSAOptions, SLSAVerifier, ensure_provenance
 from ..common.networking import (
     MetadataEndpointDenylist,
     EgressPolicyPack,
@@ -42,6 +42,7 @@ class DockerExecutor:
         self._cosign_key: Optional[Path] = None
         self._require_provenance: bool = False
         self._provenance_grace_deadline: Optional[datetime] = None
+        self._slsa_verifier: Optional[SLSAVerifier] = None
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the executor with settings."""
@@ -70,6 +71,14 @@ class DockerExecutor:
         self._require_provenance = settings.provenance_required
         if getattr(settings, "provenance_grace_seconds", 0) > 0:
             self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=settings.provenance_grace_seconds)
+        if getattr(settings, "slsa_attestation_dir", None) and self._slsa_verifier is None:
+            options = SLSAOptions(
+                attestation_dir=settings.slsa_attestation_dir,
+                allowed_builders=set(settings.slsa_allowed_builders),
+                predicate_type=settings.slsa_predicate_type,
+                require_attestation=settings.slsa_required,
+            )
+            self._slsa_verifier = SLSAVerifier(options)
         
         # Initialize egress enforcer (similar to HostAgent)
         metadata_denylist = MetadataEndpointDenylist(settings.metadata_endpoint_denylist)
@@ -288,6 +297,7 @@ class DockerExecutor:
             except Exception as exc:
                 LOGGER.error("Failed to pull image", image=image, error=str(exc))
                 raise RuntimeError(f"Failed to pull image {image}: {exc}") from exc
+
     def _verify_image(self, image: str) -> None:
         if not self._image_policy:
             self._image_policy = ImagePolicy.from_paths(
@@ -300,10 +310,14 @@ class DockerExecutor:
             require_provenance=self._require_provenance,
             grace_until=self._provenance_grace_deadline,
             logger=LOGGER,
+            slsa_verifier=self._slsa_verifier,
         )
 
     def set_provenance_grace_deadline(self, deadline: Optional[datetime]) -> None:
         self._provenance_grace_deadline = deadline
+
+    def set_slsa_verifier(self, verifier: SLSAVerifier) -> None:
+        self._slsa_verifier = verifier
     
     async def prepare_warm_instance(self, instance_id: str) -> dict:
         """Prepare a warm Docker instance (primarily pre-pulled images)."""

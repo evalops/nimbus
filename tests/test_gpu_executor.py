@@ -1,5 +1,6 @@
 """Tests for the GPU executor."""
 
+import json
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,12 @@ def mock_settings():
     settings.gpu_require_mig = False
     settings.provenance_grace_seconds = 0
     settings.gpu_enable_cgroup_enforcement = False
+    settings.gpu_cgroup_root = Path("/tmp/nimbus-gpu-cgroup")
+    settings.gpu_dcgm_fifo_path = None
+    settings.slsa_attestation_dir = None
+    settings.slsa_allowed_builders = []
+    settings.slsa_predicate_type = "https://slsa.dev/provenance/v1"
+    settings.slsa_required = False
     return settings
 
 
@@ -170,6 +177,57 @@ def test_check_nvidia_docker_command_fails(mock_run):
     
     executor = GPUExecutor()
     assert executor._check_nvidia_docker() is False
+
+
+@pytest.mark.asyncio
+@patch('src.nimbus.runners.gpu.docker.DockerClient')
+@patch('src.nimbus.runners.gpu.subprocess.run')
+async def test_gpu_executor_cgroup_and_dcgm(mock_run, mock_docker_client, tmp_path, mock_settings, sample_gpu_job):
+    def run_side_effect(cmd, **kwargs):  # noqa: ANN001 - patched signature
+        if cmd and cmd[0] == "docker":
+            return Mock(returncode=0, stdout='{"nvidia": {"path": "runtime"}}')
+        if cmd and "nvidia-smi" in cmd:
+            if "mig" in cmd:
+                return Mock(returncode=0, stdout="")
+            return Mock(returncode=0, stdout="0, Tesla V100, GPU-12345, 32768, 30720, 7.0, 470.82.01")
+        return Mock(returncode=0, stdout="")
+
+    mock_run.side_effect = run_side_effect
+    mock_client = Mock()
+    mock_docker_client.return_value = mock_client
+    mock_client.ping.return_value = True
+    container = Mock()
+    container.wait.return_value = {"StatusCode": 0}
+    container.logs.return_value = b""
+    container.attrs = {"State": {"Pid": 4242}}
+    container.reload.return_value = None
+    mock_client.containers.create.return_value = container
+
+    mock_settings.docker_workspace_path = tmp_path / "workspace"
+    mock_settings.gpu_enable_cgroup_enforcement = True
+    mock_settings.gpu_cgroup_root = tmp_path / "cgroup"
+    mock_settings.gpu_cgroup_root.mkdir()
+    (mock_settings.gpu_cgroup_root / "cgroup.controllers").write_text("devices", encoding="utf-8")
+    (mock_settings.gpu_cgroup_root / "cgroup.subtree_control").write_text("", encoding="utf-8")
+    mock_settings.gpu_dcgm_fifo_path = tmp_path / "dcgm.log"
+
+    executor = GPUExecutor()
+    executor.initialize(mock_settings)
+
+    sample_gpu_job.labels = [label for label in sample_gpu_job.labels if not label.startswith("gpu-count:")]
+    sample_gpu_job.labels.append("gpu-count:1")
+
+    await executor.prepare(sample_gpu_job)
+    devices_allow = mock_settings.gpu_cgroup_root / f"job-{sample_gpu_job.job_id}" / "devices.allow"
+    assert devices_allow.exists()
+
+    await executor.run(sample_gpu_job, timeout_seconds=1)
+    await executor.cleanup(sample_gpu_job.job_id)
+
+    log_path = mock_settings.gpu_dcgm_fifo_path
+    assert log_path.exists()
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line]
+    assert {event["event"] for event in events} == {"start", "stop"}
 
 
 @patch('subprocess.run')

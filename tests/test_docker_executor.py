@@ -29,6 +29,11 @@ def mock_settings():
     settings.image_deny_list_path = None
     settings.cosign_certificate_authority = None
     settings.provenance_required = False
+    settings.provenance_grace_seconds = 0
+    settings.slsa_attestation_dir = None
+    settings.slsa_allowed_builders = []
+    settings.slsa_predicate_type = "https://slsa.dev/provenance/v1"
+    settings.slsa_required = False
     return settings
 
 

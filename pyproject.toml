@@ -44,6 +44,7 @@ dependencies = [
 
 [project.scripts]
 nimbus-create-snapshot = "scripts.create_golden_snapshot:main"
+nimbus-clickhouse-migrate = "scripts.clickhouse_migrate:main"
 
 [project.optional-dependencies]
 host = [

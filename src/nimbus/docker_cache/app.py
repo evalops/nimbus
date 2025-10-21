@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -31,7 +32,32 @@ LOGGER = structlog.get_logger("nimbus.docker_cache")
 TRACER = trace.get_tracer("nimbus.docker_cache")
 
 
-def validate_repository_access(repository: str, token: CacheToken, operation: str) -> None:
+class AuditLogger:
+    """Write structured JSON audit events to a file when configured."""
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self._path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+    def record(self, event: str, **fields: object) -> None:
+        if self._path is None:
+            return
+        payload = {"event": event, **fields}
+        try:
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        except OSError as exc:
+            LOGGER.warning("docker_cache_audit_write_failed", path=str(self._path), error=str(exc))
+
+
+def validate_repository_access(
+    repository: str,
+    token: CacheToken,
+    operation: str,
+    *,
+    audit: Optional[AuditLogger] = None,
+) -> None:
     """
     Validate that a cache token can access the given repository.
     
@@ -51,6 +77,14 @@ def validate_repository_access(repository: str, token: CacheToken, operation: st
                 operation=operation,
                 org_id=org_id,
             )
+            if audit:
+                audit.record(
+                    "docker_cache_repo_scope_mismatch",
+                    repository=repository,
+                    expected_prefix=expected_prefix,
+                    org_id=org_id,
+                    operation=operation,
+                )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
         repo_suffix = repository[len(expected_prefix):].strip("/")
     else:
@@ -68,7 +102,30 @@ def validate_repository_access(repository: str, token: CacheToken, operation: st
             org_id=org_id,
             operation=operation,
         )
+        if audit:
+            audit.record(
+                "docker_cache_access_denied",
+                repository=repository,
+                repo_suffix=repo_suffix,
+                org_id=org_id,
+                operation=operation,
+                scope=token.scope,
+            )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+    if audit:
+        audit.record(
+            "docker_cache_access_granted",
+            repository=repository,
+            repo_suffix=repo_suffix,
+            org_id=org_id,
+            operation=operation,
+            scope=token.scope,
+        )
+
+
+def get_audit_logger_from_request(request: Request) -> Optional[AuditLogger]:
+    return getattr(request.app.state, "audit_logger", None)
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(
@@ -493,6 +550,7 @@ def create_app() -> FastAPI:
         state.storage_path.mkdir(parents=True, exist_ok=True)
         instrument_fastapi_app(app)
         app.state.cache_state = state
+        app.state.audit_logger = AuditLogger(settings.audit_log_path)
         try:
             yield
         finally:
@@ -528,11 +586,13 @@ def create_app() -> FastAPI:
     @app.post("/v2/{name:path}/blobs/uploads/")
     async def start_blob_upload(
         name: str,
+        request: Request,
         token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "push")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "push", audit=audit)
         upload_id = await state.register_upload(repository)
         location = f"/v2/{repository}/blobs/uploads/{upload_id}"
         headers = {
@@ -555,7 +615,8 @@ def create_app() -> FastAPI:
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "push")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "push", audit=audit)
         session = await state.get_upload(upload_id)
         # Validate session repository matches request path
         if session.repository != repository:
@@ -580,7 +641,8 @@ def create_app() -> FastAPI:
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "push")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "push", audit=audit)
         digest_param = request.query_params.get("digest")
         if not digest_param:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="digest query parameter required")
@@ -637,11 +699,13 @@ def create_app() -> FastAPI:
     async def stat_blob(
         name: str,
         digest: str,
+        request: Request,
         token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "pull")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "pull", audit=audit)
         validate_digest(digest)
         path = state.blob_path(digest)
         if not path.exists():
@@ -662,11 +726,13 @@ def create_app() -> FastAPI:
     async def fetch_blob(
         name: str,
         digest: str,
+        request: Request,
         token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> StreamingResponse:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "pull")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "pull", audit=audit)
         validate_digest(digest)
         path = state.blob_path(digest)
         if not path.exists():
@@ -705,7 +771,8 @@ def create_app() -> FastAPI:
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "push")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "push", audit=audit)
         body = await request.body()
         if not body:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest body required")
@@ -739,11 +806,13 @@ def create_app() -> FastAPI:
     async def get_manifest(
         name: str,
         reference: str,
+        request: Request,
         token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "pull")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "pull", audit=audit)
         data, digest_value, media_type = await _read_manifest(state, repository, reference)
         headers = {"Docker-Content-Digest": digest_value}
         return Response(content=data, media_type=media_type or "application/vnd.docker.distribution.manifest.v2+json", headers=headers)
@@ -752,11 +821,13 @@ def create_app() -> FastAPI:
     async def head_manifest(
         name: str,
         reference: str,
+        request: Request,
         token: CacheToken = Depends(require_cache_token),
         state: DockerCacheState = Depends(get_state),
     ) -> Response:
         repository = sanitize_repository(name)
-        validate_repository_access(repository, token, "pull")
+        audit = get_audit_logger_from_request(request)
+        validate_repository_access(repository, token, "pull", audit=audit)
         data, digest_value, media_type = await _read_manifest(state, repository, reference)
         headers = {
             "Docker-Content-Digest": digest_value,
