@@ -19,7 +19,7 @@ from docker.errors import DockerException
 
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
-from ..common.supply_chain import ImagePolicy, ensure_provenance
+from ..common.supply_chain import ImagePolicy, SLSAOptions, SLSAVerifier, ensure_provenance
 from .base import Executor, RunResult
 
 LOGGER = structlog.get_logger("nimbus.runners.gpu")
@@ -43,6 +43,84 @@ class GPUInfo:
         self.temperature = data.get("temperature", 0)  # Temperature in C
 
 
+class GPUCGroupManager:
+    """Manage GPU-specific cgroup state for container isolation."""
+
+    def __init__(self, base_path: Path) -> None:
+        self._base_path = base_path
+        try:
+            self._base_path.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as exc:
+            LOGGER.warning("Failed to prepare GPU cgroup root", base=str(self._base_path), error=str(exc))
+        else:
+            self._ensure_devices_controller()
+
+    def apply(self, job_id: int, gpu_ids: List[str], profile: Optional[str]) -> Path:
+        job_path = self._job_path(job_id)
+        job_path.mkdir(parents=True, exist_ok=True)
+        self._write_device_rules(job_path)
+        spec_path = job_path / "nimbus_gpu.json"
+        spec_payload = {
+            "gpus": gpu_ids,
+            "profile": profile,
+        }
+        spec_path.write_text(json.dumps(spec_payload), encoding="utf-8")
+        return job_path
+
+    def attach(self, job_id: int, pid: int) -> None:
+        job_path = self._job_path(job_id)
+        procs_file = job_path / "cgroup.procs"
+        try:
+            with procs_file.open("a", encoding="utf-8") as handle:
+                handle.write(f"{pid}\n")
+        except (FileNotFoundError, PermissionError) as exc:
+            LOGGER.debug("Failed to attach process to GPU cgroup", job_id=job_id, pid=pid, error=str(exc))
+
+    def cleanup(self, job_id: int) -> None:
+        job_path = self._job_path(job_id)
+        if job_path.exists():
+            try:
+                shutil.rmtree(job_path)
+            except Exception as exc:  # noqa: BLE001 - cleanup best-effort
+                LOGGER.debug("Failed to remove GPU cgroup directory", job_id=job_id, error=str(exc))
+
+    def _job_path(self, job_id: int) -> Path:
+        return self._base_path / f"job-{job_id}"
+
+    def _ensure_devices_controller(self) -> None:
+        controllers_file = self._base_path / "cgroup.controllers"
+        subtree_file = self._base_path / "cgroup.subtree_control"
+        try:
+            if controllers_file.exists() and "devices" in controllers_file.read_text(encoding="utf-8").split():
+                current = subtree_file.read_text(encoding="utf-8") if subtree_file.exists() else ""
+                if "devices" not in current:
+                    with subtree_file.open("a", encoding="utf-8") as handle:
+                        handle.write("+devices\n")
+        except (FileNotFoundError, PermissionError, OSError):
+            LOGGER.debug("Unable to enable devices controller for GPU cgroups", base=str(self._base_path))
+
+    def _write_device_rules(self, job_path: Path) -> None:
+        devices_deny = job_path / "devices.deny"
+        devices_allow = job_path / "devices.allow"
+        try:
+            with devices_deny.open("a", encoding="utf-8") as handle:
+                handle.write("a\n")
+        except (FileNotFoundError, PermissionError, OSError):
+            LOGGER.debug("Unable to write devices.deny for GPU cgroup", path=str(devices_deny))
+
+        rules = [
+            "c 195:* rwm",  # NVIDIA GPUs
+            "c 508:* rwm",  # NVIDIA control device
+            "c 511:* rwm",  # UVM tools
+        ]
+        try:
+            with devices_allow.open("a", encoding="utf-8") as handle:
+                for rule in rules:
+                    handle.write(f"{rule}\n")
+        except (FileNotFoundError, PermissionError, OSError):
+            LOGGER.debug("Unable to write devices.allow for GPU cgroup", path=str(devices_allow))
+
+
 class GPUExecutor:
     """Executor for GPU-accelerated workloads using nvidia-docker."""
     
@@ -63,6 +141,9 @@ class GPUExecutor:
         self._provenance_grace_deadline: Optional[datetime] = None
         self._enable_cgroup = False
         self._cgroup_constraints: Dict[int, dict] = {}
+        self._cgroup_manager: Optional[GPUCGroupManager] = None
+        self._dcgm_fifo: Optional[Path] = None
+        self._slsa_verifier: Optional[SLSAVerifier] = None
     
     def initialize(self, settings: HostAgentSettings) -> None:
         """Initialize the GPU executor."""
@@ -99,6 +180,19 @@ class GPUExecutor:
         if grace_seconds > 0:
             self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=grace_seconds)
         self._enable_cgroup = getattr(settings, "gpu_enable_cgroup_enforcement", False)
+        if self._enable_cgroup:
+            root = getattr(settings, "gpu_cgroup_root", Path("/sys/fs/cgroup/nimbus"))
+            self._cgroup_manager = GPUCGroupManager(root)
+        fifo_path = getattr(settings, "gpu_dcgm_fifo_path", None)
+        self._dcgm_fifo = Path(fifo_path) if fifo_path else None
+        if getattr(settings, "slsa_attestation_dir", None) and self._slsa_verifier is None:
+            options = SLSAOptions(
+                attestation_dir=settings.slsa_attestation_dir,
+                allowed_builders=set(settings.slsa_allowed_builders),
+                predicate_type=settings.slsa_predicate_type,
+                require_attestation=settings.slsa_required,
+            )
+            self._slsa_verifier = SLSAVerifier(options)
     
     @property
     def name(self) -> str:
@@ -246,6 +340,8 @@ class GPUExecutor:
         if self._enable_cgroup:
             self._apply_cgroup_constraints(job, allocated_gpus)
 
+        self._emit_dcgm_event(job.job_id, allocated_gpus, "start", profile)
+
         LOGGER.info("Prepared GPU workspace", 
                    job_id=job.job_id, 
                    workspace=str(workspace),
@@ -332,9 +428,10 @@ class GPUExecutor:
             # Create and start container
             container = self._docker_client.containers.create(**container_config)
             self._job_containers[job.job_id] = container
-            
+
             container.start()
-            
+            self._attach_container_to_cgroup(job.job_id, container)
+
             # Wait for completion
             timeout = timeout_seconds or 7200  # 2 hour default for GPU jobs
             exit_code = container.wait(timeout=timeout)["StatusCode"]
@@ -395,11 +492,21 @@ class GPUExecutor:
             except Exception as exc:
                 LOGGER.warning("Failed to remove GPU workspace", job_id=job_id, error=str(exc))
 
+        self._emit_dcgm_event(job_id, [], "stop")
+        if self._cgroup_manager:
+            try:
+                self._cgroup_manager.cleanup(job_id)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("Failed to clean GPU cgroup", job_id=job_id, error=str(exc))
+
         self._job_profiles.pop(job_id, None)
         self._cgroup_constraints.pop(job_id, None)
 
     def set_provenance_grace_deadline(self, deadline: Optional[datetime]) -> None:
         self._provenance_grace_deadline = deadline
+
+    def set_slsa_verifier(self, verifier: SLSAVerifier) -> None:
+        self._slsa_verifier = verifier
     
     def _get_required_gpu_count(self, job: JobAssignment) -> int:
         """Determine how many GPUs this job requires."""
@@ -453,17 +560,61 @@ class GPUExecutor:
         return available[:gpu_count]
 
     def _apply_cgroup_constraints(self, job: JobAssignment, allocated_gpus: List[str]) -> None:
+        profile = self._job_profiles.get(job.job_id)
+        cgroup_path: Optional[Path] = None
+        if self._cgroup_manager:
+            try:
+                cgroup_path = self._cgroup_manager.apply(job.job_id, allocated_gpus, profile)
+            except Exception as exc:  # noqa: BLE001 - surface but continue
+                LOGGER.warning("Failed to apply GPU cgroup", job_id=job.job_id, error=str(exc))
+
         self._cgroup_constraints[job.job_id] = {
             "gpus": allocated_gpus,
-            "profile": self._job_profiles.get(job.job_id),
+            "profile": profile,
+            "cgroup_path": str(cgroup_path) if cgroup_path else None,
         }
         LOGGER.info(
             "Applied GPU isolation",
             job_id=job.job_id,
             gpus=allocated_gpus,
-            profile=self._job_profiles.get(job.job_id),
+            profile=profile,
+            cgroup=str(cgroup_path) if cgroup_path else None,
         )
-    
+
+    def _emit_dcgm_event(self, job_id: int, gpus: List[str], event: str, profile: Optional[str] = None) -> None:
+        if not self._dcgm_fifo:
+            return
+        payload = {
+            "event": event,
+            "job_id": job_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "gpus": gpus,
+        }
+        if profile:
+            payload["profile"] = profile
+        try:
+            with self._dcgm_fifo.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload) + "\n")
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            LOGGER.warning("Failed to emit DCGM job event", job_id=job_id, error=str(exc), path=str(self._dcgm_fifo))
+
+    def _attach_container_to_cgroup(self, job_id: int, container: Container) -> None:
+        if not self._cgroup_manager:
+            return
+        try:
+            container.reload()
+            pid = container.attrs.get("State", {}).get("Pid")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Unable to reload container for cgroup attachment", job_id=job_id, error=str(exc))
+            return
+        if not pid:
+            LOGGER.debug("Container PID missing, skipping cgroup attachment", job_id=job_id)
+            return
+        try:
+            self._cgroup_manager.attach(job_id, int(pid))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to attach container to GPU cgroup", job_id=job_id, pid=pid, error=str(exc))
+
     def _get_gpu_container_image(self, job: JobAssignment) -> str:
         """Determine the GPU container image to use."""
         # Check labels for custom image
@@ -548,4 +699,5 @@ class GPUExecutor:
             require_provenance=self._require_provenance,
             grace_until=self._provenance_grace_deadline,
             logger=LOGGER,
+            slsa_verifier=self._slsa_verifier,
         )

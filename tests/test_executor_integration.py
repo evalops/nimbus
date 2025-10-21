@@ -38,6 +38,14 @@ def mock_settings():
     settings.provenance_required = False
     settings.gpu_allowed_profiles = []
     settings.gpu_require_mig = False
+    settings.gpu_enable_cgroup_enforcement = False
+    settings.gpu_cgroup_root = Path("/tmp/nimbus-gpu-cgroup")
+    settings.gpu_dcgm_fifo_path = None
+    settings.provenance_grace_seconds = 0
+    settings.slsa_attestation_dir = None
+    settings.slsa_allowed_builders = []
+    settings.slsa_predicate_type = "https://slsa.dev/provenance/v1"
+    settings.slsa_required = False
     return settings
 
 

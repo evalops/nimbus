@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -59,6 +60,95 @@ def verify_cosign_signature(
     LOGGER.info("Cosign verification succeeded", image=image_ref)
 
 
+@dataclass(slots=True)
+class SLSAOptions:
+    """Configuration for SLSA attestation verification."""
+
+    attestation_dir: Path
+    allowed_builders: set[str]
+    predicate_type: Optional[str] = "https://slsa.dev/provenance/v1"
+    require_attestation: bool = False
+
+
+class SLSAVerifier:
+    """Validate SLSA provenance attestations emitted by trusted builders."""
+
+    def __init__(self, options: SLSAOptions) -> None:
+        self._options = options
+
+    def verify(self, image_ref: str) -> None:
+        attestation_path = self._resolve_attestation_path(image_ref)
+        if attestation_path is None:
+            if self._options.require_attestation:
+                raise PermissionError(f"No SLSA attestation found for {image_ref}")
+            LOGGER.debug("slsa_attestation_missing", image=image_ref)
+            return
+
+        try:
+            raw = attestation_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if self._options.require_attestation:
+                raise PermissionError(f"No SLSA attestation found for {image_ref}") from None
+            LOGGER.debug("slsa_attestation_missing", image=image_ref)
+            return
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PermissionError(f"Invalid SLSA attestation JSON: {exc}") from exc
+
+        predicate_type = payload.get("predicateType")
+        if self._options.predicate_type and predicate_type != self._options.predicate_type:
+            raise PermissionError(
+                f"SLSA predicate type mismatch: expected {self._options.predicate_type}, got {predicate_type}"
+            )
+
+        builder_id = (
+            payload.get("predicate", {})
+            .get("builder", {})
+            .get("id")
+        )
+        if self._options.allowed_builders and builder_id not in self._options.allowed_builders:
+            raise PermissionError(f"SLSA builder {builder_id!r} not permitted")
+
+        expected_digest = self._extract_digest(image_ref)
+        if expected_digest:
+            subjects = payload.get("subject", [])
+            if not any(self._digest_matches(subject, expected_digest) for subject in subjects):
+                raise PermissionError("SLSA subject digest mismatch")
+
+        LOGGER.info("SLSA verification succeeded", image=image_ref, attestation=str(attestation_path))
+
+    def _resolve_attestation_path(self, image_ref: str) -> Optional[Path]:
+        digest = self._extract_digest(image_ref)
+        candidates: list[Path] = []
+        if digest:
+            candidates.append(self._options.attestation_dir / f"{digest}.json")
+        candidates.append(self._options.attestation_dir / f"{self._sanitize(image_ref)}.json")
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _sanitize(reference: str) -> str:
+        return "".join(char if char.isalnum() else "_" for char in reference)
+
+    @staticmethod
+    def _extract_digest(reference: str) -> Optional[str]:
+        if "@sha256:" in reference:
+            return reference.split("@sha256:", 1)[1]
+        return None
+
+    @staticmethod
+    def _digest_matches(subject: dict, expected: str) -> bool:
+        digest_map = subject.get("digest", {})
+        for algorithm, value in digest_map.items():
+            if algorithm.lower() == "sha256" and value.lower() == expected.lower():
+                return True
+        return False
+
+
 def generate_spdx_sbom(root: Path, destination: Path) -> None:
     file_entries = []
     for path in root.rglob("*"):
@@ -97,19 +187,21 @@ def ensure_provenance(
     require_provenance: bool,
     grace_until: Optional[datetime] = None,
     logger: Optional[BoundLogger] = None,
+    slsa_verifier: Optional[SLSAVerifier] = None,
 ) -> None:
     policy.ensure_allowed(image_ref)
-    if not require_provenance:
+    if not require_provenance and not slsa_verifier:
         return
 
     try:
-        if not public_key_path:
-            raise PermissionError("cosign key missing")
-        if not public_key_path.exists():
-            raise PermissionError("cosign key missing")
-        if not any(delim in image_ref for delim in (":", "@")):
-            raise PermissionError("non-oci reference")
-        verify_cosign_signature(image_ref, public_key_path=public_key_path)
+        if require_provenance:
+            if not public_key_path or not public_key_path.exists():
+                raise PermissionError("cosign key missing")
+            if not any(delim in image_ref for delim in (":", "@")):
+                raise PermissionError("non-oci reference")
+            verify_cosign_signature(image_ref, public_key_path=public_key_path)
+        if slsa_verifier:
+            slsa_verifier.verify(image_ref)
     except Exception as exc:
         if grace_until and datetime.now(timezone.utc) < grace_until:
             if logger:

@@ -25,6 +25,8 @@ from ..common.networking import (
 )
 from ..common.supply_chain import (
     ImagePolicy,
+    SLSAOptions,
+    SLSAVerifier,
     ensure_provenance,
     generate_spdx_sbom,
 )
@@ -73,6 +75,8 @@ class HostAgent:
                     executor.initialize(settings)
                     if hasattr(executor, "set_provenance_grace_deadline"):
                         executor.set_provenance_grace_deadline(self._provenance_grace_deadline)
+                    if hasattr(executor, "set_slsa_verifier") and self._slsa_verifier:
+                        executor.set_slsa_verifier(self._slsa_verifier)
                     self._executors[name] = executor
                     LOGGER.info("Initialized executor", executor=name)
                 except Exception as e:
@@ -145,6 +149,15 @@ class HostAgent:
         self._cosign_key = settings.cosign_certificate_authority
         self._require_provenance = settings.provenance_required
         self._sbom_output_path = settings.sbom_output_path
+        self._slsa_verifier: Optional[SLSAVerifier] = None
+        if settings.slsa_attestation_dir:
+            options = SLSAOptions(
+                attestation_dir=settings.slsa_attestation_dir,
+                allowed_builders=set(settings.slsa_allowed_builders),
+                predicate_type=settings.slsa_predicate_type,
+                require_attestation=settings.slsa_required,
+            )
+            self._slsa_verifier = SLSAVerifier(options)
 
     async def run(self) -> None:
         self._running = True
@@ -351,6 +364,7 @@ class HostAgent:
                     require_provenance=self._require_provenance,
                     grace_until=self._provenance_grace_deadline,
                     logger=LOGGER,
+                    slsa_verifier=self._slsa_verifier,
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("Runner image provenance verification failed", error=str(exc))

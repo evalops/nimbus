@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -125,4 +126,81 @@ def test_ensure_provenance_grace_expired(tmp_path: Path) -> None:
             require_provenance=True,
             grace_until=grace_until,
             logger=supply_chain.LOGGER,
+        )
+
+
+def test_slsa_verifier_accepts_matching_attestation(tmp_path: Path) -> None:
+    attestation_dir = tmp_path / "attest"
+    attestation_dir.mkdir()
+    digest = "a" * 64
+    attestation = {
+        "subject": [{"name": "registry/image", "digest": {"sha256": digest}}],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {"builder": {"id": "builder://trusted"}},
+    }
+    (attestation_dir / f"{digest}.json").write_text(json.dumps(attestation), encoding="utf-8")
+    options = supply_chain.SLSAOptions(attestation_dir=attestation_dir, allowed_builders={"builder://trusted"})
+    verifier = supply_chain.SLSAVerifier(options)
+
+    verifier.verify(f"registry/image@sha256:{digest}")
+
+
+def test_slsa_verifier_rejects_untrusted_builder(tmp_path: Path) -> None:
+    attestation_dir = tmp_path / "attest"
+    attestation_dir.mkdir()
+    digest = "b" * 64
+    attestation = {
+        "subject": [{"name": "registry/image", "digest": {"sha256": digest}}],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {"builder": {"id": "builder://other"}},
+    }
+    (attestation_dir / f"{digest}.json").write_text(json.dumps(attestation), encoding="utf-8")
+    options = supply_chain.SLSAOptions(attestation_dir=attestation_dir, allowed_builders={"builder://trusted"}, require_attestation=True)
+    verifier = supply_chain.SLSAVerifier(options)
+
+    with pytest.raises(PermissionError):
+        verifier.verify(f"registry/image@sha256:{digest}")
+
+
+def test_ensure_provenance_enforces_slsa(tmp_path: Path) -> None:
+    allow = tmp_path / "allow.txt"
+    digest = "c" * 64
+    allow.write_text(f"registry.internal/image@sha256:{digest}\n", encoding="utf-8")
+    policy = supply_chain.ImagePolicy.from_paths(allow, None)
+    attestation_dir = tmp_path / "attest"
+    attestation_dir.mkdir()
+    attestation = {
+        "subject": [{"name": "registry.internal/image", "digest": {"sha256": digest}}],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {"builder": {"id": "builder://trusted"}},
+    }
+    (attestation_dir / f"{digest}.json").write_text(json.dumps(attestation), encoding="utf-8")
+    options = supply_chain.SLSAOptions(attestation_dir=attestation_dir, allowed_builders={"builder://trusted"}, require_attestation=True)
+    verifier = supply_chain.SLSAVerifier(options)
+
+    supply_chain.ensure_provenance(
+        f"registry.internal/image@sha256:{digest}",
+        policy,
+        public_key_path=None,
+        require_provenance=False,
+        slsa_verifier=verifier,
+    )
+
+
+def test_ensure_provenance_rejects_when_slsa_missing(tmp_path: Path) -> None:
+    allow = tmp_path / "allow.txt"
+    allow.write_text("registry.internal/image@sha256:dd\n", encoding="utf-8")
+    policy = supply_chain.ImagePolicy.from_paths(allow, None)
+    attestation_dir = tmp_path / "attest"
+    attestation_dir.mkdir()
+    options = supply_chain.SLSAOptions(attestation_dir=attestation_dir, allowed_builders={"builder://trusted"}, require_attestation=True)
+    verifier = supply_chain.SLSAVerifier(options)
+
+    with pytest.raises(PermissionError):
+        supply_chain.ensure_provenance(
+            "registry.internal/image@sha256:dd",
+            policy,
+            public_key_path=None,
+            require_provenance=False,
+            slsa_verifier=verifier,
         )

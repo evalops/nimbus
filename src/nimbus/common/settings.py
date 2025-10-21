@@ -227,6 +227,10 @@ class HostAgentSettings(BaseSettings):
     cosign_certificate_authority: Optional[Path] = env_field(None, "NIMBUS_AGENT_COSIGN_CA")
     provenance_required: bool = env_field(True, "NIMBUS_AGENT_PROVENANCE_REQUIRED")
     provenance_grace_seconds: int = env_field(14 * 24 * 3600, "NIMBUS_AGENT_PROVENANCE_GRACE_SECONDS")
+    slsa_attestation_dir: Optional[Path] = env_field(None, "NIMBUS_AGENT_SLSA_ATTESTATION_DIR")
+    slsa_allowed_builders: list[str] = Field(default_factory=list, validation_alias="NIMBUS_AGENT_SLSA_ALLOWED_BUILDERS")
+    slsa_predicate_type: Optional[str] = env_field("https://slsa.dev/provenance/v1", "NIMBUS_AGENT_SLSA_PREDICATE_TYPE")
+    slsa_required: bool = env_field(False, "NIMBUS_AGENT_SLSA_REQUIRED")
     
     # Docker executor settings
     docker_socket_path: str = env_field("/var/run/docker.sock", "NIMBUS_DOCKER_SOCKET")
@@ -237,6 +241,8 @@ class HostAgentSettings(BaseSettings):
     gpu_allowed_profiles: list[str] = Field(default_factory=list, validation_alias="NIMBUS_GPU_ALLOWED_PROFILES")
     gpu_require_mig: bool = env_field(False, "NIMBUS_GPU_REQUIRE_MIG")
     gpu_enable_cgroup_enforcement: bool = env_field(False, "NIMBUS_GPU_ENABLE_CGROUPS")
+    gpu_cgroup_root: Path = env_field(Path("/sys/fs/cgroup/nimbus"), "NIMBUS_GPU_CGROUP_ROOT")
+    gpu_dcgm_fifo_path: Optional[Path] = env_field(None, "NIMBUS_GPU_DCGM_FIFO")
     
     # Warm pool settings
     enable_warm_pools: bool = env_field(True, "NIMBUS_WARM_POOLS_ENABLE")
@@ -291,6 +297,13 @@ class HostAgentSettings(BaseSettings):
     @field_validator("artifact_registry_deny_list", mode="before")
     @classmethod
     def _split_registry_deny(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("slsa_allowed_builders", mode="before")
+    @classmethod
+    def _split_slsa_builders(cls, value):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
@@ -381,6 +394,7 @@ class DockerCacheSettings(BaseSettings):
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")
     otel_sampler_ratio: float = env_field(0.1, "NIMBUS_OTEL_SAMPLER_RATIO")
+    audit_log_path: Optional[Path] = env_field(None, "NIMBUS_DOCKER_CACHE_AUDIT_LOG")
 
     @field_validator("metadata_database_url", mode="before")
     @classmethod
