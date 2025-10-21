@@ -186,6 +186,52 @@ ORDER BY total DESC
 LIMIT 10;
 ```
 
+
+### Optional Materialized View
+
+For faster dashboard queries you can maintain a rolling aggregation of successes/failures per metadata value:
+
+```sql
+CREATE TABLE IF NOT EXISTS nimbus.job_metadata_agg (
+    org_id UInt64,
+    key String,
+    value String,
+    window_start DateTime,
+    window_end DateTime,
+    succeeded UInt64,
+    failed UInt64,
+    total UInt64
+) ENGINE = SummingMergeTree()
+ORDER BY (org_id, key, value, window_start)
+PARTITION BY toYYYYMM(window_start);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS nimbus.job_metadata_mv
+TO nimbus.job_metadata_agg
+AS SELECT
+    org_id,
+    key,
+    value,
+    toStartOfHour(recorded_at) AS window_start,
+    toStartOfHour(recorded_at) + INTERVAL 1 HOUR AS window_end,
+    countIf(status = 'succeeded') AS succeeded,
+    countIf(status = 'failed') AS failed,
+    count() AS total
+FROM nimbus.job_metadata
+WHERE status IN ('succeeded', 'failed')
+GROUP BY org_id, key, value, window_start, window_end;
+```
+
+This view lets you query time series success rates without scanning the base table:
+
+```sql
+SELECT window_start, value, succeeded, failed, total
+FROM nimbus.job_metadata_agg
+WHERE org_id = 12345
+  AND key = 'lr'
+  AND window_start >= now() - INTERVAL 7 DAY
+ORDER BY window_start;
+```
+
 ### Migration from Old Schema
 
 If migrating from a schema without `org_id` and `repo_id`:

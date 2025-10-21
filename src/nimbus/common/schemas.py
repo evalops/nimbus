@@ -132,6 +132,7 @@ class JobMetadataRecord(BaseModel):
     key: str
     value: str
     executor: Optional[str] = None
+    status: Optional[str] = None
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
