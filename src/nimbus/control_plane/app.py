@@ -361,6 +361,46 @@ class AppState:
                 error=str(exc),
             )
 
+    async def fetch_metadata_summary(
+        self,
+        *,
+        org_id: Optional[int],
+        key: str,
+        limit: int,
+        hours_back: Optional[int],
+    ) -> list[dict[str, object]]:
+        if not self.metadata_sink_url:
+            return []
+        secret = self.settings.cache_shared_secret.get_secret_value()
+        token = mint_cache_token(
+            secret=secret,
+            organization_id=org_id or 0,
+            ttl_seconds=60,
+            scope="read_write",
+        )
+        params: dict[str, object] = {"key": key, "limit": limit}
+        if hours_back is not None:
+            params["hours_back"] = hours_back
+        if org_id:
+            params["org_id"] = org_id
+        url = self.metadata_sink_url.rstrip("/") + "/metadata/jobs/summary"
+        headers = {"Authorization": f"Bearer {token.token}"}
+        try:
+            response = await self.http_client.get(url, params=params, headers=headers, timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                return payload
+            return []
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to fetch metadata summary",
+                key=key,
+                org_id=org_id,
+                error=str(exc),
+            )
+            return []
+
 
 def _get_state(request: Request) -> AppState:
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
@@ -1347,6 +1387,28 @@ def create_app() -> FastAPI:
             metadata_value=metadata_value,
         )
         return [JobRecord.model_validate(row) for row in rows]
+
+    @app.get("/api/jobs/metadata/summary")
+    async def job_metadata_summary(
+        key: str,
+        limit: int = 10,
+        hours_back: Optional[int] = None,
+        org_id: Optional[int] = None,
+        _: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[dict[str, object]]:
+        REQUEST_COUNTER.inc()
+        key = key.strip()
+        if not key:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Metadata key required")
+        limit = max(1, min(limit, 100))
+        summary = await state.fetch_metadata_summary(
+            org_id=org_id,
+            key=key,
+            limit=limit,
+            hours_back=hours_back,
+        )
+        return summary
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(

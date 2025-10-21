@@ -147,6 +147,50 @@
   color: rgba(191, 219, 254, 0.85);
 }
 
+.overview__metadata-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.overview__metadata-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.overview__metadata-label {
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+.overview__metadata-bar {
+  position: relative;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  overflow: hidden;
+  min-height: 24px;
+}
+
+.overview__metadata-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.6), rgba(37, 99, 235, 0.9));
+}
+
+.overview__metadata-count {
+  position: relative;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.95);
+}
+
 .overview__status-list {
   list-style: none;
   margin: 0;

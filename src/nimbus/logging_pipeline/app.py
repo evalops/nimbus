@@ -5,7 +5,9 @@ from __future__ import annotations
 import inspect
 import json
 import time
+import asyncio
 from contextlib import asynccontextmanager
+import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Iterable, Optional
 
@@ -126,6 +128,81 @@ class PipelineState:
                 )
                 raise HTTPException(status_code=502, detail="ClickHouse metadata insert failed")
 
+    async def summarize_metadata(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        limit: int,
+        hours_back: Optional[int],
+    ) -> list[dict[str, object]]:
+        limit = max(1, min(limit, 200))
+        if hours_back is None:
+            hours_back = self.settings.log_query_max_hours
+        hours_back = min(hours_back, self.settings.log_query_max_hours)
+
+        query_parts = [
+            "SELECT value, count() AS count",
+            f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_metadata_table}",
+            "WHERE key = {key:String}",
+            "AND recorded_at >= now() - INTERVAL {hours_back:UInt32} HOUR",
+        ]
+        params: dict[str, object] = {
+            "key": key,
+            "hours_back": hours_back,
+            "limit": limit,
+        }
+        if org_id:
+            query_parts.append("AND org_id = {org_id:UInt64}")
+            params["org_id"] = org_id
+        query_parts.append("GROUP BY value")
+        query_parts.append("ORDER BY count DESC")
+        query_parts.append("LIMIT {limit:UInt32}")
+        query_parts.append("FORMAT JSON")
+        query = " \n".join(query_parts)
+
+        query_params = {"query": query}
+        for key_param, value in params.items():
+            query_params[f"param_{key_param}"] = value
+
+        auth = self._build_query_auth(org_id) if org_id else self._build_query_auth(0)
+        response = await self.http.get(
+            self.settings.clickhouse_url,
+            params=query_params,
+            auth=auth,
+        )
+        if response.is_error:
+            CLICKHOUSE_ERRORS_COUNTER.inc()
+            LOGGER.error(
+                "ClickHouse metadata summary failed",
+                status=response.status_code,
+                body=response.text[:2000],
+            )
+            raise HTTPException(status_code=502, detail="ClickHouse metadata summary failed")
+        data = response.json().get("data", [])
+        return [{"value": row.get("value"), "count": row.get("count", 0)} for row in data]
+
+    async def enforce_metadata_retention(self) -> None:
+        days = self.settings.metadata_retention_days
+        if days <= 0:
+            return
+        query = (
+            f"ALTER TABLE {self.settings.clickhouse_database}.{self.settings.clickhouse_metadata_table} "
+            "DELETE WHERE recorded_at < now() - INTERVAL {days:UInt32} DAY"
+        )
+        params = {"query": query, "param_days": days}
+        response = await self.http.post(
+            self.settings.clickhouse_url,
+            params=params,
+            auth=self._ingest_auth,
+        )
+        if response.is_error:
+            LOGGER.warning(
+                "Metadata retention job failed",
+                status=response.status_code,
+                body=response.text[:2000],
+            )
+
     async def query_logs(
         self,
         *,
@@ -245,9 +322,24 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(timeout=timeout)
     app.state.pipeline = PipelineState(settings=settings, http_client=http_client)
     instrument_fastapi_app(app)
+    retention_task: Optional[asyncio.Task] = None
+    if settings.metadata_retention_days > 0:
+        async def retention_worker():
+            while True:
+                await asyncio.sleep(3600)
+                try:
+                    await app.state.pipeline.enforce_metadata_retention()  # type: ignore[attr-defined]
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.warning("Metadata retention task failed", error=str(exc))
+
+        retention_task = asyncio.create_task(retention_worker())
     try:
         yield
     finally:
+        if retention_task:
+            retention_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await retention_task
         await http_client.aclose()
 
 
@@ -396,6 +488,32 @@ def create_app() -> FastAPI:
             METADATA_ROWS_COUNTER.inc()
 
         await state.write_metadata(rows)
+
+    @app.get("/metadata/jobs/summary", status_code=status.HTTP_200_OK)
+    async def metadata_summary_endpoint(
+        key: str,
+        org_id: Optional[int] = None,
+        limit: int = 20,
+        hours_back: Optional[int] = None,
+        token: CacheToken = Depends(require_cache_token),
+        state: PipelineState = Depends(get_state),
+    ) -> list[dict[str, object]]:
+        if not key:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="key required")
+        effective_org = org_id if org_id is not None else token.organization_id
+        if effective_org and effective_org != token.organization_id:
+            if not validate_cache_scope(token, "read", effective_org):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks read scope")
+        elif effective_org:
+            if not validate_cache_scope(token, "read", effective_org):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks read scope")
+        summary = await state.summarize_metadata(
+            key=key,
+            org_id=effective_org if effective_org else None,
+            limit=limit,
+            hours_back=hours_back,
+        )
+        return summary
 
     @app.get("/status", status_code=status.HTTP_200_OK)
     async def status_probe(state: PipelineState = Depends(get_state)) -> dict[str, str]:

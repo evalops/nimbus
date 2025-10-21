@@ -367,6 +367,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_timeout_seconds: int = env_field(10, "NIMBUS_CLICKHOUSE_TIMEOUT")
     metrics_token: Optional[SecretStr] = env_field(None, "NIMBUS_LOGGING_METRICS_TOKEN")
     log_query_max_hours: int = env_field(168, "NIMBUS_LOG_QUERY_MAX_HOURS")  # 7 days default
+    metadata_retention_days: int = env_field(90, "NIMBUS_METADATA_RETENTION_DAYS")
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")

@@ -6,6 +6,11 @@ import { useSettings } from "../hooks/useSettings";
 
 import "./OverviewPage.css";
 
+type MetadataBucket = {
+  value: string;
+  count: number;
+};
+
 export function OverviewPage() {
   const { controlGet, fetchMetricsText } = useApi();
   const { settings } = useSettings();
@@ -18,6 +23,7 @@ export function OverviewPage() {
   const [metadataValue, setMetadataValue] = useState("");
   const [appliedMetadataKey, setAppliedMetadataKey] = useState("");
   const [appliedMetadataValue, setAppliedMetadataValue] = useState("");
+  const [metadataSummary, setMetadataSummary] = useState<MetadataBucket[]>([]);
 
   const hasAgentToken = Boolean(settings.agentToken);
 
@@ -44,6 +50,22 @@ export function OverviewPage() {
       setStatus(statusResponse as ServiceStatus);
       setJobs(jobsResponse as JobRecord[]);
       setMetrics(metricsText);
+
+      if (appliedMetadataKey) {
+        const summaryParams = new URLSearchParams({ key: appliedMetadataKey, limit: "10" });
+        if (appliedMetadataValue) {
+          summaryParams.set("meta_value", appliedMetadataValue);
+        }
+        try {
+          const summaryResponse = await controlGet(`/api/jobs/metadata/summary?${summaryParams.toString()}`);
+          setMetadataSummary(summaryResponse as MetadataBucket[]);
+        } catch (summaryError) {
+          console.warn("Failed to load metadata summary", summaryError);
+          setMetadataSummary([]);
+        }
+      } else {
+        setMetadataSummary([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -68,6 +90,7 @@ export function OverviewPage() {
     setMetadataValue("");
     setAppliedMetadataKey("");
     setAppliedMetadataValue("");
+    setMetadataSummary([]);
   };
 
   const jobCounts = useMemo(() => {
@@ -206,6 +229,23 @@ export function OverviewPage() {
         </section>
       )}
 
+      {appliedMetadataKey && (
+        <section className="overview__section">
+          <header className="overview__section-header">
+            <h2>Metadata Distribution</h2>
+            <span>
+              Key: {appliedMetadataKey}
+              {appliedMetadataValue ? ` (${appliedMetadataValue})` : ""}
+            </span>
+          </header>
+          {metadataSummary.length > 0 ? (
+            <MetadataChart data={metadataSummary} />
+          ) : (
+            <p className="overview__empty">No metadata recorded for this key.</p>
+          )}
+        </section>
+      )}
+
       {metrics && (
         <section className="overview__section">
           <header className="overview__section-header">
@@ -228,5 +268,26 @@ function StatCard({ label, value }: { label: string; value: number }) {
       <span className="overview__stat-label">{label}</span>
       <span className="overview__stat-value">{value}</span>
     </div>
+  );
+}
+
+function MetadataChart({ data }: { data: MetadataBucket[] }) {
+  const maxCount = Math.max(...data.map((bucket) => Number(bucket.count) || 0), 1);
+
+  return (
+    <ul className="overview__metadata-list">
+      {data.map((bucket) => {
+        const width = Math.max(4, (Number(bucket.count) / maxCount) * 100);
+        return (
+          <li key={`${bucket.value}-${bucket.count}`}>
+            <div className="overview__metadata-label">{bucket.value || "(empty)"}</div>
+            <div className="overview__metadata-bar">
+              <span className="overview__metadata-bar-fill" style={{ width: `${width}%` }} />
+              <span className="overview__metadata-count">{bucket.count}</span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
