@@ -5,6 +5,7 @@ export interface JobRecord {
   repo_id: number;
   repo_full_name: string;
   repo_private: boolean;
+  org_id?: number;
   labels: string[];
   status: string;
   agent_id?: string | null;

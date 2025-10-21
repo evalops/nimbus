@@ -23,6 +23,8 @@ from sqlalchemy import (
     select,
     update,
     and_,
+    case,
+    cast,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -273,6 +275,62 @@ async def list_recent_jobs(
             if metadata_value in {str(value) for value in (row.get("metadata") or {}).values()}
         ]
     return normalised
+
+
+async def metadata_outcomes(
+    session: AsyncSession,
+    key: str,
+    *,
+    org_id: Optional[int] = None,
+    hours_back: Optional[int] = None,
+    limit: int = 20,
+) -> list[dict]:
+    value_expr = cast(jobs_table.c.metadata[key], String)
+    if value_expr is None:
+        return []
+
+    total_case = func.count().label("total")
+    succeeded_case = func.sum(
+        case((jobs_table.c.status == "succeeded", 1), else_=0)
+    ).label("succeeded")
+    failed_case = func.sum(
+        case((jobs_table.c.status == "failed", 1), else_=0)
+    ).label("failed")
+
+    stmt = (
+        select(
+            value_expr.label("value"),
+            total_case,
+            succeeded_case,
+            failed_case,
+        )
+        .where(value_expr.isnot(None))
+    )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    if hours_back is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        stmt = stmt.where(jobs_table.c.updated_at >= cutoff)
+    stmt = (
+        stmt.group_by(value_expr)
+        .order_by(total_case.desc())
+        .limit(max(1, limit))
+    )
+    result = await session.execute(stmt)
+    buckets: list[dict] = []
+    for row in result.mappings():
+        value = row.get("value")
+        if isinstance(value, str) and value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        buckets.append(
+            {
+                "value": value,
+                "total": int(row.get("total") or 0),
+                "succeeded": int(row.get("succeeded") or 0),
+                "failed": int(row.get("failed") or 0),
+            }
+        )
+    return buckets
 
 
 async def job_status_counts(

@@ -11,6 +11,13 @@ type MetadataBucket = {
   count: number;
 };
 
+type MetadataOutcome = {
+  value: string | null;
+  total: number;
+  succeeded: number;
+  failed: number;
+};
+
 export function OverviewPage() {
   const { controlGet, fetchMetricsText } = useApi();
   const { settings } = useSettings();
@@ -21,12 +28,34 @@ export function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [metadataKey, setMetadataKey] = useState("");
   const [metadataValue, setMetadataValue] = useState("");
+  const [metadataOrg, setMetadataOrg] = useState<string>("");
   const [appliedMetadataKey, setAppliedMetadataKey] = useState("");
   const [appliedMetadataValue, setAppliedMetadataValue] = useState("");
+  const [appliedMetadataOrg, setAppliedMetadataOrg] = useState<string>("");
   const [metadataSummary, setMetadataSummary] = useState<MetadataBucket[]>([]);
+  const [metadataOutcomes, setMetadataOutcomes] = useState<MetadataOutcome[]>([]);
   const [metadataHours, setMetadataHours] = useState(24);
 
   const hasAgentToken = Boolean(settings.agentToken);
+
+  const orgOptions = useMemo(() => {
+    const ids = new Set<number>();
+    jobs.forEach((job) => {
+      if (typeof job.org_id === "number") {
+        ids.add(job.org_id);
+      }
+    });
+    return Array.from(ids).sort((a, b) => a - b);
+  }, [jobs]);
+
+  const outcomeMap = useMemo(() => {
+    const map: Record<string, MetadataOutcome> = {};
+    metadataOutcomes.forEach((entry) => {
+      const key = entry.value ?? "";
+      map[key] = entry;
+    });
+    return map;
+  }, [metadataOutcomes]);
 
   const refresh = useCallback(async () => {
     if (!hasAgentToken) {
@@ -42,6 +71,9 @@ export function OverviewPage() {
       if (appliedMetadataValue) {
         params.set("meta_value", appliedMetadataValue);
       }
+      if (appliedMetadataOrg) {
+        params.set("org_id", appliedMetadataOrg);
+      }
       const query = params.toString();
       const [statusResponse, jobsResponse, metricsText] = await Promise.all([
         controlGet("/api/status"),
@@ -54,11 +86,17 @@ export function OverviewPage() {
 
       if (appliedMetadataKey) {
         const summaryParams = new URLSearchParams({ key: appliedMetadataKey, limit: "10" });
+        const outcomeParams = new URLSearchParams({ key: appliedMetadataKey, limit: "10" });
         if (appliedMetadataValue) {
           summaryParams.set("meta_value", appliedMetadataValue);
         }
+        if (appliedMetadataOrg) {
+          summaryParams.set("org_id", appliedMetadataOrg);
+          outcomeParams.set("org_id", appliedMetadataOrg);
+        }
         if (metadataHours > 0) {
           summaryParams.set("hours_back", metadataHours.toString());
+          outcomeParams.set("hours_back", metadataHours.toString());
         }
         try {
           const summaryResponse = await controlGet(`/api/jobs/metadata/summary?${summaryParams.toString()}`);
@@ -67,15 +105,23 @@ export function OverviewPage() {
           console.warn("Failed to load metadata summary", summaryError);
           setMetadataSummary([]);
         }
+        try {
+          const outcomeResponse = await controlGet(`/api/jobs/metadata/outcomes?${outcomeParams.toString()}`);
+          setMetadataOutcomes(outcomeResponse as MetadataOutcome[]);
+        } catch (outcomeError) {
+          console.warn("Failed to load metadata outcomes", outcomeError);
+          setMetadataOutcomes([]);
+        }
       } else {
         setMetadataSummary([]);
+        setMetadataOutcomes([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [appliedMetadataKey, appliedMetadataValue, controlGet, fetchMetricsText, hasAgentToken]);
+  }, [appliedMetadataKey, appliedMetadataValue, appliedMetadataOrg, metadataHours, controlGet, fetchMetricsText, hasAgentToken]);
 
   useEffect(() => {
     if (hasAgentToken) {
@@ -87,14 +133,18 @@ export function OverviewPage() {
     event.preventDefault();
     setAppliedMetadataKey(metadataKey.trim());
     setAppliedMetadataValue(metadataValue.trim());
+    setAppliedMetadataOrg(metadataOrg.trim());
   };
 
   const handleClearFilters = () => {
     setMetadataKey("");
     setMetadataValue("");
+    setMetadataOrg("");
     setAppliedMetadataKey("");
     setAppliedMetadataValue("");
+    setAppliedMetadataOrg("");
     setMetadataSummary([]);
+    setMetadataOutcomes([]);
     setMetadataHours(24);
   };
 
@@ -155,6 +205,21 @@ export function OverviewPage() {
             />
           </div>
           <div className="overview__filter-field">
+            <label htmlFor="metadata-org">Organization</label>
+            <select
+              id="metadata-org"
+              value={metadataOrg}
+              onChange={(event) => setMetadataOrg(event.target.value)}
+            >
+              <option value="">All orgs</option>
+              {orgOptions.map((orgId) => (
+                <option key={orgId} value={String(orgId)}>
+                  org-{orgId}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="overview__filter-field">
             <label htmlFor="metadata-hours">Window (hours)</label>
             <select
               id="metadata-hours"
@@ -177,16 +242,18 @@ export function OverviewPage() {
               type="button"
               onClick={handleClearFilters}
               disabled={
-                loading || (!metadataKey && !metadataValue && !appliedMetadataKey && !appliedMetadataValue)
+                loading || (!metadataKey && !metadataValue && !metadataOrg && !appliedMetadataKey && !appliedMetadataValue && !appliedMetadataOrg)
               }
             >
               Clear
             </button>
           </div>
-          {(appliedMetadataKey || appliedMetadataValue) && (
+          {(appliedMetadataKey || appliedMetadataValue || appliedMetadataOrg || metadataHours !== 24) && (
             <div className="overview__filter-active">
               Active filter: {appliedMetadataKey || "any"}
               {appliedMetadataValue ? `=${appliedMetadataValue}` : " (any value)"}
+              {appliedMetadataOrg ? ` | org=${appliedMetadataOrg}` : " | all orgs"}
+              {metadataHours > 0 ? ` | last ${metadataHours}h` : " | full history"}
             </div>
           )}
         </form>
@@ -259,9 +326,12 @@ export function OverviewPage() {
             </span>
           </header>
           {metadataSummary.length > 0 ? (
-            <MetadataChart data={metadataSummary} hours={metadataHours} />
+            <MetadataChart data={metadataSummary} outcomes={outcomeMap} />
           ) : (
             <p className="overview__empty">No metadata recorded for this key.</p>
+          )}
+          {metadataOutcomes.length > 0 && (
+            <div className="overview__metadata-note">Success metrics calculated from recent job outcomes.</div>
           )}
         </section>
       )}
@@ -291,13 +361,18 @@ function StatCard({ label, value }: { label: string; value: number }) {
   );
 }
 
-function MetadataChart({ data, hours }: { data: MetadataBucket[]; hours: number }) {
+function MetadataChart({ data, outcomes }: { data: MetadataBucket[]; outcomes: Record<string, MetadataOutcome> }) {
   const maxCount = Math.max(...data.map((bucket) => Number(bucket.count) || 0), 1);
 
   return (
     <ul className="overview__metadata-list">
       {data.map((bucket) => {
         const width = Math.max(4, (Number(bucket.count) / maxCount) * 100);
+        const outcome = outcomes[bucket.value] || outcomes[""];
+        const total = outcome?.total ?? bucket.count;
+        const succeeded = outcome?.succeeded ?? 0;
+        const failed = outcome?.failed ?? 0;
+        const successRate = total ? (succeeded / total) * 100 : 0;
         return (
           <li key={`${bucket.value}-${bucket.count}`}>
             <div className="overview__metadata-label">
@@ -308,6 +383,12 @@ function MetadataChart({ data, hours }: { data: MetadataBucket[]; hours: number 
               <span className="overview__metadata-bar-fill" style={{ width: `${width}%` }} />
               <span className="overview__metadata-count">{bucket.count}</span>
             </div>
+            {total > 0 && (
+              <div className="overview__metadata-outcomes">
+                <span className="overview__metadata-success">{successRate.toFixed(1)}% success</span>
+                <span className="overview__metadata-breakdown">✔ {succeeded} · ✖ {failed}</span>
+              </div>
+            )}
           </li>
         );
       })}

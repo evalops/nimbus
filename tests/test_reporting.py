@@ -219,11 +219,23 @@ async def test_run_overview_passes_metadata_filters(monkeypatch, capsys):
         assert key == "lr"
         return [{"value": "0.1", "count": 5}]
 
+    async def fake_metadata_outcomes(
+        base_url: str,
+        token: str,
+        key: str,
+        *,
+        limit: int,
+        hours_back: int | None,
+        org_id: int | None,
+    ):
+        return [{"value": "0.1", "total": 5, "succeeded": 4, "failed": 1}]
+
     monkeypatch.setattr("nimbus.cli.report.fetch_recent_jobs", fake_fetch_recent)
     monkeypatch.setattr("nimbus.cli.report.fetch_status", fake_fetch_status)
     monkeypatch.setattr("nimbus.cli.report.fetch_cache_status", fake_fetch_cache)
     monkeypatch.setattr("nimbus.cli.report.fetch_logs", fake_fetch_logs)
     monkeypatch.setattr("nimbus.cli.report.fetch_metadata_summary", fake_metadata_summary)
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_outcomes", fake_metadata_outcomes)
 
     args = argparse.Namespace(
         base_url="https://cp",
@@ -266,7 +278,50 @@ async def test_run_metadata(monkeypatch, capsys):
         hours_back=None,
         org_id=None,
         json=False,
+        with_outcomes=False,
     )
     await run_metadata(args)
     output = capsys.readouterr().out
     assert "0.05" in output
+
+
+@pytest.mark.asyncio
+async def test_run_metadata_with_outcomes(monkeypatch, capsys):
+    async def fake_summary(
+        base_url: str,
+        token: str,
+        key: str,
+        *,
+        limit: int,
+        hours_back: int | None,
+        org_id: int | None,
+    ):
+        return [{"value": "0.1", "count": 4}]
+
+    async def fake_outcomes(
+        base_url: str,
+        token: str,
+        key: str,
+        *,
+        limit: int,
+        hours_back: int | None,
+        org_id: int | None,
+    ):
+        return [{"value": "0.1", "total": 4, "succeeded": 3, "failed": 1}]
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_summary", fake_summary)
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_outcomes", fake_outcomes)
+
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        key="lr",
+        limit=10,
+        hours_back=None,
+        org_id=None,
+        json=False,
+        with_outcomes=True,
+    )
+    await run_metadata(args)
+    output = capsys.readouterr().out
+    assert "success=3" in output

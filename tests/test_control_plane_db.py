@@ -60,6 +60,7 @@ async def test_record_job_queued_and_list_recent_jobs(session):
     row = rows[0]
     assert row["job_id"] == 200
     assert row["repo_private"] is False
+    assert row["org_id"] == assignment.repository.owner_id
     assert row["metadata"] == {"lr": "0.01"}
 
     scoped_rows = await db.list_recent_jobs(session, limit=5, org_id=assignment.repository.owner_id)
@@ -97,6 +98,27 @@ async def test_list_recent_jobs_filters(session):
 
     value_rows = await db.list_recent_jobs(session, limit=10, metadata_value="0.10")
     assert len(value_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_metadata_outcomes(session):
+    assignment = _make_assignment(310, labels=["nimbus", "meta:lr=0.1"], metadata={"lr": "0.1"})
+    await db.record_job_queued(session, assignment)
+    await session.commit()
+
+    success_update = JobStatusUpdate(
+        agent_id="agent-1",
+        job_id=310,
+        status="succeeded",
+    )
+    await db.record_status_update(session, success_update)
+    await session.commit()
+
+    buckets = await db.metadata_outcomes(session, "lr", org_id=assignment.repository.owner_id)
+    assert buckets
+    bucket = buckets[0]
+    assert bucket["value"] == "0.1"
+    assert bucket["succeeded"] >= 1
 
 
 @pytest.mark.asyncio

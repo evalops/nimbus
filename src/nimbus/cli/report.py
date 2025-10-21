@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     metadata_parser.add_argument("--org-id", type=int, help="Restrict summary to an organization")
     metadata_parser.add_argument("--limit", type=int, default=10, help="Maximum buckets to display")
     metadata_parser.add_argument("--hours-back", type=int, help="Restrict window (default max)")
+    metadata_parser.add_argument("--with-outcomes", action="store_true", help="Include success/failure counts")
     metadata_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     cache_parser = subparsers.add_parser("cache", help="Summarize cache proxy usage")
@@ -318,6 +319,34 @@ async def fetch_metadata_summary(
         payload = response.json()
         if isinstance(payload, list):
             return payload
+    return []
+
+
+async def fetch_metadata_outcomes(
+    base_url: str,
+    token: str,
+    key: str,
+    *,
+    limit: int,
+    hours_back: int | None,
+    org_id: int | None,
+) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict[str, Any] = {"key": key, "limit": limit}
+    if hours_back is not None:
+        params["hours_back"] = hours_back
+    if org_id is not None:
+        params["org_id"] = org_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/api/jobs/metadata/outcomes",
+            headers=headers,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
         return []
 
 
@@ -493,8 +522,19 @@ async def run_metadata(args: argparse.Namespace) -> None:
         hours_back=getattr(args, "hours_back", None),
         org_id=getattr(args, "org_id", None),
     )
+    outcomes: list[dict[str, Any]] = []
+    if getattr(args, "with_outcomes", False):
+        outcomes = await fetch_metadata_outcomes(
+            args.base_url,
+            args.token,
+            args.key,
+            limit=args.limit,
+            hours_back=getattr(args, "hours_back", None),
+            org_id=getattr(args, "org_id", None),
+        )
     if args.json:
-        print(json.dumps(summary, indent=2))
+        payload = {"summary": summary, "outcomes": outcomes}
+        print(json.dumps(payload, indent=2))
         return
     if not summary:
         print("No metadata found.")
@@ -509,6 +549,15 @@ async def run_metadata(args: argparse.Namespace) -> None:
         value = entry.get("value") or "(empty)"
         count = entry.get("count")
         print(f"  {value}: {count}")
+    if outcomes:
+        print("\nOutcomes:")
+        for entry in outcomes:
+            value = entry.get("value") or "(empty)"
+            total = entry.get("total") or 0
+            succeeded = entry.get("succeeded") or 0
+            failed = entry.get("failed") or 0
+            success_rate = (succeeded / total * 100) if total else 0
+            print(f"  {value}: success={succeeded}, failed={failed}, total={total} ({success_rate:.1f}% success)")
 
 
 async def run_jobs(args: argparse.Namespace) -> None:
@@ -587,8 +636,17 @@ async def run_overview(args: argparse.Namespace) -> None:
     cache_summary = summarize_cache(cache_status)
     log_summary = summarize_logs(log_entries)
     metadata_summary: list[dict[str, Any]] = []
+    metadata_outcomes: list[dict[str, Any]] = []
     if getattr(args, "job_metadata_key", None):
         metadata_summary = await fetch_metadata_summary(
+            args.base_url,
+            args.token,
+            args.job_metadata_key,
+            limit=10,
+            hours_back=None,
+            org_id=None,
+        )
+        metadata_outcomes = await fetch_metadata_outcomes(
             args.base_url,
             args.token,
             args.job_metadata_key,
@@ -602,6 +660,7 @@ async def run_overview(args: argparse.Namespace) -> None:
         "cache": cache_summary,
         "logs": log_summary,
         "metadata": metadata_summary,
+        "metadata_outcomes": metadata_outcomes,
     }
 
     if args.json:
@@ -614,6 +673,17 @@ async def run_overview(args: argparse.Namespace) -> None:
         print("\n=== Metadata ===")
         for entry in metadata_summary:
             print(f"  {entry.get('value') or '(empty)'}: {entry.get('count')}")
+        if metadata_outcomes:
+            print("\nMetadata outcomes:")
+            for entry in metadata_outcomes:
+                success_rate = 0.0
+                total = entry.get("total") or 0
+                succeeded = entry.get("succeeded") or 0
+                if total:
+                    success_rate = succeeded / total * 100
+                print(
+                    f"  {entry.get('value') or '(empty)'}: success={succeeded}, failed={entry.get('failed') or 0}, total={total} ({success_rate:.1f}% success)"
+                )
     print("\n=== Cache ===")
     print_cache_summary(cache_summary)
     print("\n=== Logs ===")

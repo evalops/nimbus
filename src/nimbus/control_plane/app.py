@@ -401,6 +401,24 @@ class AppState:
             )
             return []
 
+    async def fetch_metadata_outcomes(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: Optional[int],
+        limit: int,
+    ) -> list[dict[str, object]]:
+        async with self.session_factory() as session:  # type: ignore[call-arg]
+            rows = await db.metadata_outcomes(
+                session,
+                key,
+                org_id=org_id,
+                hours_back=hours_back,
+                limit=limit,
+            )
+            return rows
+
 
 def _get_state(request: Request) -> AppState:
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
@@ -1409,6 +1427,28 @@ def create_app() -> FastAPI:
             hours_back=hours_back,
         )
         return summary
+
+    @app.get("/api/jobs/metadata/outcomes")
+    async def job_metadata_outcomes(
+        key: str,
+        limit: int = 20,
+        hours_back: Optional[int] = None,
+        org_id: Optional[int] = None,
+        _: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[dict[str, object]]:
+        REQUEST_COUNTER.inc()
+        key = key.strip()
+        if not key:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Metadata key required")
+        limit = max(1, min(limit, 200))
+        outcomes = await state.fetch_metadata_outcomes(
+            key=key,
+            org_id=org_id,
+            hours_back=hours_back,
+            limit=limit,
+        )
+        return outcomes
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(

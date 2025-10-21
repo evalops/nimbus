@@ -110,6 +110,7 @@ class JobRecord(BaseModel):
     repo_id: int
     repo_full_name: str
     repo_private: bool
+    org_id: Optional[int] = None
     labels: list[str]
     status: str
     agent_id: Optional[str] = None
