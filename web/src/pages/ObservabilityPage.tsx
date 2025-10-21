@@ -12,6 +12,7 @@ export function ObservabilityPage() {
   const { settings } = useSettings();
   const [orgs, setOrgs] = useState<OrgStatusSummary[]>([]);
   const [hoursBack, setHoursBack] = useState<number>(24);
+  const [metadataKey, setMetadataKey] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +30,10 @@ export function ObservabilityPage() {
       params.set("limit", "50");
       if (hoursBack > 0) {
         params.set("hours_back", String(hoursBack));
+      }
+      const trimmedKey = metadataKey.trim();
+      if (trimmedKey) {
+        params.set("metadata_key", trimmedKey);
       }
       const response = await observabilityGet(`/api/observability/orgs?${params.toString()}`);
       setOrgs(response);
@@ -60,6 +65,15 @@ export function ObservabilityPage() {
               max={168}
               value={hoursBack}
               onChange={(event) => setHoursBack(Number(event.target.value))}
+            />
+          </label>
+          <label>
+            Metadata key
+            <input
+              type="text"
+              placeholder="e.g. lr"
+              value={metadataKey}
+              onChange={(event) => setMetadataKey(event.target.value)}
             />
           </label>
           <button onClick={load} disabled={loading || !hasAdminToken}>
@@ -188,6 +202,55 @@ export function ObservabilityPage() {
           </div>
         )}
       </section>
+
+      {metadataKey.trim() && (
+        <section className="observability__section">
+          <header>
+            <h2>Metadata Overview</h2>
+            <span>Key: {metadataKey.trim()}</span>
+          </header>
+          {orgs.every((org) => !(org.metadata_top && org.metadata_top.length)) ? (
+            <p className="observability__empty">No metadata recorded for this key.</p>
+          ) : (
+            <div className="observability__metadata-grid">
+              {orgs.map((org) => {
+                const topValues = org.metadata_top ?? [];
+                const outcomes = org.metadata_outcomes ?? [];
+                if (topValues.length === 0) {
+                  return null;
+                }
+                const outcomeMap = new Map<string, { total: number; succeeded: number; failed: number }>();
+                outcomes.forEach((entry) => {
+                  const key = entry.value ?? "";
+                  outcomeMap.set(key, {
+                    total: entry.total,
+                    succeeded: entry.succeeded,
+                    failed: entry.failed,
+                  });
+                });
+                return (
+                  <div key={org.org_id} className="observability__metadata-card">
+                    <h3>Org {org.org_id}</h3>
+                    <ul>
+                      {topValues.map((item) => {
+                        const outcome = outcomeMap.get(item.value ?? "") || { total: item.count, succeeded: 0, failed: 0 };
+                        const successRate = outcome.total ? (outcome.succeeded / outcome.total) * 100 : 0;
+                        return (
+                          <li key={`${org.org_id}-${item.value}`}>
+                            <span className="observability__metadata-value">{item.value || "(empty)"}</span>
+                            <span className="observability__metadata-count">{item.count} runs</span>
+                            <span className="observability__metadata-success">{successRate.toFixed(1)}% success</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

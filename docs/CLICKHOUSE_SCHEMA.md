@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS nimbus.job_metadata (
     key String,
     value String,
     executor Nullable(String),
+    status Nullable(String),
     recorded_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (org_id, repo_id, job_id, key)
@@ -151,6 +152,7 @@ SETTINGS index_granularity = 4096;
 
 - Each metadata key/value pair from a job is stored as a separate row.
 - The control plane sends metadata to the logging pipeline, which inserts records into this table.
+- Terminal job statuses (`succeeded`, `failed`, `cancelled`) are appended with the `status` column for correlation filters.
 - Queries should always scope by `org_id` to preserve tenant isolation.
 
 ### Example Analytics Query
@@ -163,6 +165,25 @@ WHERE org_id = 12345
   AND recorded_at >= now() - INTERVAL 30 DAY
 GROUP BY value
 ORDER BY jobs DESC;
+```
+
+**Success rate by metadata value (requires statuses):**
+
+```sql
+SELECT
+    value,
+    countIf(status = 'succeeded') AS succeeded,
+    countIf(status = 'failed') AS failed,
+    count() AS total,
+    round(succeeded / total * 100, 2) AS success_rate
+FROM job_metadata
+WHERE org_id = 12345
+  AND key = 'lr'
+  AND status IN ('succeeded', 'failed')
+  AND recorded_at >= now() - INTERVAL 30 DAY
+GROUP BY value
+ORDER BY total DESC
+LIMIT 10;
 ```
 
 ### Migration from Old Schema

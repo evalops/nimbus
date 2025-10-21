@@ -316,31 +316,43 @@ class AppState:
         self.job_policy = job_policy
         self.metadata_sink_url = metadata_sink_url
 
-    async def publish_job_metadata(self, assignment: JobAssignment, metadata: dict[str, str]) -> None:
-        if not metadata or not self.metadata_sink_url:
+    async def publish_job_metadata(
+        self,
+        *,
+        job_id: int,
+        run_id: int,
+        run_attempt: int,
+        org_id: int,
+        repo_id: int,
+        executor: str,
+        metadata: dict[str, str],
+        status: Optional[str] = None,
+    ) -> None:
+        if not metadata or not self.metadata_sink_url or not self.settings.cache_shared_secret:
             return
 
-        org_id = assignment.repository.owner_id or assignment.repository.id
-        if not org_id:
-            return
-
-        token_value = assignment.cache_token.token if assignment.cache_token else None
-        if not token_value:
-            LOGGER.debug("Metadata publication skipped: missing cache token", job_id=assignment.job_id)
-            return
+        token = mint_cache_token(
+            secret=self.settings.cache_shared_secret.get_secret_value(),
+            organization_id=org_id,
+            ttl_seconds=60,
+            scope=f"push:org-{org_id}",
+        )
 
         records = []
         for key, value in metadata.items():
+            if value is None:
+                continue
             records.append(
                 {
-                    "job_id": assignment.job_id,
-                    "run_id": assignment.run_id,
-                    "run_attempt": assignment.run_attempt,
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "run_attempt": run_attempt,
                     "org_id": org_id,
-                    "repo_id": assignment.repository.id,
+                    "repo_id": repo_id,
                     "key": key,
-                    "value": value,
-                    "executor": assignment.executor,
+                    "value": str(value),
+                    "executor": executor,
+                    "status": status,
                 }
             )
 
@@ -348,7 +360,7 @@ class AppState:
             return
 
         url = self.metadata_sink_url.rstrip("/") + "/metadata/jobs"
-        headers = {"Authorization": f"Bearer {token_value}"}
+        headers = {"Authorization": f"Bearer {token.token}"}
         payload = {"records": records}
         try:
             response = await self.http_client.post(url, json=payload, headers=headers, timeout=5.0)
@@ -356,7 +368,7 @@ class AppState:
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to publish job metadata",
-                job_id=assignment.job_id,
+                job_id=job_id,
                 url=url,
                 error=str(exc),
             )
@@ -1243,7 +1255,15 @@ def create_app() -> FastAPI:
             await enqueue_job(state.redis, assignment)
             await db.record_job_queued(session, assignment)
             await session.commit()
-            await state.publish_job_metadata(assignment, metadata)
+            await state.publish_job_metadata(
+                job_id=assignment.job_id,
+                run_id=assignment.run_id,
+                run_attempt=assignment.run_attempt,
+                org_id=org_id,
+                repo_id=repo.id,
+                executor=assignment.executor,
+                metadata=metadata,
+            )
             queue_length = await state.redis.llen(QUEUE_KEY)
             QUEUE_LENGTH_GAUGE.set(queue_length)
             span.set_attribute("nimbus.queue_length", queue_length)
@@ -1346,6 +1366,7 @@ def create_app() -> FastAPI:
         status_update: JobStatusUpdate,
         token_agent_id: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
+        state: AppState = Depends(_get_state),
     ) -> None:
         REQUEST_COUNTER.inc()
         with TRACER.start_as_current_span("control_plane.job_status") as span:
@@ -1379,8 +1400,28 @@ def create_app() -> FastAPI:
                 agent_id=status_update.agent_id,
                 status=status_update.status,
             )
+            job_row: Optional[dict] = None
+            terminal_statuses = {"succeeded", "failed", "cancelled"}
+            if status_update.status in terminal_statuses:
+                job_row = await db.get_job(session, status_update.job_id)
             await db.record_status_update(session, status_update)
             await session.commit()
+
+            if job_row and job_row.get("metadata"):
+                metadata_payload = job_row.get("metadata") or {}
+                if metadata_payload:
+                    org_id = job_row.get("org_id") or job_row.get("repo_id")
+                    if org_id:
+                        await state.publish_job_metadata(
+                            job_id=job_row["job_id"],
+                            run_id=job_row["run_id"],
+                            run_attempt=job_row["run_attempt"],
+                            org_id=int(org_id),
+                            repo_id=int(job_row.get("repo_id") or 0),
+                            executor=job_row.get("executor", ""),
+                            metadata=metadata_payload,
+                            status=status_update.status,
+                        )
 
     @app.get("/api/jobs/recent", response_model=list[JobRecord])
     async def recent_jobs(
@@ -1468,8 +1509,10 @@ def create_app() -> FastAPI:
     async def observability_orgs_endpoint(
         limit: int = 50,
         hours_back: Optional[int] = None,
+        metadata_key: Optional[str] = Query(None),
         _: str = Depends(verify_admin_token),
         session: AsyncSession = Depends(get_session),
+        state: AppState = Depends(_get_state),
     ) -> list[dict]:
         REQUEST_COUNTER.inc()
         limit = max(1, min(limit, 200))
@@ -1483,12 +1526,36 @@ def create_app() -> FastAPI:
         for org_id in org_ids:
             failure_rows = await db.list_recent_failures(session, org_id, limit=5)
             failures[org_id] = failure_rows
+
+        metadata_top: dict[int, list[dict]] = {}
+        metadata_outcomes_map: dict[int, list[dict]] = {}
+        trimmed_key = metadata_key.strip() if metadata_key else None
+        if trimmed_key:
+            for org_id in org_ids:
+                summary = await state.fetch_metadata_summary(
+                    org_id=org_id,
+                    key=trimmed_key,
+                    limit=5,
+                    hours_back=hours_back,
+                )
+                if summary:
+                    metadata_top[org_id] = summary
+                outcomes = await state.fetch_metadata_outcomes(
+                    key=trimmed_key,
+                    org_id=org_id,
+                    hours_back=hours_back,
+                    limit=5,
+                )
+                if outcomes:
+                    metadata_outcomes_map[org_id] = outcomes
         summaries = build_org_overview(
             org_ids,
             status_rows=status_rows,
             last_activity=last_activity,
             active_agents=agents,
             failures=failures,
+            metadata_top=metadata_top,
+            metadata_outcomes=metadata_outcomes_map,
         )
         return summaries
 

@@ -62,6 +62,7 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 - Enable OpenTelemetry export with `NIMBUS_OTEL_EXPORTER_ENDPOINT`, `NIMBUS_OTEL_EXPORTER_HEADERS`, and `NIMBUS_OTEL_SAMPLER_RATIO`.
 - Set `NIMBUS_METADATA_SINK_URL` to the logging pipeline (`http://logging-pipeline:8090`) so job metadata is forwarded to ClickHouse.
 - Configure metadata retention via `NIMBUS_METADATA_RETENTION_DAYS` (defaults to 90) to automatically prune historical metadata rows.
+- Supply `metadata_key` when calling `/api/observability/orgs` (or via the dashboard control) to surface per-tenant metadata buckets and success rates.
 
 ## Policy Enforcement
 

@@ -28,6 +28,8 @@ export interface OrgStatusSummary {
   last_activity: string | null;
   active_agents: string[];
   recent_failures: JobRecord[];
+  metadata_top?: Array<{ value: string; count: number }>;
+  metadata_outcomes?: Array<{ value: string | null; total: number; succeeded: number; failed: number }>;
 }
 
 export interface AgentTokenRecord {

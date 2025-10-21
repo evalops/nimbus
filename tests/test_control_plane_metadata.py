@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from nimbus.control_plane.app import AppState, RateLimiter
-from nimbus.common.schemas import CacheToken, GitHubRepository, JobAssignment, RunnerRegistrationToken
 
 
 class DummyResponse:
@@ -30,7 +29,7 @@ async def test_publish_job_metadata(monkeypatch):
 
     limiter = RateLimiter(limit=10, interval=60)
     state = AppState(
-        settings=SimpleNamespace(),
+        settings=SimpleNamespace(cache_shared_secret=SimpleNamespace(get_secret_value=lambda: "super-secret")),
         redis=None,
         http_client=http_client,
         github_client=None,
@@ -40,27 +39,15 @@ async def test_publish_job_metadata(monkeypatch):
         metadata_sink_url="http://logging/",
     )
 
-    repo = GitHubRepository(id=77, name="demo", full_name="acme/demo", private=False, owner_id=42)
-    registration = RunnerRegistrationToken(token="x", expires_at=datetime.now(UTC) + timedelta(hours=1))
-    cache_token = CacheToken(
-        token="cache-secret",
-        organization_id=42,
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-        scope="push:org-42",
-    )
-    assignment = JobAssignment(
+    await state.publish_job_metadata(
         job_id=100,
         run_id=200,
         run_attempt=1,
-        repository=repo,
-        labels=["nimbus"],
-        runner_registration=registration,
-        cache_token=cache_token,
+        org_id=42,
+        repo_id=77,
         executor="gpu",
         metadata={"lr": "0.01"},
     )
-
-    await state.publish_job_metadata(assignment, assignment.metadata)
 
     assert len(mock_post_calls) == 1
     call = mock_post_calls[0]
@@ -70,5 +57,13 @@ async def test_publish_job_metadata(monkeypatch):
     assert body["records"][0]["key"] == "lr"
 
     # Empty metadata should short-circuit
-    await state.publish_job_metadata(assignment, {})
+    await state.publish_job_metadata(
+        job_id=100,
+        run_id=200,
+        run_attempt=1,
+        org_id=42,
+        repo_id=77,
+        executor="gpu",
+        metadata={},
+    )
     assert len(mock_post_calls) == 1
