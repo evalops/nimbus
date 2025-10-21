@@ -18,6 +18,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Nimbus operational reports")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    orgs_parser = subparsers.add_parser("orgs", help="Summarize org-level control plane activity")
+    orgs_parser.add_argument("--base-url", required=True, help="Control plane base URL")
+    orgs_parser.add_argument("--token", required=True, help="Admin bearer token")
+    orgs_parser.add_argument("--limit", type=int, default=20, help="Maximum orgs to include")
+    orgs_parser.add_argument("--hours-back", type=int, help="Restrict metrics to the last N hours")
+    orgs_parser.add_argument("--json", action="store_true", help="Output JSON")
+
     jobs_parser = subparsers.add_parser("jobs", help="Summarize control plane job activity")
     jobs_parser.add_argument("--base-url", required=True, help="Control plane base URL")
     jobs_parser.add_argument("--token", required=True, help="Control plane bearer token")
@@ -165,6 +172,23 @@ def summarize_logs(log_entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def summarize_orgs(records: list[dict[str, Any]]) -> dict[str, Any]:
+    sorted_records = sorted(records, key=lambda row: row.get("last_activity") or "", reverse=True)
+    totals = Counter()
+    for record in sorted_records:
+        status_counts = record.get("status_counts", {})
+        for status, count in status_counts.items():
+            totals[status] += count
+
+    latest_activity = sorted_records[0].get("last_activity") if sorted_records else None
+    return {
+        "org_count": len(sorted_records),
+        "status_totals": dict(sorted(totals.items(), key=lambda item: (-item[1], item[0]))),
+        "latest_activity": latest_activity,
+        "orgs": sorted_records,
+    }
+
+
 def summarize_agent_tokens(records: list[dict[str, Any]]) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     parsed = []
@@ -245,6 +269,26 @@ async def fetch_agent_tokens(base_url: str, token: str) -> list[dict[str, Any]]:
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(f"{base_url.rstrip('/')}/api/agents", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def fetch_org_overview(
+    base_url: str,
+    token: str,
+    limit: int,
+    hours_back: int | None,
+) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict[str, Any] = {"limit": limit}
+    if hours_back is not None:
+        params["hours_back"] = hours_back
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/api/observability/orgs",
+            headers=headers,
+            params=params,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -356,6 +400,36 @@ def print_token_summary(summary: dict[str, Any]) -> None:
         print("  (none)")
 
 
+def print_org_summary(summary: dict[str, Any]) -> None:
+    print(f"Organizations observed: {summary['org_count']}")
+    latest = summary.get("latest_activity")
+    if latest:
+        print(f"Latest activity: {latest}")
+    totals = summary.get("status_totals", {})
+    print("Status totals:")
+    if totals:
+        for status, count in totals.items():
+            print(f"  {status}: {count}")
+    else:
+        print("  (none)")
+
+    print("Org breakdown:")
+    for record in summary.get("orgs", []):
+        org_id = record.get("org_id")
+        activity = record.get("last_activity") or "-"
+        agents = record.get("active_agents") or []
+        statuses = record.get("status_counts", {})
+        status_text = ", ".join(f"{key}={value}" for key, value in sorted(statuses.items()))
+        print(f"  org={org_id} last={activity} agents={len(agents)} [{status_text}]")
+        failures = record.get("recent_failures") or []
+        for failure in failures[:3]:
+            job_id = failure.get("job_id")
+            status = failure.get("status")
+            updated = failure.get("updated_at") or "-"
+            message = failure.get("last_message") or ""
+            print(f"    failure #{job_id} status={status} updated={updated} msg={message}")
+
+
 async def run_jobs(args: argparse.Namespace) -> None:
     recent_jobs, status_payload = await asyncio.gather(
         fetch_recent_jobs(args.base_url, args.token, args.limit),
@@ -395,6 +469,15 @@ async def run_tokens(args: argparse.Namespace) -> None:
         print_token_summary(summary)
 
 
+async def run_orgs(args: argparse.Namespace) -> None:
+    records = await fetch_org_overview(args.base_url, args.token, args.limit, args.hours_back)
+    summary = summarize_orgs(records)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print_org_summary(summary)
+
+
 async def run_overview(args: argparse.Namespace) -> None:
     jobs_task = asyncio.create_task(
         asyncio.gather(
@@ -432,7 +515,9 @@ async def run_overview(args: argparse.Namespace) -> None:
 
 async def run_async() -> None:
     args = parse_args()
-    if args.command == "jobs":
+    if args.command == "orgs":
+        await run_orgs(args)
+    elif args.command == "jobs":
         await run_jobs(args)
     elif args.command == "cache":
         await run_cache(args)

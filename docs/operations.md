@@ -65,6 +65,7 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 
 Generate operational snapshots from the CLI:
 
+ - Org analytics: `python -m nimbus.cli.report orgs --base-url http://localhost:8000 --token $NIMBUS_ADMIN_JWT`
 - Jobs summary: `python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET`
 - Cache usage: `python -m nimbus.cli.report cache --cache-url http://localhost:8001`
 - Log ingestion overview: `python -m nimbus.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50`
