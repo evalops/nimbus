@@ -431,6 +431,50 @@ class AppState:
             )
             return rows
 
+    async def fetch_metadata_trend(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: Optional[int],
+        bucket_hours: int,
+    ) -> list[dict[str, object]]:
+        if not self.metadata_sink_url:
+            return []
+        secret = self.settings.cache_shared_secret.get_secret_value()
+        org = org_id or 0
+        token = mint_cache_token(
+            secret=secret,
+            organization_id=org,
+            ttl_seconds=60,
+            scope=f"read:org-{org}",
+        )
+        params: dict[str, object] = {
+            "key": key,
+            "bucket_hours": bucket_hours,
+        }
+        if org_id is not None:
+            params["org_id"] = org_id
+        if hours_back is not None:
+            params["hours_back"] = hours_back
+        url = self.metadata_sink_url.rstrip("/") + "/metadata/jobs/trends"
+        headers = {"Authorization": f"Bearer {token.token}"}
+        try:
+            response = await self.http_client.get(url, params=params, headers=headers, timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                return payload
+            return []
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to fetch metadata trend",
+                key=key,
+                org_id=org_id,
+                error=str(exc),
+            )
+            return []
+
 
 def _get_state(request: Request) -> AppState:
     state: AppState = request.app.state.container  # type: ignore[attr-defined]
@@ -1490,6 +1534,27 @@ def create_app() -> FastAPI:
             limit=limit,
         )
         return outcomes
+
+    @app.get("/api/jobs/metadata/trends")
+    async def job_metadata_trends(
+        key: str,
+        bucket_hours: int = 1,
+        hours_back: Optional[int] = None,
+        org_id: Optional[int] = None,
+        _: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[dict[str, object]]:
+        REQUEST_COUNTER.inc()
+        key = key.strip()
+        if not key:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Metadata key required")
+        trend = await state.fetch_metadata_trend(
+            key=key,
+            org_id=org_id,
+            hours_back=hours_back,
+            bucket_hours=bucket_hours,
+        )
+        return trend
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(

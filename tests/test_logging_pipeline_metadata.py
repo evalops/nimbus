@@ -59,3 +59,26 @@ async def test_metadata_endpoint_writes(monkeypatch):
 
     assert response.status_code == 202
     mock_writer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_metadata_trend_endpoint(monkeypatch):
+    monkeypatch.setenv("NIMBUS_CLICKHOUSE_URL", "http://localhost:8123")
+    monkeypatch.setenv("NIMBUS_CACHE_SHARED_SECRET", "super-secret")
+
+    app = create_logging_app()
+
+    trend_mock = AsyncMock(return_value=[{"window_start": "2024-01-01T00:00:00Z", "total": 5}])
+    monkeypatch.setattr("nimbus.logging_pipeline.app.PipelineState.metadata_trend", trend_mock, raising=False)
+
+    token = mint_cache_token(secret="super-secret", organization_id=42, ttl_seconds=3600, scope="read:org-42")
+
+    async with app_client(app) as client:
+        response = await client.get(
+            "/metadata/jobs/trends",
+            params={"key": "lr"},
+            headers={"Authorization": f"Bearer {token.token}"},
+        )
+
+    assert response.status_code == 200
+    trend_mock.assert_awaited_once()

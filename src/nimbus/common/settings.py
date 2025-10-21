@@ -358,6 +358,7 @@ class LoggingIngestSettings(BaseSettings):
     clickhouse_database: str = env_field("nimbus", "NIMBUS_CLICKHOUSE_DATABASE")
     clickhouse_table: str = env_field("ci_logs", "NIMBUS_CLICKHOUSE_TABLE")
     clickhouse_metadata_table: str = env_field("job_metadata", "NIMBUS_CLICKHOUSE_METADATA_TABLE")
+    clickhouse_metadata_agg_table: Optional[str] = env_field("job_metadata_agg", "NIMBUS_CLICKHOUSE_METADATA_AGG_TABLE")
     clickhouse_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_USERNAME")
     clickhouse_password: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_PASSWORD")
     clickhouse_ingest_username: Optional[str] = env_field(None, "NIMBUS_CLICKHOUSE_INGEST_USERNAME")

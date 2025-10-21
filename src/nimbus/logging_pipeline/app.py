@@ -182,6 +182,133 @@ class PipelineState:
         data = response.json().get("data", [])
         return [{"value": row.get("value"), "count": row.get("count", 0)} for row in data]
 
+    async def metadata_trend(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: Optional[int],
+        bucket_hours: int,
+    ) -> list[dict[str, object]]:
+        bucket_hours = max(1, min(bucket_hours, 168))
+        if hours_back is None:
+            hours_back = self.settings.log_query_max_hours
+        hours_back = min(hours_back, self.settings.log_query_max_hours)
+
+        if self.settings.clickhouse_metadata_agg_table:
+            try:
+                return await self._metadata_trend_from_agg(
+                    key=key,
+                    org_id=org_id,
+                    hours_back=hours_back,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Metadata aggregation query failed", error=str(exc))
+
+        return await self._metadata_trend_from_base(
+            key=key,
+            org_id=org_id,
+            hours_back=hours_back,
+            bucket_hours=bucket_hours,
+        )
+
+    async def _metadata_trend_from_agg(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: int,
+    ) -> list[dict[str, object]]:
+        table = self.settings.clickhouse_metadata_agg_table
+        if not table:
+            return []
+        query_parts = [
+            "SELECT window_start, window_end, value, succeeded, failed, total",
+            f"FROM {self.settings.clickhouse_database}.{table}",
+            "WHERE key = {key:String}",
+            "AND window_start >= now() - INTERVAL {hours_back:UInt32} HOUR",
+        ]
+        params: dict[str, object] = {"key": key, "hours_back": hours_back}
+        if org_id is not None:
+            query_parts.append("AND org_id = {org_id:UInt64}")
+            params["org_id"] = org_id
+        query_parts.append("ORDER BY window_start ASC")
+        query_parts.append("FORMAT JSON")
+        query = " \n".join(query_parts)
+        query_params = {"query": query}
+        for key_param, value in params.items():
+            query_params[f"param_{key_param}"] = value
+        auth = self._build_query_auth(org_id or 0)
+        response = await self.http.get(self.settings.clickhouse_url, params=query_params, auth=auth)
+        if response.is_error:
+            raise HTTPException(status_code=502, detail="Metadata trend query failed")
+        data = response.json().get("data", [])
+        return [
+            {
+                "window_start": row.get("window_start"),
+                "window_end": row.get("window_end"),
+                "value": row.get("value"),
+                "succeeded": row.get("succeeded", 0),
+                "failed": row.get("failed", 0),
+                "total": row.get("total", 0),
+            }
+            for row in data
+        ]
+
+    async def _metadata_trend_from_base(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: int,
+        bucket_hours: int,
+    ) -> list[dict[str, object]]:
+        query_parts = [
+            "SELECT",
+            "  toStartOfInterval(recorded_at, INTERVAL {bucket_hours:UInt32} HOUR) AS window_start",
+            "  window_start + INTERVAL {bucket_hours:UInt32} HOUR AS window_end",
+            "  value",
+            "  countIf(status = 'succeeded') AS succeeded",
+            "  countIf(status = 'failed') AS failed",
+            "  count() AS total",
+            f"FROM {self.settings.clickhouse_database}.{self.settings.clickhouse_metadata_table}",
+            "WHERE key = {key:String}",
+            "  AND recorded_at >= now() - INTERVAL {hours_back:UInt32} HOUR",
+        ]
+        params: dict[str, object] = {
+            "key": key,
+            "hours_back": hours_back,
+            "bucket_hours": bucket_hours,
+        }
+        if org_id is not None:
+            query_parts.append("  AND org_id = {org_id:UInt64}")
+            params["org_id"] = org_id
+        query_parts.append("GROUP BY window_start, window_end, value")
+        query_parts.append("ORDER BY window_start ASC")
+        query_parts.append("FORMAT JSON")
+        query = " \n".join(query_parts)
+        query_params = {"query": query}
+        for key_param, value in params.items():
+            query_params[f"param_{key_param}"] = value
+        auth = self._build_query_auth(org_id or 0)
+        response = await self.http.get(self.settings.clickhouse_url, params=query_params, auth=auth)
+        if response.is_error:
+            raise HTTPException(status_code=502, detail="Metadata trend query failed")
+        data = response.json().get("data", [])
+        return [
+            {
+                "window_start": row.get("window_start"),
+                "window_end": row.get("window_end"),
+                "value": row.get("value"),
+                "succeeded": row.get("succeeded", 0),
+                "failed": row.get("failed", 0),
+                "total": row.get("total", 0),
+            }
+            for row in data
+        ]
+
     async def enforce_metadata_retention(self) -> None:
         days = self.settings.metadata_retention_days
         if days <= 0:
@@ -514,6 +641,29 @@ def create_app() -> FastAPI:
             hours_back=hours_back,
         )
         return summary
+
+    @app.get("/metadata/jobs/trends", status_code=status.HTTP_200_OK)
+    async def metadata_trends_endpoint(
+        key: str,
+        org_id: Optional[int] = None,
+        hours_back: Optional[int] = None,
+        bucket_hours: int = 1,
+        token: CacheToken = Depends(require_cache_token),
+        state: PipelineState = Depends(get_state),
+    ) -> list[dict[str, object]]:
+        if not key:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="key required")
+        effective_org = org_id if org_id is not None else token.organization_id
+        if effective_org and effective_org != token.organization_id:
+            if not validate_cache_scope(token, "read", effective_org):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks read scope")
+        trend = await state.metadata_trend(
+            key=key,
+            org_id=effective_org if effective_org else None,
+            hours_back=hours_back,
+            bucket_hours=bucket_hours,
+        )
+        return trend
 
     @app.get("/status", status_code=status.HTTP_200_OK)
     async def status_probe(state: PipelineState = Depends(get_state)) -> dict[str, str]:

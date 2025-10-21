@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     metadata_parser.add_argument("--limit", type=int, default=10, help="Maximum buckets to display")
     metadata_parser.add_argument("--hours-back", type=int, help="Restrict window (default max)")
     metadata_parser.add_argument("--with-outcomes", action="store_true", help="Include success/failure counts")
+    metadata_parser.add_argument("--trend", action="store_true", help="Display time series trend")
+    metadata_parser.add_argument("--bucket-hours", type=int, default=1, help="Trend bucket size in hours")
     metadata_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     cache_parser = subparsers.add_parser("cache", help="Summarize cache proxy usage")
@@ -350,6 +352,34 @@ async def fetch_metadata_outcomes(
         return []
 
 
+async def fetch_metadata_trend(
+    base_url: str,
+    token: str,
+    key: str,
+    *,
+    bucket_hours: int,
+    hours_back: int | None,
+    org_id: int | None,
+) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict[str, Any] = {"key": key, "bucket_hours": bucket_hours}
+    if hours_back is not None:
+        params["hours_back"] = hours_back
+    if org_id is not None:
+        params["org_id"] = org_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/api/jobs/metadata/trends",
+            headers=headers,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        return []
+
+
 async def fetch_org_overview(
     base_url: str,
     token: str,
@@ -532,8 +562,18 @@ async def run_metadata(args: argparse.Namespace) -> None:
             hours_back=getattr(args, "hours_back", None),
             org_id=getattr(args, "org_id", None),
         )
+    trend: list[dict[str, Any]] = []
+    if getattr(args, "trend", False):
+        trend = await fetch_metadata_trend(
+            args.base_url,
+            args.token,
+            args.key,
+            bucket_hours=getattr(args, "bucket_hours", 1),
+            hours_back=getattr(args, "hours_back", None),
+            org_id=getattr(args, "org_id", None),
+        )
     if args.json:
-        payload = {"summary": summary, "outcomes": outcomes}
+        payload = {"summary": summary, "outcomes": outcomes, "trend": trend}
         print(json.dumps(payload, indent=2))
         return
     if not summary:
@@ -558,6 +598,17 @@ async def run_metadata(args: argparse.Namespace) -> None:
             failed = entry.get("failed") or 0
             success_rate = (succeeded / total * 100) if total else 0
             print(f"  {value}: success={succeeded}, failed={failed}, total={total} ({success_rate:.1f}% success)")
+    if trend:
+        print("\nTrend:")
+        for entry in trend:
+            window = entry.get("window_start")
+            total = entry.get("total") or 0
+            succeeded = entry.get("succeeded") or 0
+            failed = entry.get("failed") or 0
+            success_rate = (succeeded / total * 100) if total else 0
+            print(
+                f"  {window}: total={total}, success={success_rate:.1f}% (✔ {succeeded} / ✖ {failed})"
+            )
 
 
 async def run_jobs(args: argparse.Namespace) -> None:
@@ -637,6 +688,7 @@ async def run_overview(args: argparse.Namespace) -> None:
     log_summary = summarize_logs(log_entries)
     metadata_summary: list[dict[str, Any]] = []
     metadata_outcomes: list[dict[str, Any]] = []
+    metadata_trend: list[dict[str, Any]] = []
     if getattr(args, "job_metadata_key", None):
         metadata_summary = await fetch_metadata_summary(
             args.base_url,
@@ -654,6 +706,14 @@ async def run_overview(args: argparse.Namespace) -> None:
             hours_back=None,
             org_id=None,
         )
+        metadata_trend = await fetch_metadata_trend(
+            args.base_url,
+            args.token,
+            args.job_metadata_key,
+            bucket_hours=1,
+            hours_back=None,
+            org_id=None,
+        )
 
     overview = {
         "jobs": job_summary,
@@ -661,6 +721,7 @@ async def run_overview(args: argparse.Namespace) -> None:
         "logs": log_summary,
         "metadata": metadata_summary,
         "metadata_outcomes": metadata_outcomes,
+        "metadata_trend": metadata_trend,
     }
 
     if args.json:
@@ -683,6 +744,17 @@ async def run_overview(args: argparse.Namespace) -> None:
                     success_rate = succeeded / total * 100
                 print(
                     f"  {entry.get('value') or '(empty)'}: success={succeeded}, failed={entry.get('failed') or 0}, total={total} ({success_rate:.1f}% success)"
+                )
+        if metadata_trend:
+            print("\nMetadata trend:")
+            for entry in metadata_trend:
+                window = entry.get("window_start")
+                total = entry.get("total") or 0
+                succeeded = entry.get("succeeded") or 0
+                failed = entry.get("failed") or 0
+                success_rate = (succeeded / total * 100) if total else 0
+                print(
+                    f"  {window}: total={total}, success={success_rate:.1f}% (✔ {succeeded} / ✖ {failed})"
                 )
     print("\n=== Cache ===")
     print_cache_summary(cache_summary)
@@ -714,3 +786,14 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    if trend:
+        print("\nTrend:")
+        for entry in trend:
+            window = entry.get("window_start")
+            succeeded = entry.get("succeeded", 0)
+            failed = entry.get("failed", 0)
+            total = entry.get("total", 0)
+            success_rate = (succeeded / total * 100) if total else 0
+            print(
+                f"  {window}: total={total}, success={success_rate:.1f}% (✔ {succeeded} / ✖ {failed})"
+            )
