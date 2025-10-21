@@ -136,3 +136,4 @@ PARTITION BY toYYYYMM(ts);
 - [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md)
 - [Runbook](./runbook.md)
 - [Policy-as-Code](./policy-as-code.md)
+- Job metadata tagging: add `param:`/`meta:` labels to workflows so operators can inspect hyperparameters via `nimbus.cli.jobs --with-metadata`.

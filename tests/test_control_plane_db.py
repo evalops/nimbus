@@ -28,7 +28,12 @@ async def session():
         await engine.dispose()
 
 
-def _make_assignment(job_id: int = 100, owner_id: int = 123, labels: list[str] | None = None) -> JobAssignment:
+def _make_assignment(
+    job_id: int = 100,
+    owner_id: int = 123,
+    labels: list[str] | None = None,
+    metadata: dict[str, str] | None = None,
+) -> JobAssignment:
     repo = GitHubRepository(id=1, name="repo", full_name="org/repo", private=False, owner_id=owner_id)
     registration = RunnerRegistrationToken(token="tok", expires_at=datetime.now(timezone.utc))
     if labels is None:
@@ -40,12 +45,13 @@ def _make_assignment(job_id: int = 100, owner_id: int = 123, labels: list[str] |
         repository=repo,
         labels=labels,
         runner_registration=registration,
+        metadata=metadata or {},
     )
 
 
 @pytest.mark.asyncio
 async def test_record_job_queued_and_list_recent_jobs(session):
-    assignment = _make_assignment(200, owner_id=999)
+    assignment = _make_assignment(200, owner_id=999, metadata={"lr": "0.01"})
     await db.record_job_queued(session, assignment)
     await session.commit()
 
@@ -54,6 +60,7 @@ async def test_record_job_queued_and_list_recent_jobs(session):
     row = rows[0]
     assert row["job_id"] == 200
     assert row["repo_private"] is False
+    assert row["metadata"] == {"lr": "0.01"}
 
     scoped_rows = await db.list_recent_jobs(session, limit=5, org_id=assignment.repository.owner_id)
     assert scoped_rows

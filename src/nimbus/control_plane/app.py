@@ -115,6 +115,30 @@ TRACER = trace.get_tracer("nimbus.control_plane")
 SESSION_TOKEN_TTL_SECONDS = 3600
 
 
+def _extract_metadata(labels: list[str]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    prefixes = ("param:", "meta:")
+    for label in labels:
+        lowered = label.lower()
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                suffix = label[len(prefix) :]
+                if not suffix:
+                    continue
+                if "=" in suffix:
+                    key, value = suffix.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key:
+                        metadata[key] = value
+                else:
+                    key = suffix.strip()
+                    if key:
+                        metadata[key] = "true"
+                break
+    return metadata
+
+
 class ServiceAccountCreateRequest(BaseModel):
     name: str
     description: Optional[str] = None
@@ -1073,11 +1097,14 @@ def create_app() -> FastAPI:
                     detail=f"Organization rate limit exceeded: {settings.org_job_rate_limit} jobs per {settings.org_rate_interval_seconds}s",
                 )
             
+            metadata = _extract_metadata(payload.workflow_job.labels)
+
             LOGGER.info(
                 "Enqueuing job",
                 job_id=payload.workflow_job.id,
                 repo=repo.full_name,
                 labels=payload.workflow_job.labels,
+                metadata=metadata,
             )
 
             runner_token = await state.github_client.create_runner_registration_token(repo.full_name)
@@ -1105,6 +1132,7 @@ def create_app() -> FastAPI:
                 runner_registration=runner_token,
                 cache_token=cache_token,
                 executor=executor,
+                metadata=metadata,
             )
             await enqueue_job(state.redis, assignment)
             await db.record_job_queued(session, assignment)

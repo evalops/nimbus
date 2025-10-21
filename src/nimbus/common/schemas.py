@@ -70,6 +70,7 @@ class JobAssignment(BaseModel):
     cache_token: Optional[CacheToken] = None
     executor: str = "firecracker"  # Which executor to use
     payload_received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class JobLeaseRequest(BaseModel):
@@ -118,6 +119,7 @@ class JobRecord(BaseModel):
     completed_at: Optional[datetime] = None
     last_message: Optional[str] = None
     updated_at: datetime
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class LogEntry(BaseModel):

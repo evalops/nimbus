@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     recent_parser.add_argument("--limit", type=int, default=20, help="Number of jobs to fetch")
     recent_parser.add_argument("--label", help="Filter jobs by label")
     recent_parser.add_argument("--status", dest="status", help="Filter jobs by status")
+    recent_parser.add_argument("--with-metadata", action="store_true", help="Display metadata below each job")
     recent_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     status_parser = subparsers.add_parser("status", help="Show queue depth and job counts")
@@ -73,7 +74,11 @@ def format_timestamp(value: str | None) -> str:
         return value
 
 
-def print_table(rows: list[dict[str, Any]]) -> None:
+def _format_metadata(metadata: dict[str, Any]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(metadata.items()))
+
+
+def print_table(rows: list[dict[str, Any]], show_metadata: bool = False) -> None:
     headers = ["job_id", "status", "agent_id", "repo", "queued_at", "updated_at"]
     widths = {header: len(header) for header in headers}
     normalized: list[dict[str, str]] = []
@@ -94,8 +99,13 @@ def print_table(rows: list[dict[str, Any]]) -> None:
     header_line = "  ".join(key.ljust(widths[key]) for key in headers)
     print(header_line)
     print("  ".join("-" * widths[key] for key in headers))
-    for row in normalized:
+    for index, row in enumerate(normalized):
+        original = rows[index]
         print("  ".join(row[key].ljust(widths[key]) for key in headers))
+        if show_metadata:
+            metadata = original.get("metadata") or {}
+            if metadata:
+                print(f"    meta: {_format_metadata(metadata)}")
 
 
 async def run() -> None:
@@ -111,7 +121,7 @@ async def run() -> None:
         if args.json:
             print(json.dumps(jobs, indent=2))
         else:
-            print_table(jobs)
+            print_table(jobs, show_metadata=getattr(args, "with_metadata", False))
     elif args.command == "status":
         status_payload = await fetch_status(args.base_url, args.token)
         if args.json:

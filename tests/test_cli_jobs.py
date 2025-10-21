@@ -41,6 +41,7 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
             limit=3,
             label=None,
             status=None,
+            with_metadata=False,
             json=False,
         ),
     )
@@ -70,6 +71,7 @@ async def test_cli_jobs_recent_json(monkeypatch, capsys):
             limit=1,
             label="gpu",
             status="running",
+            with_metadata=False,
             json=True,
         ),
     )
@@ -79,6 +81,45 @@ async def test_cli_jobs_recent_json(monkeypatch, capsys):
     await jobs.run()
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["job_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cli_jobs_recent_with_metadata(monkeypatch, capsys):
+    sample_jobs = [
+        {
+            "job_id": 3,
+            "status": "succeeded",
+            "agent_id": "agent-7",
+            "repo_full_name": "acme/repo",
+            "queued_at": None,
+            "updated_at": None,
+            "metadata": {"batch": "32", "lr": "0.10"},
+        }
+    ]
+
+    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
+        return sample_jobs
+
+    monkeypatch.setattr(
+        jobs,
+        "parse_args",
+        lambda: _namespace(
+            base_url="https://cp",
+            token="secret",
+            command="recent",
+            limit=5,
+            label=None,
+            status=None,
+            with_metadata=True,
+            json=False,
+        ),
+    )
+    monkeypatch.setattr(jobs, "fetch_recent_jobs", fake_recent)
+    monkeypatch.setattr(jobs, "fetch_status", lambda *a, **k: None)
+
+    await jobs.run()
+    output = capsys.readouterr().out
+    assert "meta: batch=32, lr=0.10" in output
 
 
 @pytest.mark.asyncio

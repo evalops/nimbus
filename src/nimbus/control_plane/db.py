@@ -45,6 +45,7 @@ jobs_table = Table(
     Column("repo_full_name", String(length=512), nullable=False),
     Column("repo_private", String(length=5), nullable=False),
     Column("labels", JSON(none_as_null=True)),
+    Column("metadata", JSON(none_as_null=True)),
     Column("executor", String(length=32), nullable=False, default="firecracker"),
     Column("status", String(length=32), nullable=False),
     Column("agent_id", String(length=128), nullable=True),
@@ -144,6 +145,8 @@ def _normalise_job_rows(rows: Iterable[dict]) -> list[dict]:
     for row in rows:
         payload = dict(row)
         payload["repo_private"] = True if payload.get("repo_private") == "true" else False
+        metadata = payload.get("metadata")
+        payload["metadata"] = metadata if isinstance(metadata, dict) else {}
         for key in ("queued_at", "leased_at", "completed_at", "updated_at"):
             value = payload.get(key)
             if isinstance(value, datetime):
@@ -172,6 +175,7 @@ async def record_job_queued(session: AsyncSession, assignment: JobAssignment) ->
         completed_at=None,
         last_message=None,
         updated_at=now,
+        metadata=assignment.metadata,
     )
     await session.execute(stmt)
 
@@ -387,6 +391,8 @@ async def get_job(session: AsyncSession, job_id: int) -> Optional[dict]:
         if isinstance(value, datetime):
             payload[key] = value.isoformat()
     payload["repo_private"] = True if payload.get("repo_private") == "true" else False
+    metadata = payload.get("metadata")
+    payload["metadata"] = metadata if isinstance(metadata, dict) else {}
     return payload
 
 
