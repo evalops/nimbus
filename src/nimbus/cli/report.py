@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
     overview_parser.add_argument("--job-limit", type=int, default=50, help="Recent jobs to inspect")
     overview_parser.add_argument("--job-metadata-key", help="Filter overview job summary by metadata key")
     overview_parser.add_argument("--job-metadata-value", help="Filter overview job summary by metadata value")
+    overview_parser.add_argument("--metadata-presets", action="store_true", default=True, help="Include preset metadata bundle")
+    overview_parser.add_argument("--no-metadata-presets", dest="metadata_presets", action="store_false", help="Disable metadata presets")
+    overview_parser.add_argument("--metadata-preset-keys", help="Comma separated list of preset keys")
+    overview_parser.add_argument("--metadata-preset-limit", type=int, default=5, help="Rows per preset summary")
+    overview_parser.add_argument("--metadata-preset-hours", type=int, default=24, help="Hours back for preset trend aggregation")
     overview_parser.add_argument("--log-limit", type=int, default=100, help="Recent logs to inspect")
     overview_parser.add_argument("--json", action="store_true", help="Output JSON")
 
@@ -380,6 +385,40 @@ async def fetch_metadata_trend(
         return []
 
 
+async def fetch_metadata_presets(
+    base_url: str,
+    token: str,
+    *,
+    keys: str | None,
+    limit: int,
+    hours_back: int | None,
+    bucket_hours: int,
+    org_id: int | None,
+) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict[str, Any] = {
+        "limit": limit,
+        "bucket_hours": bucket_hours,
+    }
+    if keys:
+        params["keys"] = keys
+    if hours_back is not None:
+        params["hours_back"] = hours_back
+    if org_id is not None:
+        params["org_id"] = org_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{base_url.rstrip('/')}/api/jobs/metadata/presets",
+            headers=headers,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        return []
+
+
 async def fetch_org_overview(
     base_url: str,
     token: str,
@@ -426,6 +465,15 @@ def print_job_summary(summary: dict[str, Any]) -> None:
         print("Top metadata tags:")
         for entry in top_meta:
             print(f"  {entry['key']}={entry['value']}: {entry['count']}")
+    presets = summary.get("metadata_presets", [])
+    if presets:
+        print("Metadata presets:")
+        for preset in presets:
+            key = preset.get("key")
+            summary_rows = preset.get("summary", [])
+            if summary_rows:
+                top_value = summary_rows[0]
+                print(f"  {key}: top={top_value.get('value')} ({top_value.get('count')} runs)")
 
 
 def print_cache_summary(summary: dict[str, Any]) -> None:
@@ -689,6 +737,7 @@ async def run_overview(args: argparse.Namespace) -> None:
     metadata_summary: list[dict[str, Any]] = []
     metadata_outcomes: list[dict[str, Any]] = []
     metadata_trend: list[dict[str, Any]] = []
+    metadata_presets: list[dict[str, Any]] = []
     if getattr(args, "job_metadata_key", None):
         metadata_summary = await fetch_metadata_summary(
             args.base_url,
@@ -714,6 +763,16 @@ async def run_overview(args: argparse.Namespace) -> None:
             hours_back=None,
             org_id=None,
         )
+    elif getattr(args, "metadata_presets", True):
+        metadata_presets = await fetch_metadata_presets(
+            args.base_url,
+            args.token,
+            keys=getattr(args, "metadata_preset_keys", None),
+            limit=getattr(args, "metadata_preset_limit", 5),
+            hours_back=getattr(args, "metadata_preset_hours", None),
+            bucket_hours=getattr(args, "metadata_preset_hours", 24) or 24,
+            org_id=None,
+        )
 
     overview = {
         "jobs": job_summary,
@@ -722,6 +781,7 @@ async def run_overview(args: argparse.Namespace) -> None:
         "metadata": metadata_summary,
         "metadata_outcomes": metadata_outcomes,
         "metadata_trend": metadata_trend,
+        "metadata_presets": metadata_presets,
     }
 
     if args.json:
@@ -730,10 +790,11 @@ async def run_overview(args: argparse.Namespace) -> None:
 
     print("=== Jobs ===")
     print_job_summary(job_summary)
-    if metadata_summary:
+    if metadata_summary or overview.get("metadata_presets"):
         print("\n=== Metadata ===")
-        for entry in metadata_summary:
-            print(f"  {entry.get('value') or '(empty)'}: {entry.get('count')}")
+        if metadata_summary:
+            for entry in metadata_summary:
+                print(f"  {entry.get('value') or '(empty)'}: {entry.get('count')}")
         if metadata_outcomes:
             print("\nMetadata outcomes:")
             for entry in metadata_outcomes:
@@ -756,6 +817,15 @@ async def run_overview(args: argparse.Namespace) -> None:
                 print(
                     f"  {window}: total={total}, success={success_rate:.1f}% (✔ {succeeded} / ✖ {failed})"
                 )
+        presets = overview.get("metadata_presets", [])
+        if presets:
+            print("\nMetadata presets:")
+            for preset in presets:
+                key = preset.get("key")
+                summary_rows = preset.get("summary") or []
+                if summary_rows:
+                    top = summary_rows[0]
+                    print(f"  {key}: top={top.get('value')} ({top.get('count')} runs)")
     print("\n=== Cache ===")
     print_cache_summary(cache_summary)
     print("\n=== Logs ===")

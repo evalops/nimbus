@@ -241,6 +241,9 @@ async def test_run_overview_passes_metadata_filters(monkeypatch, capsys):
     ):
         return [{"window_start": "2024-01-01T00:00:00Z", "total": 5, "succeeded": 4, "failed": 1}]
 
+    async def fake_metadata_presets(*args, **kwargs):  # noqa: ANN001
+        return []
+
     monkeypatch.setattr("nimbus.cli.report.fetch_recent_jobs", fake_fetch_recent)
     monkeypatch.setattr("nimbus.cli.report.fetch_status", fake_fetch_status)
     monkeypatch.setattr("nimbus.cli.report.fetch_cache_status", fake_fetch_cache)
@@ -248,6 +251,7 @@ async def test_run_overview_passes_metadata_filters(monkeypatch, capsys):
     monkeypatch.setattr("nimbus.cli.report.fetch_metadata_summary", fake_metadata_summary)
     monkeypatch.setattr("nimbus.cli.report.fetch_metadata_outcomes", fake_metadata_outcomes)
     monkeypatch.setattr("nimbus.cli.report.fetch_metadata_trend", fake_metadata_trend)
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_presets", fake_metadata_presets)
 
     args = argparse.Namespace(
         base_url="https://cp",
@@ -383,3 +387,55 @@ async def test_run_metadata_with_trend(monkeypatch, capsys):
     await run_metadata(args)
     output = capsys.readouterr().out
     assert "success=80.0%" in output
+
+
+@pytest.mark.asyncio
+async def test_run_overview_with_presets(monkeypatch, capsys):
+    async def fake_fetch_recent(*args, **kwargs):  # noqa: ANN001
+        return []
+
+    async def fake_fetch_status(*args, **kwargs):  # noqa: ANN001
+        return {"queue_length": 0, "jobs_by_status": {}}
+
+    async def fake_fetch_cache(*args, **kwargs):  # noqa: ANN001
+        return {"top_entries": []}
+
+    async def fake_fetch_logs(*args, **kwargs):  # noqa: ANN001
+        return []
+
+    async def fake_fetch_metadata_presets(*args, **kwargs):  # noqa: ANN001
+        return [
+            {
+                "key": "lr",
+                "summary": [{"value": "0.1", "count": 5}],
+                "outcomes": [],
+                "trend": [],
+            }
+        ]
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_recent_jobs", fake_fetch_recent)
+    monkeypatch.setattr("nimbus.cli.report.fetch_status", fake_fetch_status)
+    monkeypatch.setattr("nimbus.cli.report.fetch_cache_status", fake_fetch_cache)
+    monkeypatch.setattr("nimbus.cli.report.fetch_logs", fake_fetch_logs)
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_presets", fake_fetch_metadata_presets)
+
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        cache_url="https://cache",
+        cache_token=None,
+        logs_url="https://logs",
+        job_limit=5,
+        job_metadata_key=None,
+        job_metadata_value=None,
+        log_limit=5,
+        metadata_presets=True,
+        metadata_preset_keys=None,
+        metadata_preset_limit=5,
+        metadata_preset_hours=24,
+        json=False,
+    )
+
+    await run_overview(args)
+    output = capsys.readouterr().out
+    assert "Metadata presets" in output
