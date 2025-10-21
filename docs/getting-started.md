@@ -73,9 +73,25 @@ python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBU
 python -m nimbus.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limit 50
 
 # Mint tokens
-python -m nimbus.cli.cache --secret $NIMBUS_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
-python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
+    python -m nimbus.cli.cache --secret $NIMBUS_CACHE_SHARED_SECRET --org-id 123 --ttl 3600
+    python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
 ```
+
+## Local Quickstart Example
+
+If you just want to see Nimbus running end to end with docker compose, the helper script below will bootstrap a `.env` file, start the compose stack, and block until the control plane passes its health probe:
+
+```bash
+uv run python scripts/quickstart_compose.py
+```
+
+Key flags:
+
+- `--force-bootstrap` regenerates the env file (helpful after rotating secrets).
+- `--with-agent` starts the host agent profile; make sure Firecracker artifacts exist under `./artifacts` and `/dev/kvm` is available.
+- `--no-detach` keeps `docker compose up` in the foreground so you can tail logs inline.
+
+Once the script reports that the stack is ready, visit `http://127.0.0.1:5173` for the dashboard and `http://127.0.0.1:8000/healthz` for the control plane health payload. The generated `.env.local` file contains the secrets the stack is using; keep it safe if you plan to reuse those values.
 
 ## Next Steps
 
