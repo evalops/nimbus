@@ -66,6 +66,16 @@ class HostAgent:
         self._provenance_grace_deadline: Optional[datetime] = None
         if grace_seconds > 0:
             self._provenance_grace_deadline = datetime.now(timezone.utc) + timedelta(seconds=grace_seconds)
+
+        self._slsa_verifier: Optional[SLSAVerifier] = None
+        if settings.slsa_attestation_dir:
+            options = SLSAOptions(
+                attestation_dir=settings.slsa_attestation_dir,
+                allowed_builders=set(settings.slsa_allowed_builders),
+                predicate_type=settings.slsa_predicate_type,
+                require_attestation=settings.slsa_required,
+            )
+            self._slsa_verifier = SLSAVerifier(options)
         
         # Initialize executors
         self._executors = {}
@@ -149,15 +159,6 @@ class HostAgent:
         self._cosign_key = settings.cosign_certificate_authority
         self._require_provenance = settings.provenance_required
         self._sbom_output_path = settings.sbom_output_path
-        self._slsa_verifier: Optional[SLSAVerifier] = None
-        if settings.slsa_attestation_dir:
-            options = SLSAOptions(
-                attestation_dir=settings.slsa_attestation_dir,
-                allowed_builders=set(settings.slsa_allowed_builders),
-                predicate_type=settings.slsa_predicate_type,
-                require_attestation=settings.slsa_required,
-            )
-            self._slsa_verifier = SLSAVerifier(options)
 
     async def run(self) -> None:
         self._running = True
