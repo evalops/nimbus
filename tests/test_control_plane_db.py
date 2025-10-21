@@ -70,7 +70,7 @@ async def test_record_job_queued_and_list_recent_jobs(session):
 @pytest.mark.asyncio
 async def test_list_recent_jobs_filters(session):
     gpu_assignment = _make_assignment(210, labels=["nimbus", "gpu"])
-    cpu_assignment = _make_assignment(211, labels=["nimbus", "cpu"])
+    cpu_assignment = _make_assignment(211, labels=["nimbus", "cpu"], metadata={"lr": "0.10"})
     await db.record_job_queued(session, gpu_assignment)
     await db.record_job_queued(session, cpu_assignment)
     await session.commit()
@@ -90,6 +90,13 @@ async def test_list_recent_jobs_filters(session):
     running_rows = await db.list_recent_jobs(session, limit=10, status="running")
     assert len(running_rows) == 1
     assert running_rows[0]["job_id"] == 211
+
+    metadata_rows = await db.list_recent_jobs(session, limit=10, metadata_key="lr", metadata_value="0.10")
+    assert len(metadata_rows) == 1
+    assert metadata_rows[0]["job_id"] == 211
+
+    value_rows = await db.list_recent_jobs(session, limit=10, metadata_value="0.10")
+    assert len(value_rows) == 1
 
 
 @pytest.mark.asyncio

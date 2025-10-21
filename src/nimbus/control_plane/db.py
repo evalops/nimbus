@@ -234,6 +234,8 @@ async def list_recent_jobs(
     *,
     status: Optional[str] = None,
     label: Optional[str] = None,
+    metadata_key: Optional[str] = None,
+    metadata_value: Optional[str] = None,
 ) -> Iterable[dict]:
     stmt = (
         select(jobs_table)
@@ -252,6 +254,23 @@ async def list_recent_jobs(
             row
             for row in normalised
             if label in (row.get("labels") or [])
+        ]
+    if metadata_key:
+        key = metadata_key
+        normalised = [
+            row
+            for row in normalised
+            if key in (row.get("metadata") or {})
+            and (
+                metadata_value is None
+                or str((row.get("metadata") or {}).get(key)) == metadata_value
+            )
+        ]
+    elif metadata_value is not None:
+        normalised = [
+            row
+            for row in normalised
+            if metadata_value in {str(value) for value in (row.get("metadata") or {}).values()}
         ]
     return normalised
 

@@ -1281,6 +1281,8 @@ def create_app() -> FastAPI:
         org_id: Optional[int] = None,
         job_status: Optional[str] = Query(None, alias="status"),
         label: Optional[str] = None,
+        metadata_key: Optional[str] = Query(None, alias="meta_key"),
+        metadata_value: Optional[str] = Query(None, alias="meta_value"),
         _: str = Depends(verify_agent_token),
         session: AsyncSession = Depends(get_session),
     ) -> list[JobRecord]:
@@ -1292,6 +1294,8 @@ def create_app() -> FastAPI:
             org_id=org_id,
             status=job_status,
             label=label,
+            metadata_key=metadata_key,
+            metadata_value=metadata_value,
         )
         return [JobRecord.model_validate(row) for row in rows]
 

@@ -68,6 +68,7 @@ python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBU
 python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --status running
 python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --label gpu
 python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --with-metadata
+python -m nimbus.cli.jobs recent --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --metadata-key lr --metadata-value 0.001
 
 # Queue health
 python -m nimbus.cli.jobs status --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET
@@ -80,7 +81,7 @@ python -m nimbus.cli.logs --logs-url http://localhost:8002 --job-id 12345 --limi
     python -m nimbus.cli.auth --agent-id agent-001 --secret $NIMBUS_AGENT_TOKEN_SECRET --ttl 3600
 ```
 
-Labels prefixed with `param:` or `meta:` (for example `param:lr=0.001`, `meta:safety-review`) are captured as job metadata and show up via `--with-metadata` or the job APIs.
+Labels prefixed with `param:` or `meta:` (for example `param:lr=0.001`, `meta:safety-review`) are captured as job metadata and show up via `--with-metadata` or the job APIs. Use `--metadata-key`/`--metadata-value` to filter the job table for specific hyperparameters.
 
 ## Local Quickstart Example
 

@@ -22,6 +22,8 @@ def parse_args() -> argparse.Namespace:
     recent_parser.add_argument("--limit", type=int, default=20, help="Number of jobs to fetch")
     recent_parser.add_argument("--label", help="Filter jobs by label")
     recent_parser.add_argument("--status", dest="status", help="Filter jobs by status")
+    recent_parser.add_argument("--metadata-key", help="Filter jobs containing metadata key")
+    recent_parser.add_argument("--metadata-value", help="Filter jobs containing metadata value (requires --metadata-key to scope by key)")
     recent_parser.add_argument("--with-metadata", action="store_true", help="Display metadata below each job")
     recent_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
@@ -38,6 +40,8 @@ async def fetch_recent_jobs(
     *,
     label: str | None = None,
     status: str | None = None,
+    metadata_key: str | None = None,
+    metadata_value: str | None = None,
 ) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         params: dict[str, Any] = {"limit": limit}
@@ -45,6 +49,10 @@ async def fetch_recent_jobs(
             params["label"] = label
         if status:
             params["status"] = status
+        if metadata_key:
+            params["meta_key"] = metadata_key
+        if metadata_value:
+            params["meta_value"] = metadata_value
         response = await client.get(
             f"{base_url.rstrip('/')}/api/jobs/recent",
             headers={"Authorization": f"Bearer {token}"},
@@ -117,6 +125,8 @@ async def run() -> None:
             args.limit,
             label=getattr(args, "label", None),
             status=getattr(args, "status", None),
+            metadata_key=getattr(args, "metadata_key", None),
+            metadata_value=getattr(args, "metadata_value", None),
         )
         if args.json:
             print(json.dumps(jobs, indent=2))

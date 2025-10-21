@@ -25,10 +25,21 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
         }
     ]
 
-    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
+    async def fake_recent(
+        base_url: str,
+        token: str,
+        limit: int,
+        *,
+        label=None,
+        status=None,
+        metadata_key=None,
+        metadata_value=None,
+    ):  # noqa: ANN001
         assert limit == 3
         assert label is None
         assert status is None
+        assert metadata_key is None
+        assert metadata_value is None
         return sample_jobs
 
     monkeypatch.setattr(
@@ -41,6 +52,8 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
             limit=3,
             label=None,
             status=None,
+            metadata_key=None,
+            metadata_value=None,
             with_metadata=False,
             json=False,
         ),
@@ -56,9 +69,20 @@ async def test_cli_jobs_recent_plain(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_cli_jobs_recent_json(monkeypatch, capsys):
-    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
+    async def fake_recent(
+        base_url: str,
+        token: str,
+        limit: int,
+        *,
+        label=None,
+        status=None,
+        metadata_key=None,
+        metadata_value=None,
+    ):  # noqa: ANN001
         assert label == "gpu"
         assert status == "running"
+        assert metadata_key == "lr"
+        assert metadata_value == "0.01"
         return [{"job_id": 2}]
 
     monkeypatch.setattr(
@@ -71,6 +95,8 @@ async def test_cli_jobs_recent_json(monkeypatch, capsys):
             limit=1,
             label="gpu",
             status="running",
+            metadata_key="lr",
+            metadata_value="0.01",
             with_metadata=False,
             json=True,
         ),
@@ -97,7 +123,16 @@ async def test_cli_jobs_recent_with_metadata(monkeypatch, capsys):
         }
     ]
 
-    async def fake_recent(base_url: str, token: str, limit: int, *, label=None, status=None):  # noqa: ANN001
+    async def fake_recent(
+        base_url: str,
+        token: str,
+        limit: int,
+        *,
+        label=None,
+        status=None,
+        metadata_key=None,
+        metadata_value=None,
+    ):  # noqa: ANN001
         return sample_jobs
 
     monkeypatch.setattr(
@@ -110,6 +145,8 @@ async def test_cli_jobs_recent_with_metadata(monkeypatch, capsys):
             limit=5,
             label=None,
             status=None,
+            metadata_key=None,
+            metadata_value=None,
             with_metadata=True,
             json=False,
         ),
