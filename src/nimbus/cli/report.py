@@ -72,10 +72,14 @@ def summarize_jobs(status_payload: dict[str, Any], recent_jobs: list[dict[str, A
     status_counts = Counter()
     repo_counts = Counter()
     agent_counts = Counter()
+    metadata_counts = Counter()
     for job in recent_jobs:
         status_counts[job.get("status", "unknown")] += 1
         repo_counts[job.get("repo_full_name") or "unknown"] += 1
         agent_counts[job.get("agent_id") or "unassigned"] += 1
+        metadata = job.get("metadata") or {}
+        for key, value in metadata.items():
+            metadata_counts[(key, value)] += 1
 
     timeline = []
     for job in sorted(recent_jobs, key=lambda j: j.get("updated_at") or "", reverse=True)[:10]:
@@ -94,6 +98,10 @@ def summarize_jobs(status_payload: dict[str, Any], recent_jobs: list[dict[str, A
         "control_plane_counts": status_payload.get("jobs_by_status", {}),
         "top_repositories": dict(repo_counts.most_common(5)),
         "top_agents": dict(agent_counts.most_common(5)),
+        "top_metadata": [
+            {"key": key, "value": value, "count": count}
+            for (key, value), count in metadata_counts.most_common(5)
+        ],
         "recent_timeline": timeline,
     }
 
@@ -313,6 +321,12 @@ def print_job_summary(summary: dict[str, Any]) -> None:
     print("Top agents:")
     for agent, count in summary["top_agents"].items():
         print(f"  {agent}: {count}")
+
+    top_meta = summary.get("top_metadata", [])
+    if top_meta:
+        print("Top metadata tags:")
+        for entry in top_meta:
+            print(f"  {entry['key']}={entry['value']}: {entry['count']}")
 
 
 def print_cache_summary(summary: dict[str, Any]) -> None:

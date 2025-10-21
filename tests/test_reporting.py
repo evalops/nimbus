@@ -11,7 +11,7 @@ from nimbus.cli.report import (
 
 
 def test_summarize_jobs_counts_and_timeline() -> None:
-    status_payload = {"queue_length": 3, "jobs_by_status": {"queued": 2, "running": 1}}
+    status_payload = {"queue_length": 4, "jobs_by_status": {"queued": 3, "running": 1}}
     recent_jobs = [
         {
             "job_id": 1,
@@ -33,17 +33,28 @@ def test_summarize_jobs_counts_and_timeline() -> None:
             "agent_id": "agent-2",
             "repo_full_name": "acme/other",
             "updated_at": "2024-01-01T12:00:00+00:00",
+            "metadata": {"lr": "0.01"},
+        },
+        {
+            "job_id": 4,
+            "status": "queued",
+            "agent_id": "agent-3",
+            "repo_full_name": "acme/repo",
+            "updated_at": "2024-01-01T13:00:00+00:00",
+            "metadata": {"lr": "0.01", "batch": "16"},
         },
     ]
 
     summary = summarize_jobs(status_payload, recent_jobs)
-    assert summary["queue_length"] == 3
-    assert summary["jobs_by_status"] == {"queued": 2, "running": 1}
-    assert summary["top_repositories"] == {"acme/repo": 2, "acme/other": 1}
+    assert summary["queue_length"] == 4
+    assert summary["jobs_by_status"] == {"queued": 3, "running": 1}
+    assert summary["top_repositories"] == {"acme/repo": 3, "acme/other": 1}
     assert summary["top_agents"]["agent-1"] == 1
     assert summary["top_agents"]["agent-2"] == 1
+    assert summary["top_agents"]["agent-3"] == 1
     assert summary["top_agents"]["unassigned"] == 1
-    assert summary["recent_timeline"][0]["job_id"] == 3
+    assert summary["recent_timeline"][0]["job_id"] == 4
+    assert summary["top_metadata"][0] == {"key": "lr", "value": "0.01", "count": 2}
 
 
 def test_summarize_cache_aggregates_hits_and_bytes() -> None:
