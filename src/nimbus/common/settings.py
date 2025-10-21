@@ -88,6 +88,7 @@ class ControlPlaneSettings(BaseSettings):
     itar_export_log_retention_days: int = env_field(365, "NIMBUS_ITAR_EXPORT_LOG_RETENTION")
     ca_bundle_path: Optional[Path] = env_field(None, "NIMBUS_CA_BUNDLE")
     metadata_sink_url: Optional[HttpUrl] = env_field(None, "NIMBUS_METADATA_SINK_URL")
+    metadata_default_keys: list[str] = Field(default_factory=list, validation_alias="NIMBUS_METADATA_DEFAULT_KEYS")
     job_policy_path: Optional[Path] = env_field(None, "NIMBUS_JOB_POLICY_PATH")
 
     @field_validator("admin_allowed_subjects", mode="before")
@@ -380,6 +381,13 @@ class LoggingIngestSettings(BaseSettings):
             self.clickhouse_ingest_username = self.clickhouse_username
         if self.clickhouse_ingest_password is None:
             self.clickhouse_ingest_password = self.clickhouse_password
+
+    @field_validator("metadata_default_keys", mode="before", check_fields=False)
+    @classmethod
+    def _split_metadata_keys(cls, value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
 
 class DockerCacheSettings(BaseSettings):

@@ -317,6 +317,7 @@ class AppState:
         self.metadata_sink_url = metadata_sink_url
         self._metadata_cache: dict[tuple, tuple[float, list[dict[str, object]]]] = {}
         self._metadata_cache_ttl = 30.0
+        self.metadata_default_keys = [key.strip() for key in getattr(settings, "metadata_default_keys", []) if key.strip()]
 
     async def publish_job_metadata(
         self,
@@ -390,6 +391,9 @@ class AppState:
 
     def _metadata_cache_set(self, key: tuple, value: list[dict[str, object]]) -> None:
         self._metadata_cache[key] = (time.time(), value)
+
+    def default_metadata_keys(self) -> list[str]:
+        return list(self.metadata_default_keys)
 
     async def fetch_metadata_summary(
         self,
@@ -514,6 +518,25 @@ class AppState:
             return []
         self._metadata_cache_set(cache_key, summary)
         return summary
+
+    async def build_metadata_bundle(
+        self,
+        *,
+        key: str,
+        org_id: Optional[int],
+        hours_back: Optional[int],
+        limit: int,
+        bucket_hours: int,
+    ) -> dict[str, object]:
+        summary = await self.fetch_metadata_summary(org_id=org_id, key=key, limit=limit, hours_back=hours_back)
+        outcomes = await self.fetch_metadata_outcomes(key=key, org_id=org_id, hours_back=hours_back, limit=limit)
+        trend = await self.fetch_metadata_trend(key=key, org_id=org_id, hours_back=hours_back, bucket_hours=bucket_hours)
+        return {
+            "key": key,
+            "summary": summary,
+            "outcomes": outcomes,
+            "trend": trend,
+        }
 
 
 def _get_state(request: Request) -> AppState:
@@ -1595,6 +1618,36 @@ def create_app() -> FastAPI:
             bucket_hours=bucket_hours,
         )
         return trend
+
+    @app.get("/api/jobs/metadata/presets")
+    async def job_metadata_presets(
+        keys: Optional[str] = None,
+        limit: int = 10,
+        hours_back: Optional[int] = None,
+        bucket_hours: int = 1,
+        org_id: Optional[int] = None,
+        _: str = Depends(verify_agent_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[dict[str, object]]:
+        REQUEST_COUNTER.inc()
+        if keys:
+            key_list = [item.strip() for item in keys.split(",") if item.strip()]
+        else:
+            key_list = state.default_metadata_keys()
+        if not key_list:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No metadata keys supplied")
+        limit = max(1, min(limit, 100))
+        results = []
+        for key in key_list:
+            bundle = await state.build_metadata_bundle(
+                key=key,
+                org_id=org_id,
+                hours_back=hours_back,
+                limit=limit,
+                bucket_hours=bucket_hours,
+            )
+            results.append(bundle)
+        return results
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(

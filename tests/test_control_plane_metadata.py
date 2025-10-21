@@ -122,3 +122,43 @@ async def test_metadata_summary_cache(monkeypatch):
 
     await state.fetch_metadata_summary(org_id=42, key="lr", limit=5, hours_back=None)
     assert mock_get.calls == 2  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_metadata_bundle(monkeypatch):
+    state = AppState(
+        settings=SimpleNamespace(cache_shared_secret=SimpleNamespace(get_secret_value=lambda: "super-secret")),
+        redis=None,
+        http_client=None,
+        github_client=None,
+        session_factory=None,
+        token_rate_limiter=RateLimiter(limit=10, interval=60),
+        admin_rate_limiter=RateLimiter(limit=10, interval=60),
+        metadata_sink_url="http://logging",
+    )
+
+    async def fake_summary(**kwargs):  # noqa: ANN001
+        return [{"value": "0.1", "count": 5}]
+
+    async def fake_outcomes(**kwargs):  # noqa: ANN001
+        return [{"value": "0.1", "total": 5, "succeeded": 4, "failed": 1}]
+
+    async def fake_trend(**kwargs):  # noqa: ANN001
+        return [{"window_start": "2024-01-01T00:00:00Z", "total": 5, "succeeded": 4}]
+
+    state.fetch_metadata_summary = fake_summary  # type: ignore[assignment]
+    state.fetch_metadata_outcomes = fake_outcomes  # type: ignore[assignment]
+    state.fetch_metadata_trend = fake_trend  # type: ignore[assignment]
+
+    bundle = await state.build_metadata_bundle(
+        key="lr",
+        org_id=42,
+        hours_back=24,
+        limit=5,
+        bucket_hours=1,
+    )
+
+    assert bundle["key"] == "lr"
+    assert bundle["summary"][0]["count"] == 5
+    assert bundle["outcomes"][0]["succeeded"] == 4
+    assert bundle["trend"][0]["total"] == 5
