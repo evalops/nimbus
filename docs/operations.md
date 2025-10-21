@@ -61,6 +61,7 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 - Structured logging uses `structlog`; adjust verbosity with `NIMBUS_LOG_LEVEL`.
 - Enable OpenTelemetry export with `NIMBUS_OTEL_EXPORTER_ENDPOINT`, `NIMBUS_OTEL_EXPORTER_HEADERS`, and `NIMBUS_OTEL_SAMPLER_RATIO`.
 - Set `NIMBUS_METADATA_SINK_URL` to the logging pipeline (`http://logging-pipeline:8090`) so job metadata is forwarded to ClickHouse.
+- Configure metadata retention via `NIMBUS_METADATA_RETENTION_DAYS` (defaults to 90) to automatically prune historical metadata rows.
 
 ## Policy Enforcement
 
@@ -73,6 +74,7 @@ Generate operational snapshots from the CLI:
 - Org analytics: `python -m nimbus.cli.report orgs --base-url http://localhost:8000 --token $NIMBUS_ADMIN_JWT`
 - Jobs summary (includes top metadata tags): `python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET`
 - Jobs summary filtered by metadata: `python -m nimbus.cli.report jobs --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --metadata-key lr --metadata-value 0.1`
+- Metadata histogram: `python -m nimbus.cli.report metadata --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --key lr`
 - Cache usage: `python -m nimbus.cli.report cache --cache-url http://localhost:8001`
 - Log ingestion overview: `python -m nimbus.cli.report logs --logs-url http://localhost:8002 --job-id 12345 --limit 50`
 - Full overview: `python -m nimbus.cli.report overview --base-url http://localhost:8000 --token $NIMBUS_JWT_SECRET --cache-url http://localhost:8001 --logs-url http://localhost:8002`

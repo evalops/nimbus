@@ -36,6 +36,15 @@ def parse_args() -> argparse.Namespace:
     )
     jobs_parser.add_argument("--json", action="store_true", help="Output JSON")
 
+    metadata_parser = subparsers.add_parser("metadata", help="Summarize metadata value distribution")
+    metadata_parser.add_argument("--base-url", required=True, help="Control plane base URL")
+    metadata_parser.add_argument("--token", required=True, help="Control plane bearer token")
+    metadata_parser.add_argument("--key", required=True, help="Metadata key to summarize")
+    metadata_parser.add_argument("--org-id", type=int, help="Restrict summary to an organization")
+    metadata_parser.add_argument("--limit", type=int, default=10, help="Maximum buckets to display")
+    metadata_parser.add_argument("--hours-back", type=int, help="Restrict window (default max)")
+    metadata_parser.add_argument("--json", action="store_true", help="Output JSON")
+
     cache_parser = subparsers.add_parser("cache", help="Summarize cache proxy usage")
     cache_parser.add_argument("--cache-url", required=True, help="Cache proxy base URL")
     cache_parser.add_argument(
@@ -288,6 +297,30 @@ async def fetch_agent_tokens(base_url: str, token: str) -> list[dict[str, Any]]:
         return response.json()
 
 
+async def fetch_metadata_summary(
+    base_url: str,
+    token: str,
+    key: str,
+    *,
+    limit: int,
+    hours_back: int | None,
+    org_id: int | None,
+) -> list[dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict[str, Any] = {"key": key, "limit": limit}
+    if hours_back is not None:
+        params["hours_back"] = hours_back
+    if org_id is not None:
+        params["org_id"] = org_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{base_url.rstrip('/')}/api/jobs/metadata/summary", headers=headers, params=params)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        return []
+
+
 async def fetch_org_overview(
     base_url: str,
     token: str,
@@ -451,6 +484,33 @@ def print_org_summary(summary: dict[str, Any]) -> None:
             print(f"    failure #{job_id} status={status} updated={updated} msg={message}")
 
 
+async def run_metadata(args: argparse.Namespace) -> None:
+    summary = await fetch_metadata_summary(
+        args.base_url,
+        args.token,
+        args.key,
+        limit=args.limit,
+        hours_back=getattr(args, "hours_back", None),
+        org_id=getattr(args, "org_id", None),
+    )
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return
+    if not summary:
+        print("No metadata found.")
+        return
+    print(f"Metadata key: {args.key}")
+    if args.org_id is not None:
+        print(f"Org ID: {args.org_id}")
+    if args.hours_back is not None:
+        print(f"Window: last {args.hours_back}h")
+    print("Values:")
+    for entry in summary:
+        value = entry.get("value") or "(empty)"
+        count = entry.get("count")
+        print(f"  {value}: {count}")
+
+
 async def run_jobs(args: argparse.Namespace) -> None:
     recent_jobs, status_payload = await asyncio.gather(
         fetch_recent_jobs(
@@ -526,10 +586,22 @@ async def run_overview(args: argparse.Namespace) -> None:
     job_summary = summarize_jobs(status_payload, recent_jobs)
     cache_summary = summarize_cache(cache_status)
     log_summary = summarize_logs(log_entries)
+    metadata_summary: list[dict[str, Any]] = []
+    if getattr(args, "job_metadata_key", None):
+        metadata_summary = await fetch_metadata_summary(
+            args.base_url,
+            args.token,
+            args.job_metadata_key,
+            limit=10,
+            hours_back=None,
+            org_id=None,
+        )
+
     overview = {
         "jobs": job_summary,
         "cache": cache_summary,
         "logs": log_summary,
+        "metadata": metadata_summary,
     }
 
     if args.json:
@@ -538,6 +610,10 @@ async def run_overview(args: argparse.Namespace) -> None:
 
     print("=== Jobs ===")
     print_job_summary(job_summary)
+    if metadata_summary:
+        print("\n=== Metadata ===")
+        for entry in metadata_summary:
+            print(f"  {entry.get('value') or '(empty)'}: {entry.get('count')}")
     print("\n=== Cache ===")
     print_cache_summary(cache_summary)
     print("\n=== Logs ===")
@@ -546,7 +622,9 @@ async def run_overview(args: argparse.Namespace) -> None:
 
 async def run_async() -> None:
     args = parse_args()
-    if args.command == "orgs":
+    if args.command == "metadata":
+        await run_metadata(args)
+    elif args.command == "orgs":
         await run_orgs(args)
     elif args.command == "jobs":
         await run_jobs(args)

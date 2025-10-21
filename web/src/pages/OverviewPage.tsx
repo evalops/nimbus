@@ -24,6 +24,7 @@ export function OverviewPage() {
   const [appliedMetadataKey, setAppliedMetadataKey] = useState("");
   const [appliedMetadataValue, setAppliedMetadataValue] = useState("");
   const [metadataSummary, setMetadataSummary] = useState<MetadataBucket[]>([]);
+  const [metadataHours, setMetadataHours] = useState(24);
 
   const hasAgentToken = Boolean(settings.agentToken);
 
@@ -55,6 +56,9 @@ export function OverviewPage() {
         const summaryParams = new URLSearchParams({ key: appliedMetadataKey, limit: "10" });
         if (appliedMetadataValue) {
           summaryParams.set("meta_value", appliedMetadataValue);
+        }
+        if (metadataHours > 0) {
+          summaryParams.set("hours_back", metadataHours.toString());
         }
         try {
           const summaryResponse = await controlGet(`/api/jobs/metadata/summary?${summaryParams.toString()}`);
@@ -91,6 +95,7 @@ export function OverviewPage() {
     setAppliedMetadataKey("");
     setAppliedMetadataValue("");
     setMetadataSummary([]);
+    setMetadataHours(24);
   };
 
   const jobCounts = useMemo(() => {
@@ -148,6 +153,21 @@ export function OverviewPage() {
               value={metadataValue}
               onChange={(event) => setMetadataValue(event.target.value)}
             />
+          </div>
+          <div className="overview__filter-field">
+            <label htmlFor="metadata-hours">Window (hours)</label>
+            <select
+              id="metadata-hours"
+              value={metadataHours}
+              onChange={(event) => setMetadataHours(Number(event.target.value))}
+            >
+              <option value={6}>6 hours</option>
+              <option value={12}>12 hours</option>
+              <option value={24}>24 hours</option>
+              <option value={72}>72 hours</option>
+              <option value={168}>7 days</option>
+              <option value={0}>All time</option>
+            </select>
           </div>
           <div className="overview__filter-actions">
             <button type="submit" disabled={loading}>
@@ -239,7 +259,7 @@ export function OverviewPage() {
             </span>
           </header>
           {metadataSummary.length > 0 ? (
-            <MetadataChart data={metadataSummary} />
+            <MetadataChart data={metadataSummary} hours={metadataHours} />
           ) : (
             <p className="overview__empty">No metadata recorded for this key.</p>
           )}
@@ -271,7 +291,7 @@ function StatCard({ label, value }: { label: string; value: number }) {
   );
 }
 
-function MetadataChart({ data }: { data: MetadataBucket[] }) {
+function MetadataChart({ data, hours }: { data: MetadataBucket[]; hours: number }) {
   const maxCount = Math.max(...data.map((bucket) => Number(bucket.count) || 0), 1);
 
   return (
@@ -280,7 +300,10 @@ function MetadataChart({ data }: { data: MetadataBucket[] }) {
         const width = Math.max(4, (Number(bucket.count) / maxCount) * 100);
         return (
           <li key={`${bucket.value}-${bucket.count}`}>
-            <div className="overview__metadata-label">{bucket.value || "(empty)"}</div>
+            <div className="overview__metadata-label">
+              {bucket.value || "(empty)"}
+              <span className="overview__metadata-label-count">{bucket.count} runs</span>
+            </div>
             <div className="overview__metadata-bar">
               <span className="overview__metadata-bar-fill" style={{ width: `${width}%` }} />
               <span className="overview__metadata-count">{bucket.count}</span>
