@@ -153,7 +153,7 @@ export function OverviewPage() {
     } finally {
       setLoading(false);
     }
-  }, [appliedMetadataKey, appliedMetadataValue, appliedMetadataOrg, metadataHours, controlGet, fetchMetricsText, hasAgentToken]);
+  }, [appliedMetadataKey, appliedMetadataValue, appliedMetadataOrg, metadataOrg, metadataHours, controlGet, fetchMetricsText, hasAgentToken]);
 
   useEffect(() => {
     if (hasAgentToken) {
