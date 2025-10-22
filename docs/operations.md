@@ -64,6 +64,7 @@ See [Firecracker Security Hardening](./FIRECRACKER_SECURITY.md) for jailer, secc
 - Configure metadata retention via `NIMBUS_METADATA_RETENTION_DAYS` (defaults to 90) to automatically prune historical metadata rows.
 - Supply `metadata_key` when calling `/api/observability/orgs` (or via the dashboard control) to surface per-tenant metadata buckets and success rates.
 - Define default metadata keys with `NIMBUS_METADATA_DEFAULT_KEYS=lr,batch` to prefetch analytics served from `/api/jobs/metadata/presets`.
+- Provide explicit database URLs such as `NIMBUS_CACHE_METRICS_DB` and `NIMBUS_DOCKER_CACHE_DB_PATH`; these are required and no longer fall back to localhost defaults.
 
 ## Policy Enforcement
 

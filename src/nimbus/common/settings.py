@@ -320,7 +320,7 @@ class CacheProxySettings(BaseSettings):
     s3_bucket: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_BUCKET")
     s3_region: Optional[str] = env_field(None, "NIMBUS_CACHE_S3_REGION")
     metrics_database_url: str = env_field(
-        "postgresql+psycopg://localhost/nimbus_cache_metrics",
+        ...,
         "NIMBUS_CACHE_METRICS_DB",
     )
     org_storage_quota_bytes: Optional[int] = env_field(None, "NIMBUS_CACHE_ORG_QUOTA_BYTES")
@@ -340,6 +340,8 @@ class CacheProxySettings(BaseSettings):
     @field_validator("metrics_database_url", mode="before")
     @classmethod
     def _normalize_metrics_url(cls, value):
+        if value in (None, ...):
+            return value
         if isinstance(value, Path):
             value = str(value)
         if isinstance(value, str) and "://" not in value:
@@ -394,7 +396,7 @@ class DockerCacheSettings(BaseSettings):
     storage_path: Path = env_field(Path("./docker-cache"), "NIMBUS_DOCKER_CACHE_STORAGE_PATH")
     uploads_path: Path = env_field(Path("./docker-cache/uploads"), "NIMBUS_DOCKER_CACHE_UPLOAD_PATH")
     metadata_database_url: str = env_field(
-        "postgresql+psycopg://localhost/nimbus_docker_cache",
+        ...,
         "NIMBUS_DOCKER_CACHE_DB_PATH",
     )
     shared_secret: SecretStr = env_field(SecretStr("local-cache-secret"), "NIMBUS_CACHE_SHARED_SECRET")
@@ -409,6 +411,8 @@ class DockerCacheSettings(BaseSettings):
     @field_validator("metadata_database_url", mode="before")
     @classmethod
     def _normalize_metadata_url(cls, value):
+        if value in (None, ...):
+            return value
         if isinstance(value, Path):
             value = str(value)
         if isinstance(value, str) and "://" not in value:

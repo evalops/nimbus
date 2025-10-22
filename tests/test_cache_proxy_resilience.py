@@ -73,6 +73,7 @@ async def test_s3_backend_retries_until_success(fake_session):
         s3_max_retries=2,
         s3_retry_base_seconds=0.0,
         s3_retry_max_seconds=0.0,
+        metrics_database_url="sqlite+pysqlite:///:memory:",
     )
     backend = S3CacheBackend(settings)
     fake_session.failures_remaining = 1
@@ -102,6 +103,7 @@ async def test_s3_circuit_breaker_blocks_after_failures(monkeypatch, fake_sessio
         s3_retry_max_seconds=0.0,
         s3_circuit_breaker_failures=2,
         s3_circuit_breaker_reset_seconds=5.0,
+        metrics_database_url="sqlite+pysqlite:///:memory:",
     )
     backend = S3CacheBackend(settings)
     fake_session.failures_remaining = 10
