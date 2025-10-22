@@ -50,7 +50,10 @@ def main() -> None:
     args = parser.parse_args()
 
     dashboard = build_dashboard(args.title)
-    Path(args.output).write_text(json.dumps(dashboard, indent=2), encoding="utf-8")
+    output_path = Path(args.output)
+    if output_path.parent != Path():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(dashboard, indent=2), encoding="utf-8")
     print(f"Wrote {args.output}")
 
 
