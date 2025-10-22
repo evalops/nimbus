@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime, timezone, timedelta
 import json
+import inspect
+from datetime import UTC, datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -491,7 +492,9 @@ class HostAgent:
                 if fence_token is not None:
                     status_kwargs["fence_token"] = fence_token
                 if metadata_updates:
-                    status_kwargs["metadata"] = metadata_updates
+                    submit_params = inspect.signature(self._submit_status).parameters
+                    if "metadata" in submit_params:
+                        status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
@@ -520,7 +523,9 @@ class HostAgent:
                     warm_instance_used=(warm_instance is not None),
                 )
                 if metadata_updates:
-                    status_kwargs["metadata"] = metadata_updates
+                    submit_params = inspect.signature(self._submit_status).parameters
+                    if "metadata" in submit_params:
+                        status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
@@ -537,7 +542,9 @@ class HostAgent:
                 if fence_token is not None:
                     status_kwargs["fence_token"] = fence_token
                 if metadata_updates:
-                    status_kwargs["metadata"] = metadata_updates
+                    submit_params = inspect.signature(self._submit_status).parameters
+                    if "metadata" in submit_params:
+                        status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "succeeded", **status_kwargs)
                 JOB_SUCCEEDED_COUNTER.inc()
                 

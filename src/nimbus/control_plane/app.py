@@ -483,8 +483,9 @@ class AppState:
 
     async def gather_cache_metadata(self) -> dict[str, str]:
         metadata: dict[str, str] = {}
-        if self.settings.cache_proxy_url:
-            artifact_status = await self._fetch_cache_status(str(self.settings.cache_proxy_url))
+        cache_proxy_url = getattr(self.settings, "cache_proxy_url", None)
+        if cache_proxy_url:
+            artifact_status = await self._fetch_cache_status(str(cache_proxy_url))
             artifact_summary = self._summarize_cache_status(artifact_status)
             if "hit_ratio" in artifact_summary:
                 metadata["cache.artifact.hit_ratio"] = f"{artifact_summary['hit_ratio']:.6f}"
@@ -517,8 +518,9 @@ class AppState:
         cache_section: dict[str, object] = {}
         artifact_summary: dict[str, object] = {}
         docker_summary: dict[str, object] = {}
-        if self.settings.cache_proxy_url:
-            artifact_status = await self._fetch_cache_status(str(self.settings.cache_proxy_url))
+        cache_proxy_url = getattr(self.settings, "cache_proxy_url", None)
+        if cache_proxy_url:
+            artifact_status = await self._fetch_cache_status(str(cache_proxy_url))
             artifact_summary = self._summarize_cache_status(artifact_status)
         docker_url = getattr(self.settings, "docker_cache_url", None)
         if docker_url:
