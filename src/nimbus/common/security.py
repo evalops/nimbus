@@ -189,12 +189,15 @@ def validate_cache_scope(token: CacheToken, operation: str, org_id: int, *, repo
     
     # Legacy tokens with simple scopes
     scopes = [s.strip() for s in token.scope.split(",") if s.strip()]
+    sanitized_repo = repo.strip("/") if repo else None
+    required_repo_scope = (
+        f"{operation}:org-{org_id}/{sanitized_repo}"
+        if sanitized_repo
+        else None
+    )
 
-    if repo:
-        sanitized = repo.strip("/")
-        required_repo_scope = f"{operation}:org-{org_id}/{sanitized}"
-        if required_repo_scope in scopes:
-            return True
+    if required_repo_scope and required_repo_scope in scopes:
+        return True
 
     if token.scope == "read_write":
         return True
@@ -203,8 +206,11 @@ def validate_cache_scope(token: CacheToken, operation: str, org_id: int, *, repo
     if token.scope == "write" and operation == "push":
         return True
 
-    if repo:
-        return False
-
     required_scope = f"{operation}:org-{org_id}"
-    return required_scope in scopes
+    if required_scope in scopes:
+        return True
+
+    if required_repo_scope:
+        return required_repo_scope in scopes
+
+    return False

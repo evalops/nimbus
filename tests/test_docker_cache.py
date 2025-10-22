@@ -107,15 +107,20 @@ async def test_manifest_roundtrip(docker_cache_env) -> None:
     assert head_resp.headers["Docker-Content-Digest"] == manifest_digest
     assert head_resp.headers["Content-Length"] == str(len(manifest_bytes))
 
-    # repo-scoped denial
+    # org-wide scope access should succeed without repo-specific suffix
     restricted_headers = await _auth_headers(secret, scope="pull:org-1,push:org-1")
-    deny_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=restricted_headers)
-    assert deny_resp.status_code == 404
+    allow_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=restricted_headers)
+    assert allow_resp.status_code == 200
+    assert json.loads(allow_resp.content) == manifest
 
-    # audit log should contain denial entry
+    # audit log should record granted access and no denial
     audit_log = docker_cache_env["audit_log"]
     events = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines() if line]
-    assert any(event["event"] == "docker_cache_access_denied" for event in events)
+    assert any(
+        event["event"] == "docker_cache_access_granted" and event.get("scope") == "pull:org-1,push:org-1"
+        for event in events
+    )
+    assert not any(event["event"] == "docker_cache_access_denied" for event in events)
 
 
 @pytest.mark.anyio("asyncio")
