@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -13,6 +14,7 @@ from nimbus.cli.report import (
     run_jobs,
     run_overview,
     run_metadata,
+    run_metadata_presets,
 )
 
 
@@ -439,3 +441,95 @@ async def test_run_overview_with_presets(monkeypatch, capsys):
     await run_overview(args)
     output = capsys.readouterr().out
     assert "Metadata presets" in output
+
+
+@pytest.mark.asyncio
+async def test_run_metadata_presets_prints_summary(monkeypatch, capsys):
+    async def fake_fetch_presets(
+        base_url: str,
+        token: str,
+        *,
+        keys=None,
+        limit=None,
+        hours_back=None,
+        bucket_hours=None,
+        org_id=None,
+    ):
+        assert base_url == "https://cp"
+        assert token == "secret"
+        assert keys is None
+        assert limit == 5
+        assert bucket_hours == 24
+        return [
+            {
+                "key": "lr",
+                "summary": [{"value": "0.1", "count": 12}],
+                "outcomes": [{"value": "0.1", "total": 12, "succeeded": 9, "failed": 3}],
+                "trend": [{"window_start": "2024-01-01T00:00:00Z", "total": 4, "succeeded": 3, "failed": 1}],
+            }
+        ]
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_presets", fake_fetch_presets)
+
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        keys=None,
+        limit=5,
+        hours_back=None,
+        bucket_hours=24,
+        org_id=None,
+        json=False,
+        output=None,
+    )
+
+    await run_metadata_presets(args)
+    output = capsys.readouterr().out
+    assert "Metadata presets (1 bundles)" in output
+    assert "- lr" in output
+    assert "0.1: 12" in output
+    assert "success=75.0%" in output
+
+
+@pytest.mark.asyncio
+async def test_run_metadata_presets_writes_file(monkeypatch, tmp_path, capsys):
+    async def fake_fetch_presets(
+        base_url: str,
+        token: str,
+        *,
+        keys=None,
+        limit=None,
+        hours_back=None,
+        bucket_hours=None,
+        org_id=None,
+    ):
+        assert base_url == "https://cp"
+        assert token == "secret"
+        assert keys == "batch"
+        assert limit == 3
+        assert hours_back == 12
+        assert bucket_hours == 6
+        assert org_id == 42
+        return [{"key": "batch", "summary": [{"value": "32", "count": 4}]}]
+
+    monkeypatch.setattr("nimbus.cli.report.fetch_metadata_presets", fake_fetch_presets)
+
+    output_path = tmp_path / "presets.json"
+    args = argparse.Namespace(
+        base_url="https://cp",
+        token="secret",
+        keys="batch",
+        limit=3,
+        hours_back=12,
+        bucket_hours=6,
+        org_id=42,
+        json=False,
+        output=str(output_path),
+    )
+
+    await run_metadata_presets(args)
+    captured = capsys.readouterr().out
+    assert output_path.exists()
+    file_content = output_path.read_text()
+    assert '"batch"' in file_content
+    assert "Wrote 1 preset bundles" in captured

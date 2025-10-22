@@ -7,6 +7,7 @@ import asyncio
 import json
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -47,6 +48,40 @@ def parse_args() -> argparse.Namespace:
     metadata_parser.add_argument("--trend", action="store_true", help="Display time series trend")
     metadata_parser.add_argument("--bucket-hours", type=int, default=1, help="Trend bucket size in hours")
     metadata_parser.add_argument("--json", action="store_true", help="Output JSON")
+
+    metadata_presets_parser = subparsers.add_parser(
+        "metadata-presets",
+        help="Export cached metadata preset analytics",
+    )
+    metadata_presets_parser.add_argument("--base-url", required=True, help="Control plane base URL")
+    metadata_presets_parser.add_argument("--token", required=True, help="Control plane bearer token")
+    metadata_presets_parser.add_argument(
+        "--keys",
+        help="Comma separated preset keys to fetch (defaults to server-side presets)",
+    )
+    metadata_presets_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Maximum rows per preset summary",
+    )
+    metadata_presets_parser.add_argument(
+        "--hours-back",
+        type=int,
+        help="Restrict aggregation window (uses service default when omitted)",
+    )
+    metadata_presets_parser.add_argument(
+        "--bucket-hours",
+        type=int,
+        default=24,
+        help="Trend bucket size in hours",
+    )
+    metadata_presets_parser.add_argument("--org-id", type=int, help="Restrict presets to an organization")
+    metadata_presets_parser.add_argument("--json", action="store_true", help="Output raw JSON bundle")
+    metadata_presets_parser.add_argument(
+        "--output",
+        help="Write JSON bundle to this file (directories created as needed)",
+    )
 
     cache_parser = subparsers.add_parser("cache", help="Summarize cache proxy usage")
     cache_parser.add_argument("--cache-url", required=True, help="Cache proxy base URL")
@@ -419,6 +454,44 @@ async def fetch_metadata_presets(
         return []
 
 
+def _format_success_line(total: int, succeeded: int, failed: int) -> str:
+    success_rate = (succeeded / total * 100) if total else 0.0
+    return f"total={total}, success={success_rate:.1f}% (✔ {succeeded} / ✖ {failed})"
+
+
+def print_metadata_preset(bundle: dict[str, Any]) -> None:
+    key = bundle.get("key") or "(unknown preset)"
+    print(f"- {key}")
+    summary_rows = bundle.get("summary") or []
+    if summary_rows:
+        print("  Summary:")
+        for row in summary_rows:
+            value = row.get("value") or "(empty)"
+            print(f"    {value}: {row.get('count', 0)}")
+    outcomes = bundle.get("outcomes") or []
+    if outcomes:
+        print("  Outcomes:")
+        for row in outcomes:
+            value = row.get("value") or "(empty)"
+            total = row.get("total") or 0
+            succeeded = row.get("succeeded") or 0
+            failed = row.get("failed") or 0
+            print(f"    {value}: {_format_success_line(total, succeeded, failed)}")
+    trend = bundle.get("trend") or []
+    if trend:
+        print("  Trend:")
+        for row in trend:
+            window = row.get("window_start")
+            label = row.get("value")
+            total = row.get("total") or 0
+            succeeded = row.get("succeeded") or 0
+            failed = row.get("failed") or 0
+            prefix = f"{window}"
+            if label:
+                prefix = f"{prefix} [{label}]"
+            print(f"    {prefix}: {_format_success_line(total, succeeded, failed)}")
+
+
 async def fetch_org_overview(
     base_url: str,
     token: str,
@@ -659,6 +732,35 @@ async def run_metadata(args: argparse.Namespace) -> None:
             )
 
 
+async def run_metadata_presets(args: argparse.Namespace) -> None:
+    presets = await fetch_metadata_presets(
+        args.base_url,
+        args.token,
+        keys=getattr(args, "keys", None),
+        limit=getattr(args, "limit", 5),
+        hours_back=getattr(args, "hours_back", None),
+        bucket_hours=getattr(args, "bucket_hours", 24) or 24,
+        org_id=getattr(args, "org_id", None),
+    )
+    if getattr(args, "output", None):
+        output_path = Path(args.output).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(presets, indent=2))
+        print(f"Wrote {len(presets)} preset bundles to {output_path}")
+        if not getattr(args, "json", False):
+            return
+    if getattr(args, "json", False):
+        print(json.dumps(presets, indent=2))
+        return
+    if not presets:
+        print("No metadata presets available.")
+        return
+    print(f"Metadata presets ({len(presets)} bundles):")
+    for bundle in presets:
+        print_metadata_preset(bundle)
+        print()
+
+
 async def run_jobs(args: argparse.Namespace) -> None:
     recent_jobs, status_payload = await asyncio.gather(
         fetch_recent_jobs(
@@ -846,6 +948,8 @@ async def run_async() -> None:
         await run_logs(args)
     elif args.command == "overview":
         await run_overview(args)
+    elif args.command == "metadata-presets":
+        await run_metadata_presets(args)
     elif args.command == "tokens":
         await run_tokens(args)
 
