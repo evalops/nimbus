@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -19,6 +19,7 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="jobs/:jobId" element={<JobDetailPage />} />
+          <Route path="jobs" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

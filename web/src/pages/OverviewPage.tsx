@@ -86,14 +86,16 @@ export function OverviewPage() {
         params.set("org_id", appliedMetadataOrg);
       }
       const query = params.toString();
-      const [statusResponse, jobsResponse, metricsText] = await Promise.all([
+      const [statusResponse, jobsResponse, metricsText, performanceResponse] = await Promise.all([
         controlGet("/api/status"),
         controlGet(`/api/jobs/recent?${query}`),
         fetchMetricsText().catch(() => ""),
+        controlGet(`/api/observability/performance?limit=5`).catch(() => null),
       ]);
       setStatus(statusResponse as ServiceStatus);
       setJobs(jobsResponse as JobRecord[]);
       setMetrics(metricsText);
+      setPerformanceOverview((performanceResponse ?? null) as PerformanceOverview | null);
 
       if (appliedMetadataKey) {
         const summaryParams = new URLSearchParams({ key: appliedMetadataKey, limit: "10" });
@@ -156,14 +158,6 @@ export function OverviewPage() {
           console.warn("Failed to load metadata presets", presetError);
           setMetadataPresets([]);
         }
-      }
-
-      try {
-        const performanceResponse = await controlGet(`/api/observability/performance?limit=5`);
-        setPerformanceOverview(performanceResponse as PerformanceOverview);
-      } catch (performanceError) {
-        console.warn("Failed to load performance overview", performanceError);
-        setPerformanceOverview(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
