@@ -541,6 +541,55 @@ class AppState:
             "resources": resources_section,
         }
 
+    async def build_cost_snapshot(self, session: AsyncSession, window_hours: int = 24) -> dict[str, object]:
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(hours=window_hours)
+        jobs = await db.job_metadata_since(session, since)
+        duration_minutes: list[float] = []
+        for job in jobs:
+            metadata = job.get("metadata") or {}
+            raw = metadata.get("resource.duration_seconds")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                duration_minutes.append(value / 60.0)
+
+        runs_per_day = len(jobs)
+        avg_runtime = sum(duration_minutes) / len(duration_minutes) if duration_minutes else 10.0
+
+        gh_minute_cost = 0.008
+        nimbus_minute_cost = 0.0025
+        hardware_hour_cost = 4.0
+        gh_queue_latency = 5.0
+        nimbus_queue_latency = 1.0
+
+        minutes_per_day = runs_per_day * avg_runtime
+        gh_monthly_cost = minutes_per_day * gh_minute_cost * 30
+        nimbus_monthly_cost = (minutes_per_day * nimbus_minute_cost + (minutes_per_day / 60) * hardware_hour_cost) * 30
+        annual_savings = (gh_monthly_cost - nimbus_monthly_cost) * 12
+        time_saved = max(gh_queue_latency - nimbus_queue_latency, 0)
+
+        return {
+            "window_hours": window_hours,
+            "inputs": {
+                "runs_per_day": runs_per_day,
+                "avg_runtime_mins": avg_runtime,
+                "gh_minute_cost": gh_minute_cost,
+                "nimbus_minute_cost": nimbus_minute_cost,
+                "hardware_cost_per_hour": hardware_hour_cost,
+                "gh_queue_latency_mins": gh_queue_latency,
+                "nimbus_queue_latency_mins": nimbus_queue_latency,
+            },
+            "results": {
+                "gh_monthly_cost": gh_monthly_cost,
+                "nimbus_monthly_cost": nimbus_monthly_cost,
+                "annual_savings": annual_savings,
+                "time_saved_per_eval_mins": time_saved,
+            },
+        }
+
     async def fetch_metadata_outcomes(
         self,
         *,
@@ -1781,6 +1830,16 @@ def create_app() -> FastAPI:
     ) -> dict[str, object]:
         REQUEST_COUNTER.inc()
         snapshot = await state.build_performance_snapshot(session, limit=limit)
+        return snapshot
+
+    @app.get("/api/observability/cost")
+    async def cost_overview(
+        _: str = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+        state: AppState = Depends(_get_state),
+    ) -> dict[str, object]:
+        REQUEST_COUNTER.inc()
+        snapshot = await state.build_cost_snapshot(session)
         return snapshot
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)

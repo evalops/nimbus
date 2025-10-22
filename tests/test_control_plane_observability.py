@@ -102,6 +102,7 @@ async def test_observability_orgs_summary(monkeypatch, tmp_path: Path) -> None:
                 private=False,
                 owner_id=987,
             ),
+            metadata={"resource.duration_seconds": "600"},
             labels=["linux"],
             runner_registration=RunnerRegistrationToken(
                 token="runner",
@@ -158,6 +159,14 @@ async def test_observability_orgs_summary(monkeypatch, tmp_path: Path) -> None:
         assert summary["org_id"] == assignment.repository.owner_id
         assert summary["status_counts"].get("failed") == 1
         assert summary["recent_failures"][0]["job_id"] == assignment.job_id
+
+        cost_resp = await client.get(
+            "/api/observability/cost",
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
+        assert cost_resp.status_code == 200
+        cost_payload = cost_resp.json()
+        assert cost_payload["inputs"]["runs_per_day"] >= 1
         assert "agent-1" in summary["active_agents"]
 
     finally:

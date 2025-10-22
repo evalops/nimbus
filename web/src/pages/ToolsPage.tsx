@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useApi } from "../hooks/useApi";
 
 import "./ToolsPage.css";
 
@@ -32,6 +33,25 @@ interface TerraformSuggestion {
   snippet: string;
 }
 
+interface ObservedSnapshot {
+  window_hours: number;
+  inputs: {
+    runs_per_day: number;
+    avg_runtime_mins: number;
+    gh_minute_cost: number;
+    nimbus_minute_cost: number;
+    hardware_cost_per_hour: number;
+    gh_queue_latency_mins: number;
+    nimbus_queue_latency_mins: number;
+  };
+  results: {
+    gh_monthly_cost: number;
+    nimbus_monthly_cost: number;
+    annual_savings: number;
+    time_saved_per_eval_mins: number;
+  };
+}
+
 const DEFAULT_INPUTS: RoiInputs = {
   runsPerDay: 180,
   avgRuntimeMins: 12,
@@ -43,7 +63,9 @@ const DEFAULT_INPUTS: RoiInputs = {
 };
 
 export function ToolsPage() {
+  const { controlGet } = useApi();
   const [inputs, setInputs] = useState<RoiInputs>(DEFAULT_INPUTS);
+  const [observed, setObserved] = useState<ObservedSnapshot | null>(null);
 
   const result = useMemo<RoiResult>(() => {
     const minutesPerDay = inputs.runsPerDay * inputs.avgRuntimeMins;
@@ -137,6 +159,36 @@ export function ToolsPage() {
     void navigator.clipboard.writeText(terraformSuggestion.snippet);
   };
 
+  const handleAdoptObserved = () => {
+    if (!observed) return;
+    setInputs({
+      runsPerDay: observed.inputs.runs_per_day,
+      avgRuntimeMins: observed.inputs.avg_runtime_mins,
+      ghMinuteCost: observed.inputs.gh_minute_cost,
+      nimbusMinuteCost: observed.inputs.nimbus_minute_cost,
+      hardwareCostPerHour: observed.inputs.hardware_cost_per_hour,
+      ghQueueLatencyMins: observed.inputs.gh_queue_latency_mins,
+      nimbusQueueLatencyMins: observed.inputs.nimbus_queue_latency_mins,
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = (await controlGet("/api/observability/cost")) as ObservedSnapshot;
+        if (!cancelled) {
+          setObserved(payload);
+        }
+      } catch (error) {
+        console.warn("Failed to load observed cost snapshot", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [controlGet]);
+
   return (
     <div className="tools__container">
       <header className="tools__header">
@@ -198,7 +250,7 @@ export function ToolsPage() {
             Download CSV
           </button>
         </div>
-        <CostChart points={series} />
+        <CostChart points={series} observed={observed ?? undefined} />
       </section>
 
       <section className="tools__section">
@@ -228,6 +280,24 @@ export function ToolsPage() {
 {terraformSuggestion.snippet}
         </pre>
       </section>
+
+      {observed && (
+        <section className="tools__section">
+          <div className="tools__observed-header">
+            <h2>Observed (last {observed.window_hours}h)</h2>
+            <button type="button" onClick={handleAdoptObserved} className="tools__download">
+              Use these inputs
+            </button>
+          </div>
+          <div className="tools__observed-grid">
+            <ResultCard label="Runs per day" value={observed.inputs.runs_per_day.toFixed(0)} />
+            <ResultCard label="Avg runtime" value={`${observed.inputs.avg_runtime_mins.toFixed(1)} minutes`} />
+            <ResultCard label="GH monthly cost" value={`$${observed.results.gh_monthly_cost.toFixed(2)}`} />
+            <ResultCard label="Nimbus monthly cost" value={`$${observed.results.nimbus_monthly_cost.toFixed(2)}`} />
+            <ResultCard label="Annual savings" value={`$${observed.results.annual_savings.toFixed(2)}`} />
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -241,7 +311,7 @@ function ResultCard({ label, value, emphasize }: { label: string; value: string;
   );
 }
 
-function CostChart({ points }: { points: CostPoint[] }) {
+function CostChart({ points, observed }: { points: CostPoint[]; observed?: ObservedSnapshot }) {
   if (points.length === 0) {
     return <p className="tools__empty">No data.</p>;
   }
@@ -249,8 +319,11 @@ function CostChart({ points }: { points: CostPoint[] }) {
   const width = 600;
   const height = 240;
   const padding = 40;
-  const maxCost = Math.max(...points.map((p) => Math.max(p.ghMonthly, p.nimbusMonthly)), 1);
-  const maxRuns = Math.max(...points.map((p) => p.runsPerDay), 1);
+  const maxCost = Math.max(
+    ...points.map((p) => Math.max(p.ghMonthly, p.nimbusMonthly)),
+    observed ? Math.max(observed.results.gh_monthly_cost, observed.results.nimbus_monthly_cost) : 1,
+  );
+  const maxRuns = Math.max(...points.map((p) => p.runsPerDay), observed ? observed.inputs.runs_per_day : 1);
 
   const scaleX = (runs: number) => padding + (runs / maxRuns) * (width - padding * 2);
   const scaleY = (cost: number) => height - padding - (cost / maxCost) * (height - padding * 2);
@@ -274,9 +347,26 @@ function CostChart({ points }: { points: CostPoint[] }) {
       <line x1={padding} y1={padding} x2={padding} y2={height - padding} className="tools__chart-axis" />
       <path d={toPath((p) => p.ghMonthly)} className="tools__chart-line tools__chart-line--gh" />
       <path d={toPath((p) => p.nimbusMonthly)} className="tools__chart-line tools__chart-line--nimbus" />
+      {observed && (
+        <g>
+          <circle
+            className="tools__chart-marker tools__chart-marker--gh"
+            cx={scaleX(observed.inputs.runs_per_day)}
+            cy={scaleY(observed.results.gh_monthly_cost)}
+            r={5}
+          />
+          <circle
+            className="tools__chart-marker tools__chart-marker--nimbus"
+            cx={scaleX(observed.inputs.runs_per_day)}
+            cy={scaleY(observed.results.nimbus_monthly_cost)}
+            r={5}
+          />
+        </g>
+      )}
       <g className="tools__chart-legend" transform={`translate(${padding},${padding - 16})`}>
         <LegendSwatch className="tools__chart-line--gh" label="GitHub Actions" />
         <LegendSwatch className="tools__chart-line--nimbus" label="Nimbus" />
+        {observed && <LegendSwatch className="tools__chart-marker" label="Observed" />}
       </g>
     </svg>
   );

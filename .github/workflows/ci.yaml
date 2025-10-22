@@ -67,3 +67,13 @@ jobs:
           docker load < nimbus-ai-runner_ci.tar
           dockle --exit-code 1 -af settings.py nimbus-control-plane:ci
           dockle --exit-code 1 -af settings.py nimbus-ai-runner:ci
+
+      - name: Generate Grafana dashboard JSON
+        run: |
+          uv run python tools/generate_spot_fleet_dashboard.py --output dashboards/spot-fleet.json
+
+      - name: Upload spot fleet dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafana-spot-fleet-dashboard
+          path: dashboards/spot-fleet.json

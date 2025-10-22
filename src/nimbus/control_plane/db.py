@@ -361,6 +361,17 @@ async def average_numeric_metadata(
     return float(avg_value) if avg_value is not None else None
 
 
+async def job_metadata_since(session: AsyncSession, since: datetime) -> list[dict]:
+    stmt = (
+        select(jobs_table.c.job_id, jobs_table.c.metadata, jobs_table.c.completed_at)
+        .where(jobs_table.c.completed_at.isnot(None))
+        .where(jobs_table.c.completed_at >= since)
+    )
+    result = await session.execute(stmt)
+    rows = [dict(row) for row in result.mappings()]
+    return _normalise_job_rows(rows)
+
+
 async def metadata_outcomes(
     session: AsyncSession,
     key: str,
