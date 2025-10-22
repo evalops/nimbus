@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 
 import { useApi } from "../hooks/useApi";
-import type { JobRecord, ServiceStatus, MetadataPresetBundle } from "../types";
+import type {
+  JobRecord,
+  ServiceStatus,
+  MetadataPresetBundle,
+  PerformanceOverview,
+  ResourceHighlight,
+  CachePerformanceSummary,
+} from "../types";
 import { useSettings } from "../hooks/useSettings";
 
 import "./OverviewPage.css";
@@ -37,6 +45,7 @@ export function OverviewPage() {
   const [metadataTrend, setMetadataTrend] = useState<Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>>([]);
   const [metadataPresets, setMetadataPresets] = useState<MetadataPresetBundle[]>([]);
   const [metadataHours, setMetadataHours] = useState(24);
+  const [performanceOverview, setPerformanceOverview] = useState<PerformanceOverview | null>(null);
 
   const hasAgentToken = Boolean(settings.agentToken);
 
@@ -148,6 +157,14 @@ export function OverviewPage() {
           setMetadataPresets([]);
         }
       }
+
+      try {
+        const performanceResponse = await controlGet(`/api/observability/performance?limit=5`);
+        setPerformanceOverview(performanceResponse as PerformanceOverview);
+      } catch (performanceError) {
+        console.warn("Failed to load performance overview", performanceError);
+        setPerformanceOverview(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -189,6 +206,11 @@ export function OverviewPage() {
       .map(([label, value]) => ({ label, value }));
   }, [status]);
 
+  const artifactHitRatio = performanceOverview?.cache?.artifact?.hit_ratio ?? performanceOverview?.cache?.artifact_hit_ratio_avg ?? null;
+  const dockerHitRatio = performanceOverview?.cache?.docker?.hit_ratio ?? null;
+  const topCpuHighlights = performanceOverview?.resources?.top_cpu ?? [];
+  const topMemoryHighlights = performanceOverview?.resources?.top_memory ?? [];
+
   return (
     <div className="overview__container">
       <div className="overview__header">
@@ -208,6 +230,12 @@ export function OverviewPage() {
         <StatCard label="Active Jobs" value={status?.jobs_by_status?.running ?? 0} />
         <StatCard label="Succeeded" value={status?.jobs_by_status?.succeeded ?? 0} />
         <StatCard label="Failed" value={status?.jobs_by_status?.failed ?? 0} />
+        {artifactHitRatio !== null && artifactHitRatio !== undefined ? (
+          <StatCard label="Artifact Cache Hit %" value={Math.round(artifactHitRatio * 100)} />
+        ) : null}
+        {dockerHitRatio !== null && dockerHitRatio !== undefined ? (
+          <StatCard label="Docker Cache Hit %" value={Math.round(dockerHitRatio * 100)} />
+        ) : null}
       </section>
 
       <section className="overview__section">
@@ -305,7 +333,11 @@ export function OverviewPage() {
             <tbody>
               {jobs.map((job) => (
                 <tr key={job.job_id}>
-                  <td>#{job.job_id}</td>
+                  <td>
+                    <Link to={`/jobs/${job.job_id}`} className="overview__job-link">
+                      #{job.job_id}
+                    </Link>
+                  </td>
                   <td>{job.repo_full_name}</td>
                   <td className={`status status--${job.status.toLowerCase()}`}>{job.status}</td>
                   <td className="overview__metadata">
@@ -345,6 +377,30 @@ export function OverviewPage() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {performanceOverview && (
+        <section className="overview__section">
+          <header className="overview__section-header">
+            <h2>Cache Performance</h2>
+          </header>
+          <div className="overview__cache-grid">
+            <CacheCard title="Artifact Cache" summary={performanceOverview.cache.artifact} />
+            <CacheCard title="Docker Cache" summary={performanceOverview.cache.docker} />
+          </div>
+        </section>
+      )}
+
+      {performanceOverview && (
+        <section className="overview__section">
+          <header className="overview__section-header">
+            <h2>Resource Hotspots</h2>
+          </header>
+          <div className="overview__resource-grid">
+            <ResourceTable title="Top CPU Jobs" unit="seconds" highlights={topCpuHighlights} />
+            <ResourceTable title="Top Memory Jobs" unit="bytes" highlights={topMemoryHighlights} />
+          </div>
         </section>
       )}
 
@@ -395,6 +451,80 @@ export function OverviewPage() {
         </section>
       )}
     </div>
+  );
+}
+
+function CacheCard({ title, summary }: { title: string; summary?: CachePerformanceSummary }) {
+  if (!summary || Object.keys(summary).length === 0) {
+    return (
+      <article className="overview__cache-card">
+        <h3>{title}</h3>
+        <p className="overview__empty">No cache data available.</p>
+      </article>
+    );
+  }
+  const hitRatio = summary.hit_ratio;
+  const totalBytes = summary.total_bytes;
+  const totalHits = summary.total_hits;
+  const totalMisses = summary.total_misses;
+  return (
+    <article className="overview__cache-card">
+      <h3>{title}</h3>
+      <div className="overview__cache-metric">
+        <span>Hit Ratio</span>
+        <span>{hitRatio !== undefined && hitRatio !== null ? formatPercent(hitRatio) : "n/a"}</span>
+      </div>
+      <div className="overview__cache-metric">
+        <span>Total Hits</span>
+        <span>{totalHits !== undefined && totalHits !== null ? formatInteger(totalHits) : "n/a"}</span>
+      </div>
+      <div className="overview__cache-metric">
+        <span>Total Misses</span>
+        <span>{totalMisses !== undefined && totalMisses !== null ? formatInteger(totalMisses) : "n/a"}</span>
+      </div>
+      <div className="overview__cache-metric">
+        <span>Stored Bytes</span>
+        <span>{totalBytes !== undefined && totalBytes !== null ? formatBytes(totalBytes) : "n/a"}</span>
+      </div>
+    </article>
+  );
+}
+
+function ResourceTable({ title, unit, highlights }: { title: string; unit: "seconds" | "bytes"; highlights: ResourceHighlight[] }) {
+  return (
+    <article className="overview__resource-card">
+      <h3>{title}</h3>
+      {highlights.length === 0 ? (
+        <p className="overview__empty">No recent jobs recorded.</p>
+      ) : (
+        <table className="overview__resource-table">
+          <thead>
+            <tr>
+              <th>Job</th>
+              <th>Repository</th>
+              <th>Status</th>
+              <th className="overview__resource-value">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {highlights.map((highlight) => (
+              <tr key={highlight.job_id}>
+                <td>
+                  <Link to={`/jobs/${highlight.job_id}`} className="overview__job-link">
+                    #{highlight.job_id}
+                  </Link>
+                </td>
+                <td>{highlight.repo_full_name}</td>
+                <td>{highlight.status}</td>
+                <td className="overview__resource-value">
+                  {unit === "bytes" ? formatBytes(highlight.value ?? undefined) : formatSeconds(highlight.value ?? undefined)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </article>
   );
 }
 
@@ -530,4 +660,46 @@ function MetadataSparkline({ points }: { points: Array<{ window_start: string; t
       ))}
     </div>
   );
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatInteger(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  return Math.round(value).toLocaleString();
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const precision = size >= 10 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatSeconds(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  if (value >= 3600) {
+    return `${(value / 3600).toFixed(1)} h`;
+  }
+  if (value >= 60) {
+    return `${(value / 60).toFixed(1)} m`;
+  }
+  return `${value.toFixed(2)} s`;
 }

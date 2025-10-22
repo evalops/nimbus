@@ -481,9 +481,16 @@ class HostAgent:
                 else:
                     LOGGER.exception("Job failed", job_id=assignment.job_id)
 
+                metadata_updates = await self._collect_job_metrics_metadata(
+                    assignment.job_id,
+                    executor_name,
+                    warm_instance_used=(warm_instance is not None),
+                )
                 status_kwargs = {"message": message}
                 if fence_token is not None:
                     status_kwargs["fence_token"] = fence_token
+                if metadata_updates:
+                    status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
@@ -506,15 +513,30 @@ class HostAgent:
                 status_kwargs = {"message": str(exc)}
                 if fence_token is not None:
                     status_kwargs["fence_token"] = fence_token
+                metadata_updates = await self._collect_job_metrics_metadata(
+                    assignment.job_id,
+                    executor_name,
+                    warm_instance_used=(warm_instance is not None),
+                )
+                if metadata_updates:
+                    status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "failed", **status_kwargs)
                 JOB_FAILED_COUNTER.inc()
                 return
             else:
                 await self._emit_logs(assignment, fc_result)
                 LOGGER.info("Job succeeded", job_id=assignment.job_id)
-                status_kwargs = {}
+                metadata_updates = await self._collect_job_metrics_metadata(
+                    assignment.job_id,
+                    executor_name,
+                    result=result,
+                    warm_instance_used=(warm_instance is not None),
+                )
+                status_kwargs: dict[str, object] = {}
                 if fence_token is not None:
                     status_kwargs["fence_token"] = fence_token
+                if metadata_updates:
+                    status_kwargs["metadata"] = metadata_updates
                 await self._submit_status(assignment, "succeeded", **status_kwargs)
                 JOB_SUCCEEDED_COUNTER.inc()
                 
@@ -564,6 +586,48 @@ class HostAgent:
                     LOGGER.debug("Failed to clear stored job state", job_id=assignment.job_id, error=str(exc))
                 await self._teardown_sessions_for_job(assignment.job_id, reason="job complete")
 
+    async def _collect_job_metrics_metadata(
+        self,
+        job_id: int,
+        executor_name: str,
+        result: Optional[RunResult] = None,
+        *,
+        warm_instance_used: Optional[bool] = None,
+    ) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        usage = None
+        try:
+            usage = await self._resource_tracker.get_usage(job_id)
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.debug("Failed to collect resource usage", job_id=job_id, error=str(exc))
+        if usage:
+            if usage.cpu_seconds:
+                metadata["resource.cpu_seconds"] = f"{usage.cpu_seconds:.6f}"
+            if usage.memory_bytes:
+                metadata["resource.memory_bytes"] = str(usage.memory_bytes)
+            if usage.max_memory_bytes:
+                metadata["resource.max_memory_bytes"] = str(usage.max_memory_bytes)
+            if usage.io_read_bytes:
+                metadata["resource.io_read_bytes"] = str(usage.io_read_bytes)
+            if usage.io_write_bytes:
+                metadata["resource.io_write_bytes"] = str(usage.io_write_bytes)
+            if usage.network_rx_bytes:
+                metadata["resource.network_rx_bytes"] = str(usage.network_rx_bytes)
+            if usage.network_tx_bytes:
+                metadata["resource.network_tx_bytes"] = str(usage.network_tx_bytes)
+        if result:
+            if result.duration_seconds is not None:
+                metadata["resource.duration_seconds"] = f"{result.duration_seconds:.6f}"
+            if result.started_at is not None:
+                metadata["resource.started_at"] = result.started_at.isoformat()
+            if result.finished_at is not None:
+                metadata["resource.finished_at"] = result.finished_at.isoformat()
+        if executor_name:
+            metadata["executor.name"] = executor_name
+        if warm_instance_used is not None:
+            metadata["executor.warm_instance"] = "true" if warm_instance_used else "false"
+        return metadata
+
     async def _submit_status(
         self,
         assignment: JobAssignment,
@@ -571,12 +635,15 @@ class HostAgent:
         *,
         message: Optional[str] = None,
         fence_token: Optional[int] = None,
+        metadata: Optional[dict[str, str]] = None,
     ) -> None:
         kwargs: dict[str, object] = {}
         if message is not None:
             kwargs["message"] = message
         if fence_token is not None:
             kwargs["fence_token"] = fence_token
+        if metadata:
+            kwargs["metadata"] = metadata
         await self._submit_status_for_job(assignment.job_id, status, **kwargs)
 
     async def _submit_status_for_job(
@@ -586,6 +653,7 @@ class HostAgent:
         *,
         message: Optional[str] = None,
         fence_token: Optional[int] = None,
+        metadata: Optional[dict[str, str]] = None,
     ) -> None:
         payload = JobStatusUpdate(
             agent_id=self._settings.agent_id,
@@ -593,6 +661,7 @@ class HostAgent:
             status=status,  # type: ignore[arg-type]
             message=message,
             fence_token=fence_token,
+            metadata=metadata,
         )
         with TRACER.start_as_current_span("host_agent.job_status"):
             resp = await self._http.post(

@@ -264,6 +264,12 @@ class DockerCacheMetrics:
             total = result.scalar_one()
         return int(total or 0)
 
+    def blob_count(self) -> int:
+        with self._engine.connect() as conn:
+            result = conn.execute(text("SELECT COUNT(*) FROM blobs"))
+            count = result.scalar_one()
+        return int(count or 0)
+
     def oldest_blobs(self, limit: int = 10) -> list[tuple[str, int]]:
         with self._engine.connect() as conn:
             result = conn.execute(
@@ -272,6 +278,22 @@ class DockerCacheMetrics:
             )
             rows = result.fetchall()
         return [(row[0], int(row[1])) for row in rows]
+
+    def top_org_usage(self, limit: int = 5) -> list[dict[str, int]]:
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT org_id, total_bytes
+                    FROM org_usage
+                    ORDER BY total_bytes DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+            rows = result.fetchall()
+        return [{"org_id": int(row[0]), "total_bytes": int(row[1])} for row in rows if row[0] is not None]
 
     def record_manifest(self, repository: str, reference: str, digest: str, media_type: Optional[str], size: int) -> None:
         now = time.time()
@@ -578,6 +600,15 @@ def create_app() -> FastAPI:
                 status=getattr(response, "status_code", None),
                 duration_ms=round(duration * 1000, 2),
             )
+
+    @app.get("/status")
+    async def docker_cache_status(state: DockerCacheState = Depends(get_state)) -> dict[str, object]:
+        return {
+            "total_blobs": state.metrics.blob_count(),
+            "total_bytes": state.metrics.total_blob_bytes(),
+            "org_usage": state.metrics.top_org_usage(),
+            "active_uploads": len(state.uploads),
+        }
 
     @app.get("/v2/", response_class=PlainTextResponse)
     async def service_ping(_: CacheToken = Depends(require_cache_token)) -> PlainTextResponse:

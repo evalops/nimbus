@@ -67,6 +67,7 @@ class ControlPlaneSettings(BaseSettings):
         validation_alias="NIMBUS_METADATA_DENYLIST",
     )
     egress_policy_pack: Optional[Path] = env_field(None, "NIMBUS_EGRESS_POLICY_PACK")
+    docker_cache_url: Optional[HttpUrl] = env_field(None, "NIMBUS_DOCKER_CACHE_URL")
     saml_sp_entity_id: Optional[str] = env_field(None, "NIMBUS_SAML_SP_ENTITY_ID")
     saml_assertion_consumer_service_url: Optional[HttpUrl] = env_field(
         None,

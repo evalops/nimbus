@@ -9,6 +9,7 @@ export interface JobRecord {
   labels: string[];
   status: string;
   agent_id?: string | null;
+  executor?: string;
   queued_at: string;
   leased_at?: string | null;
   completed_at?: string | null;
@@ -38,6 +39,34 @@ export interface MetadataPresetBundle {
   summary: Array<{ value: string; count: number }>;
   outcomes: Array<{ value: string | null; total: number; succeeded: number; failed: number }>;
   trend: Array<{ window_start: string; window_end?: string; value?: string | null; total: number; succeeded: number; failed: number }>;
+}
+
+export interface CachePerformanceSummary {
+  hit_ratio?: number | null;
+  total_hits?: number | null;
+  total_misses?: number | null;
+  total_bytes?: number | null;
+  max_storage_bytes?: number | null;
+}
+
+export interface ResourceHighlight {
+  job_id: number;
+  repo_full_name: string;
+  status: string;
+  completed_at?: string | null;
+  value: number | null;
+}
+
+export interface PerformanceOverview {
+  cache: {
+    artifact?: CachePerformanceSummary;
+    docker?: CachePerformanceSummary;
+    artifact_hit_ratio_avg?: number | null;
+  };
+  resources: {
+    top_cpu: ResourceHighlight[];
+    top_memory: ResourceHighlight[];
+  };
 }
 
 export interface AgentTokenRecord {

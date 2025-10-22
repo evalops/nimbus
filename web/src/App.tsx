@@ -6,6 +6,7 @@ import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { JobDetailPage } from "./pages/JobDetailPage";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="jobs/:jobId" element={<JobDetailPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

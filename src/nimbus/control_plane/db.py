@@ -18,6 +18,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    Float,
     func,
     insert,
     select,
@@ -34,6 +35,11 @@ from ..common.schemas import JobAssignment, JobStatusUpdate
 
 
 metadata = MetaData()
+
+
+def _json_path_for_metadata(key: str) -> str:
+    escaped = key.replace('"', '\\"')
+    return f'$."{escaped}"'
 
 
 jobs_table = Table(
@@ -220,10 +226,24 @@ async def record_status_update(session: AsyncSession, update_payload: JobStatusU
     is_terminal = update_payload.status in {"succeeded", "failed", "cancelled"}
     if is_terminal:
         values["completed_at"] = now
-    
+
+    if update_payload.metadata:
+        result = await session.execute(
+            select(jobs_table.c.metadata).where(jobs_table.c.job_id == update_payload.job_id)
+        )
+        current_metadata = result.scalar_one_or_none() or {}
+        merged_metadata: dict[str, str] = {}
+        if isinstance(current_metadata, dict):
+            merged_metadata.update({str(key): str(value) for key, value in current_metadata.items() if value is not None})
+        for key, value in update_payload.metadata.items():
+            if value is None:
+                continue
+            merged_metadata[str(key)] = str(value)
+        values["metadata"] = merged_metadata
+
     stmt = update(jobs_table).where(jobs_table.c.job_id == update_payload.job_id).values(**values)
     await session.execute(stmt)
-    
+
     # Release lease on terminal states to prevent leak
     if is_terminal and update_payload.fence_token is not None:
         await release_job_lease(session, update_payload.job_id, update_payload.agent_id, update_payload.fence_token)
@@ -275,6 +295,70 @@ async def list_recent_jobs(
             if metadata_value in {str(value) for value in (row.get("metadata") or {}).values()}
         ]
     return normalised
+
+
+async def top_jobs_by_numeric_metadata(
+    session: AsyncSession,
+    key: str,
+    limit: int = 5,
+    org_id: Optional[int] = None,
+) -> list[dict]:
+    limit = max(1, min(limit, 50))
+    path = _json_path_for_metadata(key)
+    json_value = func.json_extract(jobs_table.c.metadata, path)
+    value_expr = cast(json_value, Float)
+    stmt = (
+        select(
+            jobs_table.c.job_id,
+            jobs_table.c.repo_full_name,
+            jobs_table.c.status,
+            jobs_table.c.completed_at,
+            value_expr.label("metric_value"),
+        )
+        .where(json_value.isnot(None))
+    )
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    stmt = stmt.order_by(value_expr.desc()).limit(limit)
+    result = await session.execute(stmt)
+    rows = []
+    for row in result.mappings():
+        metric_value = row["metric_value"]
+        completed_at = row["completed_at"]
+        if isinstance(completed_at, datetime):
+            completed_str = completed_at.isoformat()
+        else:
+            completed_str = completed_at
+        rows.append(
+            {
+                "job_id": row["job_id"],
+                "repo_full_name": row["repo_full_name"],
+                "status": row["status"],
+                "completed_at": completed_str,
+                "value": float(metric_value) if metric_value is not None else None,
+            }
+        )
+    return rows
+
+
+async def average_numeric_metadata(
+    session: AsyncSession,
+    key: str,
+    limit: int = 200,
+    org_id: Optional[int] = None,
+) -> Optional[float]:
+    limit = max(1, min(limit, 1000))
+    path = _json_path_for_metadata(key)
+    json_value = func.json_extract(jobs_table.c.metadata, path)
+    value_expr = cast(json_value, Float)
+    stmt = select(value_expr.label("value")).where(json_value.isnot(None))
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+    stmt = stmt.order_by(jobs_table.c.updated_at.desc()).limit(limit)
+    subquery = stmt.subquery()
+    result = await session.execute(select(func.avg(subquery.c.value)))
+    avg_value = result.scalar_one_or_none()
+    return float(avg_value) if avg_value is not None else None
 
 
 async def metadata_outcomes(

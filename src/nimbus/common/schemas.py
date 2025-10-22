@@ -99,6 +99,7 @@ class JobStatusUpdate(BaseModel):
     message: Optional[str] = None
     fence_token: Optional[int] = None
     reported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: Optional[dict[str, str]] = None
 
 
 class JobRecord(BaseModel):

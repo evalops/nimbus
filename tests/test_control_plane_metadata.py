@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nimbus.control_plane import db
 from nimbus.control_plane.app import AppState, RateLimiter
 
 
@@ -162,3 +163,60 @@ async def test_metadata_bundle(monkeypatch):
     assert bundle["summary"][0]["count"] == 5
     assert bundle["outcomes"][0]["succeeded"] == 4
     assert bundle["trend"][0]["total"] == 5
+
+
+@pytest.mark.asyncio
+async def test_build_performance_snapshot(monkeypatch):
+    async def fake_top_jobs(session, key, limit, org_id=None):  # noqa: ANN001
+        return [
+            {
+                "job_id": 7,
+                "repo_full_name": "acme/repo",
+                "status": "succeeded",
+                "completed_at": "2024-01-01T00:00:00Z",
+                "value": 3.2,
+            }
+        ]
+
+    async def fake_average(session, key, limit=200, org_id=None):  # noqa: ANN001
+        return 0.82
+
+    async def fake_get(url: str, timeout: float):  # noqa: ANN001
+        class Response:
+            def __init__(self, payload: dict[str, object]):
+                self._payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, object]:
+                return self._payload
+
+        if "cache-proxy" in url:
+            return Response({"total_hits": 80, "total_misses": 20, "total_bytes": 1024})
+        if "docker-cache" in url:
+            return Response({"total_bytes": 2048, "total_hits": 10, "total_misses": 5})
+        return Response({})
+
+    monkeypatch.setattr(db, "top_jobs_by_numeric_metadata", fake_top_jobs)
+    monkeypatch.setattr(db, "average_numeric_metadata", fake_average)
+
+    limiter = RateLimiter(limit=5, interval=60)
+    state = AppState(
+        settings=SimpleNamespace(
+            cache_shared_secret=SimpleNamespace(get_secret_value=lambda: "secret"),
+            cache_proxy_url="http://cache-proxy",
+            docker_cache_url="http://docker-cache",
+        ),
+        redis=None,
+        http_client=SimpleNamespace(get=fake_get),
+        github_client=None,
+        session_factory=None,
+        token_rate_limiter=limiter,
+        admin_rate_limiter=limiter,
+    )
+
+    snapshot = await state.build_performance_snapshot(session=None, limit=5)
+    assert snapshot["cache"]["artifact"]["hit_ratio"] == pytest.approx(0.8)
+    assert snapshot["cache"]["artifact_hit_ratio_avg"] == pytest.approx(0.82)
+    assert snapshot["resources"]["top_cpu"]

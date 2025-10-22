@@ -151,6 +151,7 @@ async def test_record_status_update_terminal_releases(session, monkeypatch):
         status="succeeded",
         message="done",
         fence_token=2,
+        metadata={"resource.cpu_seconds": "1.25"},
     )
     await db.record_status_update(session, update_payload)
     await session.commit()
@@ -158,6 +159,7 @@ async def test_record_status_update_terminal_releases(session, monkeypatch):
     job_row = await db.get_job(session, 202)
     assert job_row["status"] == "succeeded"
     assert job_row["completed_at"] is not None
+    assert job_row["metadata"].get("resource.cpu_seconds") == "1.25"
     mock_release.assert_awaited_once_with(session, 202, "agent-9", 2)
 
 
@@ -243,3 +245,25 @@ async def test_try_acquire_and_release_job_lease(session, monkeypatch):
 
     valid_after = await db.validate_lease_fence(session, 303, "agent-z", token)
     assert valid_after is False
+
+
+@pytest.mark.asyncio
+async def test_top_jobs_by_numeric_metadata(session):
+    assignment = _make_assignment(
+        420,
+        metadata={"resource.cpu_seconds": "3.25", "resource.max_memory_bytes": "104857600"},
+    )
+    await db.record_job_queued(session, assignment)
+    await session.commit()
+
+    update_payload = JobStatusUpdate(agent_id="agent-1", job_id=420, status="succeeded")
+    await db.record_status_update(session, update_payload)
+    await session.commit()
+
+    top_cpu = await db.top_jobs_by_numeric_metadata(session, "resource.cpu_seconds", limit=5)
+    assert top_cpu
+    assert top_cpu[0]["job_id"] == 420
+    assert top_cpu[0]["value"] == pytest.approx(3.25)
+
+    avg_value = await db.average_numeric_metadata(session, "resource.cpu_seconds")
+    assert avg_value == pytest.approx(3.25)

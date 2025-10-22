@@ -445,6 +445,100 @@ class AppState:
         self._metadata_cache_set(cache_key, summary)
         return summary
 
+    async def _fetch_cache_status(self, base_url: str) -> dict[str, object]:
+        try:
+            response = await self.http_client.get(f"{base_url.rstrip('/')}/status", timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to fetch cache status", url=base_url, error=str(exc))
+            return {}
+
+    @staticmethod
+    def _summarize_cache_status(status_payload: dict[str, object]) -> dict[str, object]:
+        if not status_payload:
+            return {}
+        summary: dict[str, object] = {}
+        hits = float(status_payload.get("total_hits") or 0)
+        misses = float(status_payload.get("total_misses") or 0)
+        total = hits + misses
+        if total > 0:
+            summary["hit_ratio"] = hits / total
+        summary["total_hits"] = hits
+        summary["total_misses"] = misses
+        total_bytes = status_payload.get("total_bytes")
+        if total_bytes is not None:
+            try:
+                summary["total_bytes"] = float(total_bytes)
+            except (TypeError, ValueError):
+                pass
+        max_storage = status_payload.get("max_storage_bytes")
+        if max_storage is not None:
+            try:
+                summary["max_storage_bytes"] = float(max_storage)
+            except (TypeError, ValueError):
+                pass
+        return summary
+
+    async def gather_cache_metadata(self) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        if self.settings.cache_proxy_url:
+            artifact_status = await self._fetch_cache_status(str(self.settings.cache_proxy_url))
+            artifact_summary = self._summarize_cache_status(artifact_status)
+            if "hit_ratio" in artifact_summary:
+                metadata["cache.artifact.hit_ratio"] = f"{artifact_summary['hit_ratio']:.6f}"
+            if "total_hits" in artifact_summary:
+                metadata["cache.artifact.total_hits"] = str(int(artifact_summary["total_hits"]))
+            if "total_misses" in artifact_summary:
+                metadata["cache.artifact.total_misses"] = str(int(artifact_summary["total_misses"]))
+            if "total_bytes" in artifact_summary:
+                metadata["cache.artifact.total_bytes"] = str(int(artifact_summary["total_bytes"]))
+        docker_url = getattr(self.settings, "docker_cache_url", None)
+        if docker_url:
+            docker_status = await self._fetch_cache_status(str(docker_url))
+            docker_summary = self._summarize_cache_status(docker_status)
+            if "hit_ratio" in docker_summary:
+                metadata["cache.docker.hit_ratio"] = f"{docker_summary['hit_ratio']:.6f}"
+            if "total_hits" in docker_summary:
+                metadata["cache.docker.total_hits"] = str(int(docker_summary["total_hits"]))
+            if "total_misses" in docker_summary:
+                metadata["cache.docker.total_misses"] = str(int(docker_summary["total_misses"]))
+            if "total_bytes" in docker_summary:
+                metadata["cache.docker.total_bytes"] = str(int(docker_summary["total_bytes"]))
+        return metadata
+
+    async def build_performance_snapshot(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int = 5,
+    ) -> dict[str, object]:
+        cache_section: dict[str, object] = {}
+        artifact_summary: dict[str, object] = {}
+        docker_summary: dict[str, object] = {}
+        if self.settings.cache_proxy_url:
+            artifact_status = await self._fetch_cache_status(str(self.settings.cache_proxy_url))
+            artifact_summary = self._summarize_cache_status(artifact_status)
+        docker_url = getattr(self.settings, "docker_cache_url", None)
+        if docker_url:
+            docker_status = await self._fetch_cache_status(str(docker_url))
+            docker_summary = self._summarize_cache_status(docker_status)
+        cache_section["artifact"] = artifact_summary
+        cache_section["docker"] = docker_summary
+        cache_section["artifact_hit_ratio_avg"] = await db.average_numeric_metadata(
+            session,
+            "cache.artifact.hit_ratio",
+        )
+        resources_section = {
+            "top_cpu": await db.top_jobs_by_numeric_metadata(session, "resource.cpu_seconds", limit=limit),
+            "top_memory": await db.top_jobs_by_numeric_metadata(session, "resource.max_memory_bytes", limit=limit),
+        }
+        return {
+            "cache": cache_section,
+            "resources": resources_section,
+        }
+
     async def fetch_metadata_outcomes(
         self,
         *,
@@ -1511,7 +1605,22 @@ def create_app() -> FastAPI:
             terminal_statuses = {"succeeded", "failed", "cancelled"}
             if status_update.status in terminal_statuses:
                 job_row = await db.get_job(session, status_update.job_id)
+                cache_metadata = await state.gather_cache_metadata()
+                if cache_metadata:
+                    merged_metadata = dict(status_update.metadata or {})
+                    merged_metadata.update(cache_metadata)
+                    status_update.metadata = merged_metadata or None
             await db.record_status_update(session, status_update)
+            if job_row:
+                existing_metadata = job_row.get("metadata") or {}
+                if not isinstance(existing_metadata, dict):
+                    existing_metadata = {}
+                if status_update.metadata:
+                    merged_metadata = dict(existing_metadata)
+                    for key, value in status_update.metadata.items():
+                        if value is not None:
+                            merged_metadata[key] = value
+                    job_row["metadata"] = merged_metadata
             await session.commit()
 
             if job_row and job_row.get("metadata"):
@@ -1648,6 +1757,17 @@ def create_app() -> FastAPI:
             )
             results.append(bundle)
         return results
+
+    @app.get("/api/observability/performance")
+    async def performance_overview(
+        limit: int = 5,
+        _: str = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+        state: AppState = Depends(_get_state),
+    ) -> dict[str, object]:
+        REQUEST_COUNTER.inc()
+        snapshot = await state.build_performance_snapshot(session, limit=limit)
+        return snapshot
 
     @app.get("/api/status", status_code=status.HTTP_200_OK)
     async def service_status(
