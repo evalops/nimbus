@@ -56,8 +56,15 @@ dev = [
   "pytest-asyncio>=0.24,<0.25",
   "pytest-cov>=7.0,<8.0",
   "coverage>=7.6,<8.0",
-  "hypothesis>=6.108,<7.0"
+  "hypothesis>=6.108,<7.0",
+  "ruff>=0.5,<0.6"
 ]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nimbus"]
