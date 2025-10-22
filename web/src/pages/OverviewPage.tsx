@@ -368,6 +368,20 @@ export function OverviewPage() {
         </section>
       )}
 
+      {!appliedMetadataKey && metadataPresets.length > 0 && (
+        <section className="overview__section">
+          <header className="overview__section-header">
+            <h2>Metadata Presets</h2>
+            <span>{metadataPresets.length} bundle{metadataPresets.length === 1 ? "" : "s"} loaded</span>
+          </header>
+          <div className="overview__presets">
+            {metadataPresets.map((preset, index) => (
+              <PresetCard key={preset.key || `preset-${index}`} preset={preset} />
+            ))}
+          </div>
+        </section>
+      )}
+
       {metrics && (
         <section className="overview__section">
           <header className="overview__section-header">
@@ -443,6 +457,56 @@ function MetadataChart({
         );
       })}
     </ul>
+  );
+}
+
+function PresetCard({ preset }: { preset: MetadataPresetBundle }) {
+  const summary = (preset.summary ?? []).slice(0, 3);
+  const outcomes = preset.outcomes ?? [];
+  const trend = preset.trend ?? [];
+  const totalSucceeded = outcomes.reduce((acc, row) => acc + (row.succeeded ?? 0), 0);
+  const totalFailed = outcomes.reduce((acc, row) => acc + (row.failed ?? 0), 0);
+  const totalCount = outcomes.reduce((acc, row) => acc + (row.total ?? 0), 0);
+  const successRate = totalCount ? (totalSucceeded / totalCount) * 100 : null;
+  const maxTrend = Math.max(...trend.map((point) => point.total ?? 0), 0) || 1;
+
+  return (
+    <article className="overview__preset-card">
+      <div>
+        <h3 className="overview__preset-title">{preset.key ?? "(unknown preset)"}</h3>
+        {summary.length > 0 && (
+          <ul className="overview__preset-summary">
+            {summary.map((row, index) => (
+              <li key={`${row.value ?? "(empty)"}-${index}`}>
+                <span>{row.value ?? "(empty)"}</span>
+                <span className="overview__metadata-label-count">{row.count} runs</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {successRate !== null && (
+        <div className="overview__metadata-outcomes">
+          <span className="overview__metadata-success">{successRate.toFixed(1)}% success</span>
+          <span className="overview__metadata-breakdown">✔ {totalSucceeded} / ✖ {totalFailed}</span>
+        </div>
+      )}
+      {trend.length > 0 && (
+        <div className="overview__sparkline" aria-label="Preset trend">
+          {trend.map((point, index) => {
+            const value = point.total ?? 0;
+            const heightPercent = Math.max(8, Math.round((value / maxTrend) * 100));
+            return (
+              <span
+                key={`${point.window_start}-${index}`}
+                style={{ height: `${heightPercent}%` }}
+                title={`${point.window_start}: ${value} jobs`}
+              />
+            );
+          })}
+        </div>
+      )}
+    </article>
   );
 }
 

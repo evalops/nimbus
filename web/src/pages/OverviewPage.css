@@ -229,6 +229,29 @@
   gap: 0.75rem;
 }
 
+.overview__preset-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(248, 250, 252, 0.95);
+}
+
+.overview__preset-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.overview__preset-summary li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.92);
+}
+
 .overview__sparkline {
   display: flex;
   align-items: flex-end;
