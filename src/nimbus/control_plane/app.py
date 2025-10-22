@@ -1663,6 +1663,18 @@ def create_app() -> FastAPI:
         )
         return [JobRecord.model_validate(row) for row in rows]
 
+    @app.get("/api/jobs/{job_id}", response_model=JobRecord)
+    async def job_detail(
+        job_id: int,
+        _: str = Depends(verify_agent_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> JobRecord:
+        REQUEST_COUNTER.inc()
+        row = await db.get_job(session, job_id)
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        return JobRecord.model_validate(row)
+
     @app.get("/api/jobs/metadata/summary")
     async def job_metadata_summary(
         key: str,

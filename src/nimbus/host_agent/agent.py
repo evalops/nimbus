@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime, timezone, timedelta
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
@@ -626,6 +627,12 @@ class HostAgent:
             metadata["executor.name"] = executor_name
         if warm_instance_used is not None:
             metadata["executor.warm_instance"] = "true" if warm_instance_used else "false"
+        history = self._resource_tracker.get_usage_history(job_id)
+        if history:
+            try:
+                metadata["resource.timeline"] = json.dumps(history)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                LOGGER.debug("Failed to serialize resource timeline", job_id=job_id)
         return metadata
 
     async def _submit_status(

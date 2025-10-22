@@ -397,7 +397,7 @@ async def test_resource_tracker_metrics_tracking():
     
     mock_usage = ResourceUsage(cpu_seconds=1.0, memory_bytes=2048)
     
-    with patch.object(tracker._cgroup_manager, 'update_metrics') as mock_update, \
+    with patch.object(tracker._cgroup_manager, 'update_metrics', return_value=mock_usage) as mock_update, \
          patch('asyncio.sleep') as mock_sleep:
         
         # Mock sleep to raise exception after first iteration to exit loop
@@ -410,6 +410,10 @@ async def test_resource_tracker_metrics_tracking():
     
     # Should be called at least once before cancellation
     mock_update.assert_called_with(123, "test")
+    history = tracker.get_usage_history(123)
+    assert history
+    assert history[0]["cpu_seconds"] == mock_usage.cpu_seconds
+    assert history[0]["memory_bytes"] == mock_usage.memory_bytes
 
 
 @pytest.mark.asyncio

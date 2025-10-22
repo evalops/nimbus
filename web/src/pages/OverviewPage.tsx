@@ -454,7 +454,7 @@ export function OverviewPage() {
   );
 }
 
-function CacheCard({ title, summary }: { title: string; summary?: CachePerformanceSummary }) {
+export function CacheCard({ title, summary }: { title: string; summary?: CachePerformanceSummary }) {
   if (!summary || Object.keys(summary).length === 0) {
     return (
       <article className="overview__cache-card">
@@ -490,7 +490,7 @@ function CacheCard({ title, summary }: { title: string; summary?: CachePerforman
   );
 }
 
-function ResourceTable({ title, unit, highlights }: { title: string; unit: "seconds" | "bytes"; highlights: ResourceHighlight[] }) {
+export function ResourceTable({ title, unit, highlights }: { title: string; unit: "seconds" | "bytes"; highlights: ResourceHighlight[] }) {
   return (
     <article className="overview__resource-card">
       <h3>{title}</h3>

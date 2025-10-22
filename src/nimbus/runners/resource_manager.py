@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import structlog
 
@@ -211,18 +212,19 @@ class CGroupManager:
                           job_id=job_id,
                           error=str(exc))
     
-    async def update_metrics(self, job_id: int, executor_name: str) -> None:
+    async def update_metrics(self, job_id: int, executor_name: str) -> Optional[ResourceUsage]:
         """Update Prometheus metrics for a job."""
         usage = await self.get_job_usage(job_id)
         if not usage:
-            return
-            
+            return None
+
         labels = [str(job_id), executor_name]
         self._cpu_usage_gauge.set(usage.cpu_seconds, labels=labels)
         self._memory_usage_gauge.set(usage.memory_bytes, labels=labels)
-        
+
         # Counters need to track deltas, but for simplicity we'll just use current values
         # In production, we'd track previous values and report deltas
+        return usage
 
 
 class ResourceTracker:
@@ -232,6 +234,7 @@ class ResourceTracker:
         self._cgroup_manager = CGroupManager()
         self._tracking_tasks: Dict[int, asyncio.Task] = {}
         self._running = False
+        self._usage_history: Dict[int, List[dict[str, float | str]]] = {}
     
     async def start(self) -> None:
         """Start the resource tracking system."""
@@ -293,9 +296,10 @@ class ResourceTracker:
                 await task
             except asyncio.CancelledError:
                 pass
-        
+
         # Clean up cgroup
         await self._cgroup_manager.cleanup_job_cgroup(job_id)
+        self._usage_history.pop(job_id, None)
     
     async def add_process(self, job_id: int, pid: int) -> None:
         """Add a process to job tracking."""
@@ -304,15 +308,29 @@ class ResourceTracker:
     async def get_usage(self, job_id: int) -> Optional[ResourceUsage]:
         """Get resource usage for a job."""
         return await self._cgroup_manager.get_job_usage(job_id)
+
+    def get_usage_history(self, job_id: int) -> List[dict[str, float | str]]:
+        return list(self._usage_history.get(job_id, []))
     
     async def _track_job_metrics(self, job_id: int, executor_name: str) -> None:
         """Periodically update metrics for a job."""
         while self._running:
             try:
-                await self._cgroup_manager.update_metrics(job_id, executor_name)
+                usage = await self._cgroup_manager.update_metrics(job_id, executor_name)
+                if usage:
+                    history = self._usage_history.setdefault(job_id, [])
+                    history.append(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "cpu_seconds": usage.cpu_seconds,
+                            "memory_bytes": usage.memory_bytes,
+                        }
+                    )
+                    if len(history) > 120:
+                        history.pop(0)
             except Exception as exc:
-                LOGGER.warning("Metrics update failed", 
+                LOGGER.warning("Metrics update failed",
                               job_id=job_id,
                               error=str(exc))
-            
+
             await asyncio.sleep(5)  # Update every 5 seconds

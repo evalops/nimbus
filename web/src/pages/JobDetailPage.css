@@ -133,6 +133,28 @@
   text-decoration: underline;
 }
 
+.job-detail__timeline table {
+  width: 100%;
+  border-spacing: 0;
+}
+
+.job-detail__timeline th,
+.job-detail__timeline td {
+  padding: 0.4rem 0.25rem;
+  text-align: left;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.job-detail__timeline th {
+  color: rgba(148, 163, 184, 0.9);
+  font-weight: 600;
+}
+
+.job-detail__timeline tbody tr:nth-child(odd) {
+  background: rgba(15, 23, 42, 0.5);
+}
+
 .job-detail__logs {
   list-style: none;
   margin: 0;

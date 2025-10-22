@@ -113,6 +113,31 @@ export function JobDetailPage() {
     ].filter(Boolean) as Array<{ label: string; value: string }>;
   }, [job]);
 
+  const resourceTimeline = useMemo(() => {
+    if (!job) {
+      return [] as Array<{ ts: string; cpu_seconds?: number; memory_bytes?: number }>;
+    }
+    const raw = job.metadata?.["resource.timeline"];
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => ({
+            ts: typeof entry.ts === "string" ? entry.ts : String(entry.ts ?? ""),
+            cpu_seconds: typeof entry.cpu_seconds === "number" ? entry.cpu_seconds : parseNumeric(entry.cpu_seconds),
+            memory_bytes: typeof entry.memory_bytes === "number" ? entry.memory_bytes : parseNumeric(entry.memory_bytes),
+          }))
+          .filter((entry) => entry.ts);
+      }
+    } catch (error) {
+      console.warn("Failed to parse resource timeline", error);
+    }
+    return [];
+  }, [job]);
+
   if (!jobId) {
     return (
       <div className="job-detail__container">
@@ -200,6 +225,32 @@ export function JobDetailPage() {
                 <span className="job-detail__metric-value">{metric.value}</span>
               </article>
             ))}
+          </div>
+        </section>
+      )}
+
+      {resourceTimeline.length > 0 && (
+        <section className="job-detail__section">
+          <h2>Resource Timeline</h2>
+          <div className="job-detail__timeline">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>CPU Seconds</th>
+                  <th>Memory</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resourceTimeline.map((entry) => (
+                  <tr key={entry.ts}>
+                    <td>{new Date(entry.ts).toLocaleTimeString()}</td>
+                    <td>{entry.cpu_seconds !== undefined ? entry.cpu_seconds.toFixed(3) : "-"}</td>
+                    <td>{entry.memory_bytes !== undefined ? formatBytes(entry.memory_bytes) : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       )}
