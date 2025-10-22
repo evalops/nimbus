@@ -173,10 +173,7 @@ class HostAgentSettings(BaseSettings):
     metrics_host: str = env_field("127.0.0.1", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
     cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
-    state_database_url: str = env_field(
-        "postgresql+asyncpg://localhost/nimbus_agent_state",
-        "NIMBUS_AGENT_STATE_DATABASE_URL",
-    )
+    state_database_url: str = env_field(..., "NIMBUS_AGENT_STATE_DATABASE_URL")
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")
     jailer_bin_path: Optional[str] = env_field(None, "NIMBUS_JAILER_BIN")

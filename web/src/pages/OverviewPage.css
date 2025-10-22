@@ -207,6 +207,43 @@
   color: rgba(191, 219, 254, 0.6);
 }
 
+.overview__metadata-note {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: rgba(191, 219, 254, 0.6);
+}
+
+.overview__presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.overview__preset-card {
+  background: rgba(17, 24, 39, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.overview__sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 32px;
+}
+
+.overview__sparkline span {
+  display: block;
+  width: 6px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.7), rgba(59, 130, 246, 0.2));
+  border-radius: 3px 3px 0 0;
+  transition: height 0.4s ease;
+}
+
 .overview__metadata-outcomes {
   display: flex;
   gap: 0.75rem;
@@ -221,12 +258,6 @@
 
 .overview__metadata-breakdown {
   color: rgba(191, 219, 254, 0.6);
-}
-
-.overview__metadata-note {
-  margin-top: 0.75rem;
-  font-size: 0.75rem;
-  color: rgba(148, 163, 184, 0.7);
 }
 
 .overview__status-list {

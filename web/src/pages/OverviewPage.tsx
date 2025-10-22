@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { useApi } from "../hooks/useApi";
-import type { JobRecord, ServiceStatus } from "../types";
+import type { JobRecord, ServiceStatus, MetadataPresetBundle } from "../types";
 import { useSettings } from "../hooks/useSettings";
 
 import "./OverviewPage.css";
@@ -34,6 +34,8 @@ export function OverviewPage() {
   const [appliedMetadataOrg, setAppliedMetadataOrg] = useState<string>("");
   const [metadataSummary, setMetadataSummary] = useState<MetadataBucket[]>([]);
   const [metadataOutcomes, setMetadataOutcomes] = useState<MetadataOutcome[]>([]);
+  const [metadataTrend, setMetadataTrend] = useState<Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>>([]);
+  const [metadataPresets, setMetadataPresets] = useState<MetadataPresetBundle[]>([]);
   const [metadataHours, setMetadataHours] = useState(24);
 
   const hasAgentToken = Boolean(settings.agentToken);
@@ -112,9 +114,39 @@ export function OverviewPage() {
           console.warn("Failed to load metadata outcomes", outcomeError);
           setMetadataOutcomes([]);
         }
+        try {
+          const trendParams = new URLSearchParams({ key: appliedMetadataKey, bucket_hours: Math.max(1, Math.min(metadataHours || 1, 168)).toString() });
+          if (metadataHours > 0) {
+            trendParams.set("hours_back", metadataHours.toString());
+          }
+          if (appliedMetadataOrg) {
+            trendParams.set("org_id", appliedMetadataOrg);
+          }
+          const trendResponse = await controlGet(`/api/jobs/metadata/trends?${trendParams.toString()}`);
+          setMetadataTrend(trendResponse as Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>);
+        } catch (trendError) {
+          console.warn("Failed to load metadata trend", trendError);
+          setMetadataTrend([]);
+        }
+        setMetadataPresets([]);
       } else {
         setMetadataSummary([]);
         setMetadataOutcomes([]);
+        setMetadataTrend([]);
+        try {
+          const presetParams = new URLSearchParams({ limit: "5", bucket_hours: Math.max(1, Math.min(metadataHours || 24, 168)).toString() });
+          if (metadataHours > 0) {
+            presetParams.set("hours_back", metadataHours.toString());
+          }
+          if (metadataOrg) {
+            presetParams.set("org_id", metadataOrg);
+          }
+          const presetResponse = await controlGet(`/api/jobs/metadata/presets?${presetParams.toString()}`);
+          setMetadataPresets(presetResponse as MetadataPresetBundle[]);
+        } catch (presetError) {
+          console.warn("Failed to load metadata presets", presetError);
+          setMetadataPresets([]);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -364,11 +396,11 @@ function StatCard({ label, value }: { label: string; value: number }) {
 function MetadataChart({
   data,
   outcomes,
-  trend,
+  trend = [],
 }: {
   data: MetadataBucket[];
   outcomes: Record<string, MetadataOutcome>;
-  trend: Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>;
+  trend?: Array<{ window_start: string; total: number; succeeded: number; value?: string | null }>;
 }) {
   const maxCount = Math.max(...data.map((bucket) => Number(bucket.count) || 0), 1);
   const trendMap = new Map<string, Array<{ window_start: string; total: number; succeeded: number }>>();
@@ -411,5 +443,27 @@ function MetadataChart({
         );
       })}
     </ul>
+  );
+}
+
+function MetadataSparkline({ points }: { points: Array<{ window_start: string; total: number; succeeded: number }> }) {
+  if (points.length === 0) {
+    return null;
+  }
+  const ratios = points.map((point) => {
+    const total = point.total || 0;
+    return total ? (point.succeeded / total) * 100 : 0;
+  });
+  const max = Math.max(...ratios, 100);
+  return (
+    <div className="overview__sparkline">
+      {ratios.map((ratio, index) => (
+        <span
+          key={`${points[index].window_start}-${index}`}
+          style={{ height: `${Math.max(6, (ratio / max) * 100)}%` }}
+          title={`${ratio.toFixed(1)}% success`}
+        />
+      ))}
+    </div>
   );
 }

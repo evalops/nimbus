@@ -33,6 +33,13 @@ export interface OrgStatusSummary {
   metadata_trend?: Array<{ window_start: string; window_end?: string; value: string | null; total: number; succeeded: number; failed: number }>;
 }
 
+export interface MetadataPresetBundle {
+  key: string;
+  summary: Array<{ value: string; count: number }>;
+  outcomes: Array<{ value: string | null; total: number; succeeded: number; failed: number }>;
+  trend: Array<{ window_start: string; window_end?: string; value?: string | null; total: number; succeeded: number; failed: number }>;
+}
+
 export interface AgentTokenRecord {
   agent_id: string;
   token_version: number;
