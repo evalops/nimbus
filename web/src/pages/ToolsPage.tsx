@@ -20,6 +20,12 @@ interface RoiResult {
   breakevenLabel: string;
 }
 
+interface CostPoint {
+  runsPerDay: number;
+  ghMonthly: number;
+  nimbusMonthly: number;
+}
+
 const DEFAULT_INPUTS: RoiInputs = {
   runsPerDay: 180,
   avgRuntimeMins: 12,
@@ -65,12 +71,42 @@ export function ToolsPage() {
     };
   }, [inputs]);
 
+  const series = useMemo<CostPoint[]>(() => {
+    const points: CostPoint[] = [];
+    const maxRuns = Math.max(inputs.runsPerDay * 1.5, 60);
+    const step = Math.max(Math.round(maxRuns / 10), 10);
+    for (let runs = 0; runs <= maxRuns; runs += step) {
+      const minutesPerDay = runs * inputs.avgRuntimeMins;
+      const ghMonthly = minutesPerDay * inputs.ghMinuteCost * 30;
+      const nimbusMonthly = (minutesPerDay * inputs.nimbusMinuteCost + (minutesPerDay / 60) * inputs.hardwareCostPerHour) * 30;
+      points.push({ runsPerDay: runs, ghMonthly, nimbusMonthly });
+    }
+    return points;
+  }, [inputs]);
+
   const handleChange = (field: keyof RoiInputs) => (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = Number(event.target.value);
     setInputs((prev) => ({
       ...prev,
       [field]: Number.isFinite(value) ? value : 0,
     }));
+  };
+
+  const handleDownloadCsv = () => {
+    const rows = [
+      ["runs_per_day", "gh_monthly_cost", "nimbus_monthly_cost"],
+      ...series.map((point) => [point.runsPerDay.toFixed(0), point.ghMonthly.toFixed(2), point.nimbusMonthly.toFixed(2)]),
+    ];
+    const csv = rows.map((row) => row.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "nimbus-roi.csv";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -128,6 +164,16 @@ export function ToolsPage() {
       </section>
 
       <section className="tools__section">
+        <div className="tools__chart-header">
+          <h2>Cost comparison</h2>
+          <button type="button" onClick={handleDownloadCsv} className="tools__download">
+            Download CSV
+          </button>
+        </div>
+        <CostChart points={series} />
+      </section>
+
+      <section className="tools__section">
         <h2>Next steps</h2>
         <ul className="tools__next">
           <li>
@@ -151,5 +197,55 @@ function ResultCard({ label, value, emphasize }: { label: string; value: string;
       <span className="tools__result-label">{label}</span>
       <span className="tools__result-value">{value}</span>
     </article>
+  );
+}
+
+function CostChart({ points }: { points: CostPoint[] }) {
+  if (points.length === 0) {
+    return <p className="tools__empty">No data.</p>;
+  }
+
+  const width = 600;
+  const height = 240;
+  const padding = 40;
+  const maxCost = Math.max(...points.map((p) => Math.max(p.ghMonthly, p.nimbusMonthly)), 1);
+  const maxRuns = Math.max(...points.map((p) => p.runsPerDay), 1);
+
+  const scaleX = (runs: number) => padding + (runs / maxRuns) * (width - padding * 2);
+  const scaleY = (cost: number) => height - padding - (cost / maxCost) * (height - padding * 2);
+
+  const toPath = (selector: (point: CostPoint) => number) =>
+    points
+      .map((point, index) => {
+        const prefix = index === 0 ? "M" : "L";
+        return `${prefix}${scaleX(point.runsPerDay)},${scaleY(selector(point))}`;
+      })
+      .join(" ");
+
+  return (
+    <svg
+      className="tools__chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="Monthly cost comparison between GitHub Actions and Nimbus"
+    >
+      <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} className="tools__chart-axis" />
+      <line x1={padding} y1={padding} x2={padding} y2={height - padding} className="tools__chart-axis" />
+      <path d={toPath((p) => p.ghMonthly)} className="tools__chart-line tools__chart-line--gh" />
+      <path d={toPath((p) => p.nimbusMonthly)} className="tools__chart-line tools__chart-line--nimbus" />
+      <g className="tools__chart-legend" transform={`translate(${padding},${padding - 16})`}>
+        <LegendSwatch className="tools__chart-line--gh" label="GitHub Actions" />
+        <LegendSwatch className="tools__chart-line--nimbus" label="Nimbus" />
+      </g>
+    </svg>
+  );
+}
+
+function LegendSwatch({ className, label }: { className: string; label: string }) {
+  return (
+    <span className="tools__legend-item">
+      <span className={`tools__legend-swatch ${className}`} />
+      {label}
+    </span>
   );
 }

@@ -77,6 +77,78 @@
   color: rgba(226, 232, 240, 0.95);
 }
 
+.tools__chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tools__download {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 0.5rem;
+  color: rgba(191, 219, 254, 0.95);
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+
+.tools__download:hover {
+  background: rgba(59, 130, 246, 0.25);
+}
+
+.tools__chart {
+  width: 100%;
+  max-width: 100%;
+  margin-top: 1rem;
+}
+
+.tools__chart-axis {
+  stroke: rgba(148, 163, 184, 0.3);
+  stroke-width: 1;
+}
+
+.tools__chart-line {
+  fill: none;
+  stroke-width: 2;
+}
+
+.tools__chart-line--gh {
+  stroke: rgba(248, 113, 113, 0.9);
+}
+
+.tools__chart-line--nimbus {
+  stroke: rgba(34, 197, 94, 0.9);
+}
+
+.tools__chart-legend {
+  display: flex;
+  gap: 1rem;
+}
+
+.tools__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.tools__legend-swatch {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.tools__legend-swatch.tools__chart-line--gh {
+  background: rgba(248, 113, 113, 0.9);
+}
+
+.tools__legend-swatch.tools__chart-line--nimbus {
+  background: rgba(34, 197, 94, 0.9);
+}
+
 .tools__next {
   margin: 0;
   padding-left: 1.2rem;
@@ -91,4 +163,8 @@
   padding: 0.15rem 0.35rem;
   border-radius: 0.3rem;
   font-size: 0.8rem;
+}
+
+.tools__empty {
+  color: rgba(148, 163, 184, 0.75);
 }

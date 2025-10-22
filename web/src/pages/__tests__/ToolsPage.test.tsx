@@ -16,6 +16,8 @@ describe('ToolsPage', () => {
 
     expect(screen.getByText('Tools & ROI')).toBeInTheDocument();
     expect(screen.getByText(/GitHub Actions monthly cost/i)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Monthly cost comparison/i })).toBeInTheDocument();
+    expect(screen.getByText(/Download CSV/i)).toBeInTheDocument();
   });
 
   it('updates calculations when inputs change', () => {
