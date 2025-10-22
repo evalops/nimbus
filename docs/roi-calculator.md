@@ -43,5 +43,16 @@ uv run python tools/roi_calculator.py --config roi-example.yaml
 - Drop the CSV output (`--csv out.csv`) into a slide to show monthly/annual savings.
 - Chart the **cost per eval** over volume to highlight the break-even point.
 - Combine with cache analytics from the dashboard to emphasise how higher hit ratios compound the runtime savings.
+- If you provision host agents via Terraform, feed the calculator’s suggested capacity into `deploy/terraform/terraform.tfvars` (see the new snippet on the dashboard Tools page).
 
 Keep the calculator in your sales/demo toolkit and refresh the inputs quarterly as cloud pricing changes.
+
+## Grafana spot fleet dashboard
+
+Nimbus emits metrics (`nimbus_spot_fleet_cost_daily`, `nimbus_hosts_active{role="spot"}`) that can be visualised in Grafana. Generate a ready-to-import dashboard JSON with:
+
+```bash
+uv run python tools/generate_spot_fleet_dashboard.py --output dashboards/spot-fleet.json
+```
+
+Import `dashboards/spot-fleet.json` into Grafana to track spot fleet spend and active agent counts alongside ROI trends.
