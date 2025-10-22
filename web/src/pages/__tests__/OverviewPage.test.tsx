@@ -24,6 +24,7 @@ describe('CacheCard', () => {
     expect(screen.getByText('Artifact Cache')).toBeInTheDocument();
     expect(screen.getByText('82.0%')).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('Hits (80%)'))).toBeInTheDocument();
   });
 
   it('shows empty state when summary missing', () => {

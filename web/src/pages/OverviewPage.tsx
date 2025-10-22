@@ -461,6 +461,9 @@ export function CacheCard({ title, summary }: { title: string; summary?: CachePe
   const totalBytes = summary.total_bytes;
   const totalHits = summary.total_hits;
   const totalMisses = summary.total_misses;
+  const totalRequests = (totalHits || 0) + (totalMisses || 0);
+  const hitPercent = totalRequests ? Math.round(((totalHits || 0) / totalRequests) * 100) : 0;
+  const missPercent = totalRequests ? Math.round(((totalMisses || 0) / totalRequests) * 100) : 0;
   return (
     <article className="overview__cache-card">
       <h3>{title}</h3>
@@ -480,6 +483,24 @@ export function CacheCard({ title, summary }: { title: string; summary?: CachePe
         <span>Stored Bytes</span>
         <span>{totalBytes !== undefined && totalBytes !== null ? formatBytes(totalBytes) : "n/a"}</span>
       </div>
+      {totalRequests > 0 && (
+        <div className="overview__cache-distribution" aria-label="Cache request distribution">
+          <div className="overview__cache-bar">
+            <span className="overview__cache-bar-hit" style={{ width: `${hitPercent}%` }} />
+            <span className="overview__cache-bar-miss" style={{ width: `${missPercent}%` }} />
+          </div>
+          <div className="overview__cache-legend">
+            <span className="overview__cache-legend-item">
+              <span className="overview__cache-swatch overview__cache-swatch--hit" />
+              Hits ({hitPercent}%)
+            </span>
+            <span className="overview__cache-legend-item">
+              <span className="overview__cache-swatch overview__cache-swatch--miss" />
+              Misses ({missPercent}%)
+            </span>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
