@@ -388,12 +388,13 @@ async def test_docker_executor_real_docker_integration():
     # Set up environment
     os.environ.update({
         "NIMBUS_AGENT_ID": "test-agent",
-        "NIMBUS_CONTROL_PLANE_URL": "http://localhost:8000", 
+        "NIMBUS_CONTROL_PLANE_URL": "http://localhost:8000",
         "NIMBUS_CONTROL_PLANE_TOKEN": "test-token",
         "NIMBUS_ROOTFS_IMAGE": "/tmp/rootfs.ext4",
         "NIMBUS_KERNEL_IMAGE": "/tmp/kernel",
         "NIMBUS_DOCKER_WORKSPACE": "/tmp/test-docker-workspaces",
-        "NIMBUS_DOCKER_DEFAULT_IMAGE": "alpine:latest"
+        "NIMBUS_DOCKER_DEFAULT_IMAGE": "alpine:latest",
+        "NIMBUS_AGENT_STATE_DATABASE_URL": "sqlite+pysqlite:///:memory:",
     })
     
     settings = HostAgentSettings()
