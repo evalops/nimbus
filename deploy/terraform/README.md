@@ -38,6 +38,10 @@ This sample configuration provisions the minimum AWS infrastructure required to 
 
 The bootstrap script installs Docker, pulls the Nimbus images, and writes the `.env` using the outputs produced by this Terraform stack.
 
+## Host agent autoscaling
+
+This stack also creates an EC2 Auto Scaling group that runs the Nimbus host agent. Provide `agent_ami`, `agent_instance_type`, and `agent_desired_capacity` in `terraform.tfvars` to scale eval capacity on demand. The `bootstrap/bootstrap-agent.sh` script installs Nimbus, primes Firecracker assets, and registers the agent service via systemd.
+
 ## File layout
 
 ```

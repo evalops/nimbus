@@ -48,3 +48,20 @@ variable "admin_cidr" {
   description = "CIDR range allowed to SSH"
   default     = "0.0.0.0/0"
 }
+
+variable "agent_ami" {
+  type        = string
+  description = "AMI for host agent autoscaling group"
+}
+
+variable "agent_instance_type" {
+  type        = string
+  description = "EC2 instance type for host agents"
+  default     = "t3.large"
+}
+
+variable "agent_desired_capacity" {
+  type        = number
+  description = "Desired host agent count"
+  default     = 2
+}

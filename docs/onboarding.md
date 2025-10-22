@@ -68,8 +68,8 @@ New to Nimbus? This quick-start itinerary walks you from zero to your first succ
 
 ## 5. Production hardening checklist
 
-- ✅ Provision Redis/Postgres from your infra provider (RDS, CloudSQL, etc.) and point `.env`.
 - ✅ Stand up the control plane via Terraform or Helm (templates in `deploy/`).
+- ✅ Scale host agents with the Terraform autoscaling group (see `deploy/terraform`).
 - ✅ Configure TLS (terminate at a reverse proxy or load balancer).
 - ✅ Schedule nightly `nimbus.cli.report overview` runs and archive the JSON for auditing.
 - ✅ Enable OpenTelemetry export to your tracing backend.

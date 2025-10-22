@@ -87,6 +87,30 @@ resource "aws_security_group" "control_plane" {
   }
 }
 
+resource "aws_security_group" "host_agent" {
+  name        = "nimbus-host-agent"
+  description = "Access for host agents"
+  vpc_id      = aws_vpc.nimbus.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "nimbus-host-agent"
+  }
+}
+
 resource "aws_instance" "control_plane" {
   ami                    = var.control_plane_ami
   instance_type          = var.control_plane_instance_type
@@ -137,6 +161,43 @@ resource "aws_lb_listener" "https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.control_plane.arn
+  }
+}
+
+resource "aws_launch_template" "host_agent" {
+  name_prefix   = "nimbus-agent"
+  image_id      = var.agent_ami
+  instance_type = var.agent_instance_type
+  key_name      = var.ssh_key_name
+  security_group_names = [aws_security_group.host_agent.name]
+  user_data            = base64encode(file("${path.module}/bootstrap/bootstrap-agent.sh"))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "nimbus-host-agent"
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "host_agents" {
+  name                      = "nimbus-host-agents"
+  desired_capacity          = var.agent_desired_capacity
+  max_size                  = var.agent_desired_capacity + 1
+  min_size                  = 1
+  vpc_zone_identifier       = [for subnet in aws_subnet.public : subnet.id]
+  health_check_grace_period = 60
+  health_check_type         = "EC2"
+
+  launch_template {
+    id      = aws_launch_template.host_agent.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "nimbus-host-agent"
+    propagate_at_launch = true
   }
 }
 
