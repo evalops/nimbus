@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 
 import pytest
@@ -9,16 +8,8 @@ from nimbus.cli import admin
 
 
 @pytest.mark.asyncio
-async def test_run_tokens_list_outputs_summary(monkeypatch, capsys):
-    args = argparse.Namespace(
-        base_url="http://localhost:8000",
-        admin_token="secret",
-        json=True,
-        command="tokens",
-        tokens_cmd="list",
-        history_limit=0,
-    )
-
+async def test_run_tokens_list_outputs_summary(monkeypatch, capsys, admin_cli_args):
+    args = admin_cli_args(json=True)
     async def fake_fetch(base_url: str, token: str):
         return [
             {
@@ -44,15 +35,8 @@ async def test_run_tokens_list_outputs_summary(monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_run_tokens_list_includes_history(monkeypatch, capsys):
-    args = argparse.Namespace(
-        base_url="http://localhost:8000",
-        admin_token="secret",
-        json=False,
-        command="tokens",
-        tokens_cmd="list",
-        history_limit=2,
-    )
+async def test_run_tokens_list_includes_history(monkeypatch, capsys, admin_cli_args):
+    args = admin_cli_args(history_limit=2)
 
     async def fake_fetch(base_url: str, token: str):
         return []
@@ -79,17 +63,8 @@ async def test_run_tokens_list_includes_history(monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_run_tokens_rotate_prints_result(monkeypatch, capsys):
-    args = argparse.Namespace(
-        base_url="http://localhost:8000",
-        admin_token="secret",
-        agent_id="agent-2",
-        ttl=1800,
-        json=False,
-        command="tokens",
-        tokens_cmd="rotate",
-        history_limit=0,
-    )
+async def test_run_tokens_rotate_prints_result(monkeypatch, capsys, admin_cli_args):
+    args = admin_cli_args(tokens_cmd="rotate", agent_id="agent-2", ttl=1800)
 
     async def fake_rotate(base_url: str, token: str, agent_id: str, ttl: int):
         return {

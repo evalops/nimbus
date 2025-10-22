@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import argparse
 from types import ModuleType, SimpleNamespace
 
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, AsyncIterator, Dict
 
 import httpx
 import pytest
+
+from nimbus.cli import jobs as cli_jobs
 
 
 def _ensure_module(name: str, **attrs) -> None:
@@ -110,6 +113,47 @@ def _install_optional_stubs() -> None:
 
 
 _install_optional_stubs()
+
+
+@pytest.fixture
+def admin_cli_args():
+    def _factory(**overrides):
+        defaults = {
+            "base_url": "http://localhost:8000",
+            "admin_token": "secret",
+            "json": False,
+            "command": "tokens",
+            "tokens_cmd": "list",
+            "history_limit": 0,
+        }
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    return _factory
+
+
+@pytest.fixture
+def jobs_cli_runner(monkeypatch: pytest.MonkeyPatch):
+    def _configure(**overrides):
+        defaults = {
+            "base_url": "https://cp",
+            "token": "secret",
+            "command": "recent",
+            "limit": 50,
+            "label": None,
+            "status": None,
+            "metadata_key": None,
+            "metadata_value": None,
+            "with_metadata": False,
+            "json": False,
+        }
+        defaults.update(overrides)
+        args = argparse.Namespace(**defaults)
+        monkeypatch.setattr(cli_jobs, "parse_args", lambda: args)
+        return args
+
+    monkeypatch.setattr(cli_jobs, "fetch_status", lambda *a, **k: None)
+    return _configure
 
 
 from nimbus.docker_cache.app import create_app
