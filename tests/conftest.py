@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
-import argparse
 from types import ModuleType, SimpleNamespace
 
 from pathlib import Path
@@ -11,7 +11,10 @@ from typing import Any, AsyncIterator, Dict
 import httpx
 import pytest
 
+from nimbus.cli import auth as cli_auth
+from nimbus.cli import cache as cli_cache
 from nimbus.cli import jobs as cli_jobs
+from nimbus.cli import logs as cli_logs
 
 
 def _ensure_module(name: str, **attrs) -> None:
@@ -153,6 +156,61 @@ def jobs_cli_runner(monkeypatch: pytest.MonkeyPatch):
         return args
 
     monkeypatch.setattr(cli_jobs, "fetch_status", lambda *a, **k: None)
+    return _configure
+
+
+@pytest.fixture
+def auth_cli_runner(monkeypatch: pytest.MonkeyPatch):
+    def _configure(**overrides):
+        defaults = {
+            "agent_id": "agent-1",
+            "ttl": 3600,
+            "json": False,
+            "base_url": None,
+            "admin_token": None,
+            "secret": "shared",
+        }
+        defaults.update(overrides)
+        args = argparse.Namespace(**defaults)
+        monkeypatch.setattr(cli_auth, "parse_args", lambda: args)
+        return args
+
+    return _configure
+
+
+@pytest.fixture
+def cache_cli_runner(monkeypatch: pytest.MonkeyPatch):
+    def _configure(**overrides):
+        defaults = {
+            "secret": "shared",
+            "org_id": 1,
+            "ttl": 600,
+            "scope": "read",
+            "json": True,
+        }
+        defaults.update(overrides)
+        args = argparse.Namespace(**defaults)
+        monkeypatch.setattr(cli_cache, "parse_args", lambda: args)
+        return args
+
+    return _configure
+
+
+@pytest.fixture
+def logs_cli_runner(monkeypatch: pytest.MonkeyPatch):
+    def _configure(**overrides):
+        defaults = {
+            "logs_url": "https://logs",
+            "job_id": None,
+            "contains": None,
+            "limit": 50,
+            "json": False,
+        }
+        defaults.update(overrides)
+        args = argparse.Namespace(**defaults)
+        monkeypatch.setattr(cli_logs, "parse_args", lambda: args)
+        return args
+
     return _configure
 
 
