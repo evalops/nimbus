@@ -18,6 +18,8 @@ describe('ToolsPage', () => {
     expect(screen.getByText(/GitHub Actions monthly cost/i)).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Monthly cost comparison/i })).toBeInTheDocument();
     expect(screen.getByText(/Download CSV/i)).toBeInTheDocument();
+    expect(screen.getByText(/terraform autoscaling snippet/i)).toBeInTheDocument();
+    expect(screen.getByText(/agent_desired_capacity/)).toBeInTheDocument();
   });
 
   it('updates calculations when inputs change', () => {

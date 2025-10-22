@@ -168,3 +168,20 @@
 .tools__empty {
   color: rgba(148, 163, 184, 0.75);
 }
+
+.tools__terraform-comment {
+  color: rgba(148, 163, 184, 0.8);
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+.tools__terraform-snippet {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.95);
+  white-space: pre-wrap;
+}
