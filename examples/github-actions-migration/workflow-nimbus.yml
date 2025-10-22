@@ -1,0 +1,31 @@
+name: Eval Suite (Nimbus)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Submit evaluation to Nimbus
+        env:
+          NIMBUS_API_TOKEN: ${{ secrets.NIMBUS_API_TOKEN }}
+        run: |
+          pip install nimbus-cli
+          nimbus submit \
+            --base-url https://nimbus.example.com \
+            --token "$NIMBUS_API_TOKEN" \
+            --suite smoke \
+            --metadata git_sha=${{ github.sha }}
+      - name: Wait for Nimbus result
+        env:
+          NIMBUS_API_TOKEN: ${{ secrets.NIMBUS_API_TOKEN }}
+        run: |
+          nimbus wait \
+            --base-url https://nimbus.example.com \
+            --token "$NIMBUS_API_TOKEN" \
+            --suite smoke \
+            --ref ${{ github.sha }}

@@ -1,0 +1,11 @@
+organization: acme
+repository: evals
+workflow: .github/workflows/eval.yml
+metadata:
+  keys:
+    - name: suite
+      value: smoke
+cache_scopes:
+  - name: docker_layers
+    patterns:
+      - packages/**

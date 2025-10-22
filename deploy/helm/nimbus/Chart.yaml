@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nimbus
+description: Sample chart for deploying the Nimbus control plane bundle
+version: 0.1.0
+appVersion: "latest"
+type: application

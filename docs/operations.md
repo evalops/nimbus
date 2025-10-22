@@ -4,6 +4,9 @@ This guide covers day-two operations: deployment recipes, observability hooks, a
 
 ## Deployment Recipes
 
+- Sample Terraform stack: [`deploy/terraform`](../deploy/terraform)
+- Helm chart skeleton: [`deploy/helm`](../deploy/helm)
+
 ### Local Development Stack
 
 1. Export required environment variables (see [Configuration](./configuration.md)).

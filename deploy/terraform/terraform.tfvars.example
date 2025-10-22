@@ -1,0 +1,6 @@
+aws_region               = "us-east-1"
+control_plane_ami        = "ami-xxxxxxxx"
+control_plane_instance_type = "t3.large"
+ssh_key_name             = "nimbus-key"
+acm_certificate_arn      = "arn:aws:acm:..."
+admin_cidr               = "203.0.113.0/24"

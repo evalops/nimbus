@@ -1,0 +1,35 @@
+image:
+  repository: ghcr.io/evalops/nimbus-control-plane
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+cacheProxy:
+  image: ghcr.io/evalops/nimbus-cache-proxy:latest
+  port: 8001
+
+loggingPipeline:
+  image: ghcr.io/evalops/nimbus-logging-pipeline:latest
+  port: 8002
+
+postgres:
+  host: nimbus-postgres
+  port: 5432
+  database: nimbus
+  user: nimbus
+  passwordSecret: nimbus-postgres
+
+redis:
+  host: nimbus-redis
+  port: 6379
+
+env:
+  - name: NIMBUS_PUBLIC_BASE_URL
+    value: "https://nimbus.example.com"
+  - name: NIMBUS_DATABASE_URL
+    value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)"
+  - name: NIMBUS_REDIS_URL
+    value: "redis://nimbus-redis:6379/0"

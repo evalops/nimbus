@@ -15,6 +15,7 @@ export function Layout() {
           <NavItem to="/observability">Observability</NavItem>
           <NavItem to="/agents">Agents</NavItem>
           <NavItem to="/logs">Logs</NavItem>
+          <NavItem to="/tools">Tools</NavItem>
           <NavItem to="/settings">Settings</NavItem>
         </nav>
       </header>
