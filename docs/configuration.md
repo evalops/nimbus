@@ -17,6 +17,7 @@ This document aggregates the environment variables and helper tooling required t
 | `NIMBUS_METRICS_TOKEN` | Bearer token required for `/metrics`; if unset, access is restricted to loopback clients. | optional |
 | `NIMBUS_CACHE_TOKEN_TTL` | Seconds before cache tokens expire. | `3600` |
 | `NIMBUS_CACHE_SHARED_SECRET` | HMAC secret for cache token minting. | required |
+| `NIMBUS_SSH_SESSION_SECRET` | HMAC secret used to mint and verify SSH debugging tokens. | `local-ssh-secret` |
 | `NIMBUS_AGENT_TOKEN_SECRET` | Secret used to mint/verify agent bearer tokens. | required |
 | `NIMBUS_AGENT_TOKEN_RATE_LIMIT` | Maximum agent token mint operations per interval. | `15` |
 | `NIMBUS_AGENT_TOKEN_RATE_INTERVAL` | Interval window (seconds) for token mint rate limiting. | `60` |
@@ -32,6 +33,20 @@ This document aggregates the environment variables and helper tooling required t
 | `NIMBUS_CONTROL_PLANE_TOKEN` | Bearer token issued by the control plane. | required |
 | `NIMBUS_AGENT_REDIS_URL` | Optional Redis URL for local coordination/caching. | optional |
 | `NIMBUS_CACHE_PROXY_URL` | Cache proxy base URL for artifact downloads. | optional |
+| `NIMBUS_NEAR_CACHE_ENABLE` | Enable the embedded near-runner cache service. | `false` |
+| `NIMBUS_NEAR_CACHE_DIR` | Filesystem root for near-runner cache data. | `/var/lib/nimbus/near-cache` |
+| `NIMBUS_NEAR_CACHE_BIND` | Bind address for the FastAPI near-cache server. | `0.0.0.0` |
+| `NIMBUS_NEAR_CACHE_ADVERTISE` | Host/IP advertised to jobs for cache access. | `127.0.0.1` |
+| `NIMBUS_NEAR_CACHE_PORT` | Fixed port for the cache listener (random within range when unset). | unset |
+| `NIMBUS_NEAR_CACHE_PORT_START` | Lower bound of random cache port allocation range. | `38000` |
+| `NIMBUS_NEAR_CACHE_PORT_END` | Upper bound of random cache port allocation range. | `39000` |
+| `NIMBUS_NEAR_CACHE_S3_BUCKET` | Optional S3 bucket for cache read-through/write-through. | unset |
+| `NIMBUS_NEAR_CACHE_S3_ENDPOINT` | S3-compatible endpoint URL for cache fallbacks. | unset |
+| `NIMBUS_NEAR_CACHE_S3_REGION` | Region identifier used with the cache S3 endpoint. | unset |
+| `NIMBUS_NEAR_CACHE_S3_WRITE_THROUGH` | Enable uploading cached artifacts back to S3. | `false` |
+| `NIMBUS_NEAR_CACHE_MOUNT_TAG` | Virtio-fs mount tag exposed to Firecracker guests. | `nimbus-cache` |
+| `NIMBUS_NEAR_CACHE_MOUNT_PATH` | Mount path inside guests when virtio-fs is available. | `/mnt/nimbus-cache` |
+| `NIMBUS_NEAR_CACHE_VIRTIOFSD` | Absolute path to the `virtiofsd` binary for guest mounts. | unset |
 | `NIMBUS_AGENT_STATE_DATABASE_URL` | Async SQLAlchemy URL for the host agent state store. | `postgresql+asyncpg://localhost/nimbus_agent_state` |
 | `NIMBUS_LOG_SINK_URL` | Logging pipeline ingest endpoint. | optional |
 | `NIMBUS_AGENT_METRICS_HOST` | Prometheus metrics listener host. | `0.0.0.0` |
