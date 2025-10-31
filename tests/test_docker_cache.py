@@ -143,10 +143,11 @@ async def test_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         assert head_resp.headers["Docker-Content-Digest"] == manifest_digest
         assert head_resp.headers["Content-Length"] == str(len(manifest_bytes))
 
-        # repo-scoped denial
+        # org-wide scope access should succeed without repo-specific suffix
         restricted_headers = await _auth_headers(secret, scope="pull:org-1,push:org-1")
-        deny_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=restricted_headers)
-        assert deny_resp.status_code == 404
+        allow_resp = await client.get("/v2/org-1/demo/manifests/latest", headers=restricted_headers)
+        assert allow_resp.status_code == 200
+        assert json.loads(allow_resp.content) == manifest
     finally:
         await client.aclose()
         await lifespan.__aexit__(None, None, None)

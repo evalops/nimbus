@@ -61,3 +61,24 @@ class _DummySamlAuthenticator:
 saml_module.SamlAuthenticator = _DummySamlAuthenticator  # type: ignore[attr-defined]
 saml_module.SamlValidationError = Exception  # type: ignore[attr-defined]
 sys.modules.setdefault("nimbus.control_plane.saml", saml_module)
+sys.modules.setdefault("src.nimbus.control_plane.saml", saml_module)
+
+if "saml2" not in sys.modules:
+    saml2_module = ModuleType("saml2")
+    saml2_module.BINDING_HTTP_POST = "post"
+    saml2_module.BINDING_HTTP_REDIRECT = "redirect"
+    sys.modules["saml2"] = saml2_module
+
+    saml2_client_module = ModuleType("saml2.client")
+    saml2_client_module.Saml2Client = SimpleNamespace
+    sys.modules["saml2.client"] = saml2_client_module
+
+    saml2_config_module = ModuleType("saml2.config")
+    saml2_config_module.Config = SimpleNamespace
+    sys.modules["saml2.config"] = saml2_config_module
+
+    saml2_metadata_module = ModuleType("saml2.metadata")
+    saml2_metadata_module.entity_descriptor = lambda *args, **kwargs: SimpleNamespace(
+        to_string=lambda: b"<EntityDescriptor/>"
+    )
+    sys.modules["saml2.metadata"] = saml2_metadata_module
