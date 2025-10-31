@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timezone, timedelta
 from typing import Iterable, Optional
 
 import structlog
@@ -94,6 +95,7 @@ ssh_sessions_table = Table(
     Column("job_id", BigInteger, nullable=False),
     Column("agent_id", String(length=128), nullable=False),
     Column("host_port", Integer, nullable=False),
+    Column("token", String(length=128), nullable=False),
     Column("authorized_user", String(length=128), nullable=False),
     Column("status", String(length=32), nullable=False),
     Column("vm_ip", String(length=64), nullable=True),
@@ -440,6 +442,46 @@ async def job_status_counts(
     return {row.status: row.count for row in result}
 
 
+async def job_status_timeseries(
+    session: AsyncSession,
+    *,
+    days: int = 14,
+    org_id: Optional[int] = None,
+) -> list[dict[str, object]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    stmt = select(
+        jobs_table.c.status,
+        jobs_table.c.queued_at,
+        jobs_table.c.completed_at,
+        jobs_table.c.updated_at,
+    ).where(jobs_table.c.updated_at >= cutoff)
+    if org_id is not None:
+        stmt = stmt.where(jobs_table.c.org_id == org_id)
+
+    result = await session.execute(stmt)
+    buckets: dict[date, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    for row in result.mappings():
+        status = row["status"]
+        timestamp = row.get("completed_at") or row.get("updated_at") or row.get("queued_at")
+        if timestamp is None:
+            continue
+        day = timestamp.astimezone(timezone.utc).date()
+        buckets[day][status] += 1
+
+    entries: list[dict[str, object]] = []
+    for day in sorted(buckets):
+        counts = dict(buckets[day])
+        entries.append(
+            {
+                "date": day,
+                "counts": counts,
+                "total": sum(counts.values()),
+            }
+        )
+    return entries
+
+
 async def distinct_org_ids(
     session: AsyncSession,
     *,
@@ -673,6 +715,7 @@ async def create_ssh_session(
     job_id: int,
     agent_id: str,
     host_port: int,
+    token: str,
     authorized_user: str,
     ttl_seconds: int,
 ) -> dict:
@@ -683,6 +726,7 @@ async def create_ssh_session(
         job_id=job_id,
         agent_id=agent_id,
         host_port=host_port,
+        token=token,
         authorized_user=authorized_user,
         status="pending",
         vm_ip=None,
@@ -697,6 +741,7 @@ async def create_ssh_session(
         "job_id": job_id,
         "agent_id": agent_id,
         "host_port": host_port,
+        "token": token,
         "authorized_user": authorized_user,
         "status": "pending",
         "created_at": now.isoformat(),
@@ -737,6 +782,8 @@ async def update_ssh_session(
     values: dict = {"updated_at": datetime.now(timezone.utc)}
     if status is not None:
         values["status"] = status
+        if status in {"closed", "failed", "expired"}:
+            values["token"] = ""
     if vm_ip is not None:
         values["vm_ip"] = vm_ip
     if reason is not None:
@@ -780,6 +827,7 @@ async def expire_stale_ssh_sessions(session: AsyncSession) -> int:
             status="expired",
             reason="TTL exceeded",
             updated_at=now,
+            token="",
         )
     )
     result = await session.execute(stmt)

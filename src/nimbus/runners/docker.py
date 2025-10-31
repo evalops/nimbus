@@ -24,6 +24,7 @@ from ..common.networking import (
     OfflineEgressEnforcer,
 )
 from .base import Executor, RunResult
+from .images import resolve_prebuilt_image
 
 LOGGER = structlog.get_logger("nimbus.runners.docker")
 
@@ -420,17 +421,19 @@ class DockerExecutor:
         # Check job labels for custom image specification
         for label in job.labels:
             if label.startswith("image:"):
-                image = label.split(":", 1)[1]
+                spec = label.split(":", 1)[1]
+                mapped = resolve_prebuilt_image(spec)
+                image = mapped or spec
                 LOGGER.info("Using custom image from label", job_id=job.job_id, image=image)
                 return image
         
         # Map common labels to optimized images
         label_to_image = {
-            "ubuntu-latest": "ubuntu:22.04",
-            "ubuntu-22.04": "ubuntu:22.04", 
+            "ubuntu-latest": resolve_prebuilt_image("ubuntu-2404") or "ubuntu:22.04",
+            "ubuntu-22.04": resolve_prebuilt_image("ubuntu-2204") or "ubuntu:22.04",
             "ubuntu-20.04": "ubuntu:20.04",
-            "node": "node:18-alpine",
-            "python": "python:3.11-slim",
+            "node": resolve_prebuilt_image("node-22") or "node:18-alpine",
+            "python": resolve_prebuilt_image("python-312") or "python:3.12-slim",
             "golang": "golang:1.21-alpine",
         }
         

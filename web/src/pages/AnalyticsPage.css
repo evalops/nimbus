@@ -1,0 +1,63 @@
+.analytics-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem;
+}
+
+.analytics-page__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.analytics-page__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+}
+
+.analytics-page__badge {
+  background: var(--accent-color);
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.875rem;
+}
+
+.analytics-page__error {
+  color: var(--danger-color);
+  font-weight: 500;
+}
+
+.analytics-page__table-wrapper {
+  overflow-x: auto;
+}
+
+.analytics-page__table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.analytics-page__table th,
+.analytics-page__table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.analytics-page__table thead {
+  background: rgba(0, 0, 0, 0.04);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.analytics-page__empty {
+  margin: 0;
+  color: var(--text-muted);
+}

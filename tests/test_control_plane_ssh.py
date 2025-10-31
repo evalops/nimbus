@@ -65,6 +65,7 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
         "NIMBUS_SSH_PORT_START": "23000",
         "NIMBUS_SSH_PORT_END": "23010",
         "NIMBUS_SSH_SESSION_TTL": "600",
+        "NIMBUS_SSH_SESSION_SECRET": "ssh-secret",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -117,6 +118,7 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
         session_payload = create_resp.json()
         session_id = session_payload["session_id"]
         assert session_payload["status"] == "pending"
+        assert session_payload.get("token")
 
         list_resp = await client.get(
             "/api/ssh/sessions",
@@ -140,6 +142,7 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
         assert agent_sessions.status_code == 200
         pending = agent_sessions.json()
         assert pending and pending[0]["session_id"] == session_id
+        assert pending[0].get("token")
 
         activate_resp = await client.post(
             f"/api/ssh/sessions/{session_id}/activate",
@@ -148,6 +151,13 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
         )
         assert activate_resp.status_code == 200
         assert activate_resp.json()["status"] == "active"
+
+        images_resp = await client.get(
+            "/api/runners/images",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert images_resp.status_code == 200
+        assert images_resp.json().get("ubuntu-2204") == "nimbus/ubuntu-2204-runner:latest"
 
         close_resp = await client.post(
             f"/api/ssh/sessions/{session_id}/close",
@@ -165,6 +175,16 @@ async def test_admin_and_agent_manage_ssh_sessions(monkeypatch, tmp_path: Path) 
         entry = next(item for item in admin_list_after.json() if item["session_id"] == session_id)
         assert entry["status"] == "closed"
         assert entry["reason"] == "completed"
+
+        analytics_resp = await client.get(
+            "/api/analytics/jobs",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert analytics_resp.status_code == 200
+        analytics_payload = analytics_resp.json()
+        assert isinstance(analytics_payload, list)
+        if analytics_payload:
+            assert "counts" in analytics_payload[0]
 
     finally:
         await client.aclose()

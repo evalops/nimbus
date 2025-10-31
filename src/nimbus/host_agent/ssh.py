@@ -18,6 +18,7 @@ class ActiveSSHSession:
     authorized_user: str
     expires_at: datetime
     rules: List[List[str]]
+    token: str | None = None
 
 
 def _prepare_rule(args: List[str], delete: bool) -> List[str]:

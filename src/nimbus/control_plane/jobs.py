@@ -14,6 +14,19 @@ from .db import try_acquire_job_lease, mark_job_leased
 QUEUE_KEY = "nimbus:jobs:queued"
 
 
+def _host_satisfies_requirements(hardware: dict[str, float], labels: list[str]) -> bool:
+    requirements = {
+        "cpu-high": lambda hw: hw.get("cpu_cores", 0.0) >= 8.0,
+        "cpu-medium": lambda hw: hw.get("cpu_cores", 0.0) >= 4.0,
+        "memory-high": lambda hw: hw.get("mem_total_mb", 0.0) >= 32768.0,
+        "storage-nvme": lambda hw: hw.get("has_nvme", 0.0) >= 1.0,
+    }
+    for label, predicate in requirements.items():
+        if label in labels and not predicate(hardware):
+            return False
+    return True
+
+
 async def enqueue_job(redis: Redis, assignment: JobAssignment) -> None:
     """Push a job assignment onto the queue."""
 
@@ -35,7 +48,12 @@ async def lease_job(redis: Redis) -> Optional[JobAssignment]:
 
 
 async def lease_job_with_fence(
-    redis: Redis, session: AsyncSession, agent_id: str, ttl_seconds: int, capabilities: Optional[list[str]] = None
+    redis: Redis,
+    session: AsyncSession,
+    agent_id: str,
+    ttl_seconds: int,
+    capabilities: Optional[list[str]] = None,
+    hardware: Optional[dict[str, float]] = None,
 ) -> Optional[tuple[JobAssignment, int]]:
     """
     Pop the oldest job from the queue and acquire a DB-backed lease with fence token.
@@ -67,6 +85,9 @@ async def lease_job_with_fence(
         
         # Exact capability match
         if required_executor in capabilities:
+            if hardware is not None and not _host_satisfies_requirements(hardware, assignment.labels):
+                checked_jobs.append(payload)
+                continue
             found_assignment = assignment
             # Push back incompatible jobs first (LIFO order to maintain queue ordering)
             for job_data in reversed(checked_jobs):

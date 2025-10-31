@@ -194,11 +194,13 @@ async def test_allocate_and_manage_ssh_sessions(session):
         job_id=1,
         agent_id="agent-x",
         host_port=port,
+        token="ssh-token",
         authorized_user="alice",
         ttl_seconds=60,
     )
     await session.commit()
     assert session_info["status"] == "pending"
+    assert session_info["token"] == "ssh-token"
 
     next_port = await db.allocate_ssh_port(session, agent_id="agent-x", port_start=6000, port_end=6002)
     assert next_port == 6001

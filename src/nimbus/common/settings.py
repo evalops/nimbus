@@ -37,6 +37,7 @@ class ControlPlaneSettings(BaseSettings):
         default_factory=list,
         validation_alias="NIMBUS_AGENT_TOKEN_SECRET_FALLBACKS",
     )
+    ssh_session_secret: SecretStr = env_field(SecretStr("local-ssh-secret"), "NIMBUS_SSH_SESSION_SECRET")
     agent_token_rate_limit: int = env_field(15, "NIMBUS_AGENT_TOKEN_RATE_LIMIT")
     agent_token_rate_interval_seconds: int = env_field(60, "NIMBUS_AGENT_TOKEN_RATE_INTERVAL")
     webhook_timestamp_tolerance_seconds: int = env_field(300, "NIMBUS_WEBHOOK_TIMESTAMP_TOLERANCE")
@@ -174,6 +175,20 @@ class HostAgentSettings(BaseSettings):
     metrics_host: str = env_field("127.0.0.1", "NIMBUS_AGENT_METRICS_HOST")
     metrics_port: int = env_field(9460, "NIMBUS_AGENT_METRICS_PORT")
     cache_proxy_url: Optional[HttpUrl] = env_field(None, "NIMBUS_CACHE_PROXY_URL")
+    near_runner_cache_enabled: bool = env_field(False, "NIMBUS_NEAR_CACHE_ENABLE")
+    near_runner_cache_directory: Path = env_field(Path("/var/lib/nimbus/near-cache"), "NIMBUS_NEAR_CACHE_DIR")
+    near_runner_cache_bind_address: Optional[str] = env_field("0.0.0.0", "NIMBUS_NEAR_CACHE_BIND")
+    near_runner_cache_advertise_host: Optional[str] = env_field("127.0.0.1", "NIMBUS_NEAR_CACHE_ADVERTISE")
+    near_runner_cache_port: Optional[int] = env_field(None, "NIMBUS_NEAR_CACHE_PORT")
+    near_runner_cache_port_start: Optional[int] = env_field(38000, "NIMBUS_NEAR_CACHE_PORT_START")
+    near_runner_cache_port_end: Optional[int] = env_field(39000, "NIMBUS_NEAR_CACHE_PORT_END")
+    near_runner_cache_s3_bucket: Optional[str] = env_field(None, "NIMBUS_NEAR_CACHE_S3_BUCKET")
+    near_runner_cache_s3_endpoint: Optional[str] = env_field(None, "NIMBUS_NEAR_CACHE_S3_ENDPOINT")
+    near_runner_cache_s3_region: Optional[str] = env_field(None, "NIMBUS_NEAR_CACHE_S3_REGION")
+    near_runner_cache_s3_write_through: bool = env_field(False, "NIMBUS_NEAR_CACHE_S3_WRITE_THROUGH")
+    near_runner_cache_mount_tag: Optional[str] = env_field("nimbus-cache", "NIMBUS_NEAR_CACHE_MOUNT_TAG")
+    near_runner_cache_mount_path: Optional[str] = env_field("/mnt/nimbus-cache", "NIMBUS_NEAR_CACHE_MOUNT_PATH")
+    near_runner_cache_virtiofsd_bin: Optional[Path] = env_field(None, "NIMBUS_NEAR_CACHE_VIRTIOFSD")
     state_database_url: str = env_field(..., "NIMBUS_AGENT_STATE_DATABASE_URL")
 
     firecracker_bin_path: str = env_field("/usr/local/bin/firecracker", "NIMBUS_FC_BIN")
@@ -259,6 +274,15 @@ class HostAgentSettings(BaseSettings):
             value = value.strip()
             if not value:
                 return None
+        return value
+
+    @field_validator("near_runner_cache_port", "near_runner_cache_port_start", "near_runner_cache_port_end", mode="before")
+    @classmethod
+    def _parse_cache_ports(cls, value):
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            return int(value.strip()) if value.strip() else None
         return value
 
     @field_validator("gpu_allowed_profiles", mode="before")

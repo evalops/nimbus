@@ -8,6 +8,7 @@ import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { JobDetailPage } from "./pages/JobDetailPage";
 import { ToolsPage } from "./pages/ToolsPage";
+import { AnalyticsPage } from "./pages/AnalyticsPage";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="observability" element={<ObservabilityPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="logs" element={<LogsPage />} />
+          <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="tools" element={<ToolsPage />} />
           <Route path="jobs/:jobId" element={<JobDetailPage />} />

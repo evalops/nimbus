@@ -173,21 +173,11 @@ def _decode_payload(encoded_payload: str) -> bytes:
 
 
 def validate_cache_scope(token: CacheToken, operation: str, org_id: int, *, repo: Optional[str] = None) -> bool:
-    """
-    Check if a cache token has the required scope for an operation on an org.
-    
-    Args:
-        token: The cache token to check
-        operation: Either "pull" or "push"
-        org_id: The organization ID being accessed
-    
-    Returns:
-        True if the token has the required scope
-    """
+    """Check if a cache token has the required scope for an operation on an org."""
+
     if token.organization_id != org_id:
         return False
-    
-    # Legacy tokens with simple scopes
+
     scopes = [s.strip() for s in token.scope.split(",") if s.strip()]
     sanitized_repo = repo.strip("/") if repo else None
     required_repo_scope = (
@@ -214,3 +204,48 @@ def validate_cache_scope(token: CacheToken, operation: str, org_id: int, *, repo
         return required_repo_scope in scopes
 
     return False
+
+
+def mint_ssh_token(*, secret: str, job_id: int, session_id: str, ttl_seconds: int) -> str:
+    """Mint a short-lived SSH debugging token."""
+
+    expires_at = _utc_now() + timedelta(seconds=ttl_seconds)
+    payload = {
+        "job_id": job_id,
+        "session_id": session_id,
+        "expires_at": expires_at.isoformat(),
+    }
+    serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), serialized, hashlib.sha256).hexdigest()
+    return _encode(serialized, signature)
+
+
+def verify_ssh_token(secret: str, token: str) -> Optional[dict[str, object]]:
+    try:
+        encoded_payload, provided_signature = token.split(".", 1)
+    except ValueError:
+        return None
+
+    try:
+        payload_bytes = _decode_payload(encoded_payload)
+    except ValueError:
+        return None
+
+    expected_signature = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        return None
+
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        expires_at = datetime.fromisoformat(payload["expires_at"])
+    except (ValueError, KeyError):
+        return None
+
+    if expires_at <= _utc_now():
+        return None
+
+    return {
+        "job_id": int(payload.get("job_id", 0)),
+        "session_id": str(payload.get("session_id")),
+        "expires_at": expires_at,
+    }

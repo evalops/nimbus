@@ -13,6 +13,7 @@ import structlog
 from ..common.schemas import JobAssignment
 from ..common.settings import HostAgentSettings
 from ..host_agent.firecracker import FirecrackerError, FirecrackerLauncher, MicroVMNetwork
+from ..host_agent.near_cache import NearRunnerCacheManager
 from .base import Executor, RunResult
 
 LOGGER = structlog.get_logger("nimbus.runners.firecracker")
@@ -25,11 +26,13 @@ class FirecrackerExecutor:
         self._settings = settings
         self._launcher: Optional[FirecrackerLauncher] = None
         self._job_networks: dict[int, MicroVMNetwork] = {}
+        self._near_cache: Optional[NearRunnerCacheManager] = None
     
-    def initialize(self, settings: HostAgentSettings) -> None:
+    def initialize(self, settings: HostAgentSettings, *, near_cache: Optional[NearRunnerCacheManager] = None) -> None:
         """Initialize the executor with settings."""
         self._settings = settings
-        self._launcher = FirecrackerLauncher(settings)
+        self._near_cache = near_cache
+        self._launcher = FirecrackerLauncher(settings, near_cache_manager=near_cache)
     
     @property
     def name(self) -> str:

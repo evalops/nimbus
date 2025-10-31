@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, date
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -79,6 +79,15 @@ class JobLeaseRequest(BaseModel):
     agent_id: str
     agent_version: str
     capabilities: list[str] = Field(default_factory=list)
+    hardware: dict[str, float] = Field(default_factory=dict)
+
+
+class JobAnalyticsBucket(BaseModel):
+    """Aggregated job counts for a given date."""
+
+    date: date
+    counts: dict[str, int]
+    total: int
 
 
 class JobLeaseResponse(BaseModel):
@@ -210,6 +219,7 @@ class SSHSession(BaseModel):
     expires_at: datetime
     vm_ip: Optional[str] = None
     reason: Optional[str] = None
+    token: Optional[str] = None
 
 
 class SSHSessionActivation(BaseModel):

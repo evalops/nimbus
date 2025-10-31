@@ -170,9 +170,9 @@ def test_get_container_image_mapped_labels(mock_settings, sample_job):
     
     # Test mapped labels
     test_cases = [
-        (["ubuntu-22.04"], "ubuntu:22.04"),
-        (["node"], "node:18-alpine"),
-        (["python"], "python:3.11-slim"),
+        (["ubuntu-22.04"], "nimbus/ubuntu-2204-runner:latest"),
+        (["node"], "nimbus/node-22-runner:latest"),
+        (["python"], "nimbus/python-312-runner:latest"),
         (["golang"], "golang:1.21-alpine"),
     ]
     

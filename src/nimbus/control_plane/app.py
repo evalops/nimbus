@@ -43,15 +43,21 @@ from ..common.schemas import (
     SSHSessionRequest,
     SSHSessionActivation,
     SSHSessionCloseRequest,
+    JobAnalyticsBucket,
 )
 from ..common.settings import ControlPlaneSettings
-from ..common.security import decode_agent_token_payload, mint_agent_token, key_id_from_secret
+from ..common.security import (
+    decode_agent_token_payload,
+    mint_agent_token,
+    key_id_from_secret,
+    mint_cache_token,
+    mint_ssh_token,
+)
 from ..common.ratelimit import RateLimiter as DistributedRateLimiter, InMemoryRateLimiter
 from . import db
 from .github import GitHubAppClient
 from .jobs import QUEUE_KEY, enqueue_job, lease_job, lease_job_with_fence
 from .observability import build_org_overview
-from ..common.security import mint_cache_token
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 from ..common.networking import (
     MetadataEndpointDenylist,
@@ -60,6 +66,7 @@ from ..common.networking import (
     create_guarded_async_client,
     load_allowed_registries,
 )
+from ..runners.images import PREBUILT_RUNNER_IMAGES
 from .policy import JobPolicy, load_job_policy
 from .identity_store import (
     ensure_schema as ensure_identity_schema,
@@ -240,6 +247,7 @@ def _row_to_ssh_session(row: dict) -> SSHSession:
         expires_at=expires_at,
         vm_ip=row.get("vm_ip"),
         reason=row.get("reason"),
+        token=row.get("token"),
     )
 
 
@@ -1540,7 +1548,12 @@ def create_app() -> FastAPI:
             # Use fenced leasing with DB-backed lease records
             lease_ttl = settings.job_lease_ttl_seconds
             result = await lease_job_with_fence(
-                redis_client, session, request_body.agent_id, lease_ttl, request_body.capabilities
+                redis_client,
+                session,
+                request_body.agent_id,
+                lease_ttl,
+                request_body.capabilities,
+                hardware=request_body.hardware,
             )
             if result is None:
                 return JobLeaseResponse(job=None, backoff_seconds=5)
@@ -1985,6 +1998,7 @@ def create_app() -> FastAPI:
         REQUEST_COUNTER.inc()
         ttl_seconds = request_body.ttl_seconds or settings.ssh_session_default_ttl
         ttl_seconds = max(60, min(ttl_seconds, settings.ssh_session_default_ttl))
+        session_token: Optional[str] = None
         async with state.session_factory() as session:  # type: ignore[call-arg]
             job = await db.get_job(session, request_body.job_id)
             if not job:
@@ -2008,6 +2022,12 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No SSH ports available")
                 
                 session_id = uuid4().hex
+                session_token = mint_ssh_token(
+                    secret=settings.ssh_session_secret.get_secret_value(),
+                    job_id=request_body.job_id,
+                    session_id=session_id,
+                    ttl_seconds=ttl_seconds,
+                )
                 try:
                     record = await db.create_ssh_session(
                         session,
@@ -2015,6 +2035,7 @@ def create_app() -> FastAPI:
                         job_id=request_body.job_id,
                         agent_id=agent_id,
                         host_port=port,
+                        token=session_token,
                         authorized_user=request_body.authorized_user,
                         ttl_seconds=ttl_seconds,
                     )
@@ -2163,6 +2184,25 @@ def create_app() -> FastAPI:
             "agent_token_keys": agent_kids,
             "admin_token_keys": jwt_kids,
         }
+
+    @app.get("/api/runners/images", response_model=dict[str, str])
+    async def list_runner_images(
+        _: str = Depends(verify_admin_token),
+    ) -> dict[str, str]:
+        REQUEST_COUNTER.inc()
+        return dict(PREBUILT_RUNNER_IMAGES)
+
+    @app.get("/api/analytics/jobs", response_model=list[JobAnalyticsBucket])
+    async def job_analytics_endpoint(
+        days: int = Query(14, ge=1, le=60),
+        org_id: Optional[int] = Query(default=None),
+        _: str = Depends(verify_admin_token),
+        state: AppState = Depends(_get_state),
+    ) -> list[JobAnalyticsBucket]:
+        REQUEST_COUNTER.inc()
+        async with state.session_factory() as session:  # type: ignore[call-arg]
+            rows = await db.job_status_timeseries(session, days=days, org_id=org_id)
+        return [JobAnalyticsBucket(date=row["date"], counts=row["counts"], total=row["total"]) for row in rows]
 
     @app.get("/api/agents", response_model=list[AgentTokenRecord])
     async def list_agent_tokens(

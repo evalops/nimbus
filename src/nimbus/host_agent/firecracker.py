@@ -15,6 +15,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from .near_cache import NearRunnerCacheManager
 import structlog
 from pyroute2 import IPRoute, NetNS, NetlinkError, netns
 
@@ -92,12 +93,19 @@ class MicroVMConfig:
 class FirecrackerLauncher:
     """Creates and supervises Firecracker microVMs for job execution."""
 
-    def __init__(self, settings: HostAgentSettings, config: Optional[MicroVMConfig] = None) -> None:
+    def __init__(
+        self,
+        settings: HostAgentSettings,
+        config: Optional[MicroVMConfig] = None,
+        *,
+        near_cache_manager: Optional[NearRunnerCacheManager] = None,
+    ) -> None:
         self._settings = settings
         self._config = config or MicroVMConfig()
         self._snapshot_state = Path(settings.snapshot_state_path) if settings.snapshot_state_path else None
         self._snapshot_memory = Path(settings.snapshot_memory_path) if settings.snapshot_memory_path else None
         self._snapshot_enabled = self._snapshot_state is not None and self._snapshot_memory is not None
+        self._near_cache = near_cache_manager
         self._snapshot_enable_diff = settings.snapshot_enable_diff
         manifest_path = settings.rootfs_manifest_path
         if manifest_path:
@@ -145,6 +153,36 @@ class FirecrackerLauncher:
                 image=Path(self._settings.rootfs_image_path).name,
             )
 
+            virtiofs_process: Optional[asyncio.subprocess.Process] = None
+            virtiofs_socket: Optional[Path] = None
+            virtiofs_tag: Optional[str] = None
+            if self._near_cache and self._near_cache.enabled:
+                binding = self._near_cache.binding_for(assignment, network.host_ip)
+                mount_source = self._near_cache.mount_source()
+                virtiofsd_bin = getattr(self._settings, "near_runner_cache_virtiofsd_bin", None)
+                virtiofs_tag = binding.mount_tag or "nimbus-cache"
+                if mount_source and virtiofsd_bin and not self._settings.jailer_bin_path:
+                    virtiofs_socket = workdir_path / "virtiofs.sock"
+                    try:
+                        virtiofs_process = await self._start_virtiofsd(
+                            Path(virtiofsd_bin),
+                            mount_source,
+                            virtiofs_socket,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Failed to start virtiofsd; falling back to HTTP cache",
+                            job_id=assignment.job_id,
+                            error=str(exc),
+                        )
+                        virtiofs_process = None
+                        virtiofs_socket = None
+                elif mount_source and self._settings.jailer_bin_path:
+                    LOGGER.debug(
+                        "virtio-fs not supported with jailer; using cache proxy",
+                        job_id=assignment.job_id,
+                    )
+
             metadata = self._build_metadata(assignment, network, rootfs_hash=rootfs_hash)
 
             network_prepared = False
@@ -188,6 +226,24 @@ class FirecrackerLauncher:
                         tap_name=tap_name,
                     )
                     await self._configure_vm(spawn_context.api_socket_host, vm_config, metadata)
+                if virtiofs_socket and virtiofs_tag:
+                    try:
+                        await self._configure_virtio_fs(
+                            spawn_context.api_socket_host,
+                            fs_id=virtiofs_tag,
+                            socket_path=virtiofs_socket,
+                            mount_tag=virtiofs_tag,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Failed to configure virtio-fs; continuing without mount",
+                            job_id=assignment.job_id,
+                            error=str(exc),
+                        )
+                        if virtiofs_process and virtiofs_process.returncode is None:
+                            virtiofs_process.terminate()
+                            virtiofs_process = None
+                        virtiofs_socket = None
                 await self._start_instance(spawn_context.api_socket_host)
                 try:
                     if timeout_seconds is not None:
@@ -232,6 +288,15 @@ class FirecrackerLauncher:
                     await self.cleanup_network(network)
                 if spawn_context and spawn_context.jailer_chroot:
                     shutil.rmtree(spawn_context.jailer_chroot, ignore_errors=True)
+                if virtiofs_process and virtiofs_process.returncode is None:
+                    virtiofs_process.terminate()
+                    try:
+                        await asyncio.wait_for(virtiofs_process.wait(), timeout=3)
+                    except asyncio.TimeoutError:
+                        virtiofs_process.kill()
+                        await virtiofs_process.wait()
+                if virtiofs_socket and virtiofs_socket.exists():
+                    virtiofs_socket.unlink(missing_ok=True)
 
     def _allocate_tap_name(self, job_id: int) -> str:
         suffix = job_id % 10000
@@ -319,6 +384,53 @@ class FirecrackerLauncher:
 
         return config
 
+    async def _start_virtiofsd(self, binary: Path, shared_dir: Path, socket_path: Path) -> asyncio.subprocess.Process:
+        if not binary.exists():
+            raise FirecrackerError(f"virtiofsd binary not found: {binary}")
+        if not shared_dir.exists():
+            raise FirecrackerError(f"Near-runner cache directory missing: {shared_dir}")
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        socket_path.unlink(missing_ok=True)
+        process = await asyncio.create_subprocess_exec(
+            str(binary),
+            "--socket-path",
+            str(socket_path),
+            "--shared-dir",
+            str(shared_dir),
+            "--cache",
+            "auto",
+        )
+        attempts = 0
+        while attempts < 50:
+            if socket_path.exists():
+                return process
+            if process.returncode is not None:
+                stdout, stderr = await process.communicate()
+                message = stderr.decode().strip() or stdout.decode().strip()
+                raise FirecrackerError(f"virtiofsd exited early: {message}")
+            attempts += 1
+            await asyncio.sleep(0.05)
+        process.terminate()
+        raise FirecrackerError("virtiofsd did not create socket")
+
+    async def _configure_virtio_fs(
+        self,
+        api_socket: Path,
+        *,
+        fs_id: str,
+        socket_path: Path,
+        mount_tag: str,
+    ) -> None:
+        transport = httpx.AsyncHTTPTransport(uds=str(api_socket))
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            payload = {
+                "socket": str(socket_path),
+                "tag": mount_tag,
+                "num_queues": 1,
+                "queue_size": 1024,
+            }
+            await self._put(client, f"/virtiofs/{fs_id}", payload)
+
     def _build_metadata(
         self,
         assignment: JobAssignment,
@@ -329,6 +441,17 @@ class FirecrackerLauncher:
         cache_section = None
         if assignment.cache_token:
             cache_section = assignment.cache_token.model_dump()
+        if self._near_cache and self._near_cache.enabled:
+            binding = self._near_cache.binding_for(assignment, network.host_ip if network else None)
+            near_entries = binding.metadata_entries()
+            if near_entries or self._near_cache.fallback_endpoint():
+                if cache_section is None:
+                    cache_section = {}
+                if near_entries:
+                    cache_section["near"] = near_entries
+                fallback = self._near_cache.fallback_endpoint()
+                if fallback:
+                    cache_section.setdefault("endpoints", {})["fallback_http"] = fallback
 
         payload = {
             "job": {

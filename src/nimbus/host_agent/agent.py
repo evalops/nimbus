@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import glob
 import json
 import inspect
+import os
+import time
 from datetime import UTC, datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +43,7 @@ from .ssh import ActiveSSHSession, apply_port_forward, remove_port_forward
 from .state import AgentStateStore, StoredJobNetwork
 from ..optional.ssh_dns import SSHSessionConfig
 from .reaper import reap_stale_resources
+from .near_cache import NearRunnerCacheManager
 
 LOGGER = structlog.get_logger("nimbus.host_agent")
 TRACER = trace.get_tracer("nimbus.host_agent")
@@ -63,7 +66,8 @@ class HostAgent:
 
     def __init__(self, settings: HostAgentSettings) -> None:
         self._settings = settings
-        self._launcher = FirecrackerLauncher(settings)
+        self._near_cache = NearRunnerCacheManager(settings)
+        self._launcher = FirecrackerLauncher(settings, near_cache_manager=self._near_cache)
         grace_seconds = settings.provenance_grace_seconds
         self._provenance_grace_deadline: Optional[datetime] = None
         if grace_seconds > 0:
@@ -84,7 +88,11 @@ class HostAgent:
         for name, executor in EXECUTORS.items():
             if hasattr(executor, 'initialize'):
                 try:
-                    executor.initialize(settings)
+                    init_sig = inspect.signature(executor.initialize)
+                    if "near_cache" in init_sig.parameters:
+                        executor.initialize(settings, near_cache=self._near_cache)
+                    else:
+                        executor.initialize(settings)
                     if hasattr(executor, "set_provenance_grace_deadline"):
                         executor.set_provenance_grace_deadline(self._provenance_grace_deadline)
                     if hasattr(executor, "set_slsa_verifier") and self._slsa_verifier:
@@ -167,6 +175,8 @@ class HostAgent:
         await self._state_store.open()
         await self._recover_state()
         await self._ensure_metrics_server()
+        await self._near_cache.start()
+        await self._near_cache.wait_ready()
         
         # Start resource tracker
         await self._resource_tracker.start()
@@ -219,6 +229,7 @@ class HostAgent:
         # Stop resource tracker
         await self._resource_tracker.stop()
         
+        await self._near_cache.stop()
         await self._http.aclose()
         if self._log_http:
             await self._log_http.aclose()
@@ -238,6 +249,7 @@ class HostAgent:
             agent_id=self._settings.agent_id,
             agent_version="0.1.0",
             capabilities=list(set(all_capabilities)),  # Remove duplicates
+            hardware=self._hardware_snapshot(),
         )
         LEASE_REQUEST_COUNTER.inc()
         attempts = max(1, self._settings.lease_retry_attempts)
@@ -281,6 +293,50 @@ class HostAgent:
                     if delay:
                         await asyncio.sleep(delay)
         raise RuntimeError("Lease retry loop exited unexpectedly")
+
+    def _hardware_snapshot(self) -> dict[str, float]:
+        snapshot: dict[str, float] = {}
+        cpu_cores = os.cpu_count() or 1
+        snapshot["cpu_cores"] = float(cpu_cores)
+        cpu_mhz = self._read_cpu_mhz()
+        if cpu_mhz:
+            snapshot["cpu_mhz"] = cpu_mhz
+        mem_total = self._read_mem_total_mb()
+        if mem_total:
+            snapshot["mem_total_mb"] = mem_total
+        snapshot["has_nvme"] = 1.0 if self._has_nvme_storage() else 0.0
+        return snapshot
+
+    @staticmethod
+    def _read_cpu_mhz() -> float:
+        try:
+            with open("/proc/cpuinfo", "r", encoding="utf-8") as handle:
+                freqs = [
+                    float(line.split(":", 1)[1].strip())
+                    for line in handle
+                    if line.startswith("cpu MHz")
+                ]
+        except (OSError, ValueError):  # pragma: no cover - platform dependent
+            return 0.0
+        if not freqs:
+            return 0.0
+        return sum(freqs) / len(freqs)
+
+    @staticmethod
+    def _read_mem_total_mb() -> float:
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("MemTotal"):
+                        value_kb = line.split(":", 1)[1].strip().split()[0]
+                        return float(int(value_kb) / 1024)
+        except (OSError, ValueError):  # pragma: no cover - platform dependent
+            return 0.0
+        return 0.0
+
+    @staticmethod
+    def _has_nvme_storage() -> bool:
+        return bool(glob.glob("/sys/block/nvme*"))
 
     async def _recover_state(self) -> None:
         try:
@@ -359,6 +415,12 @@ class HostAgent:
             await self._submit_status(assignment, "starting", **status_kwargs)
             network = self._launcher.network_for_job(assignment.job_id)
             self._job_networks[assignment.job_id] = network
+            if self._near_cache.enabled:
+                binding = self._near_cache.binding_for(assignment, network.host_ip)
+                assignment.metadata.update(binding.metadata_entries())
+                fallback_endpoint = self._near_cache.fallback_endpoint()
+                if fallback_endpoint:
+                    assignment.metadata["cache.endpoint.fallback"] = fallback_endpoint
             try:
                 ensure_provenance(
                     self._settings.rootfs_image_path,
@@ -882,6 +944,7 @@ class HostAgent:
                     authorized_user=authorized_user,
                     expires_at=expires_at,
                     rules=rules,
+                    token=session.get("token"),
                 )
                 self._ssh_sessions[session_id] = active
                 LOGGER.info(
