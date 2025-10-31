@@ -14,8 +14,10 @@ from nimbus.common.security import (
     decode_agent_token_payload,
     mint_agent_token,
     mint_cache_token,
+    mint_ssh_token,
     validate_cache_scope,
     verify_cache_token,
+    verify_ssh_token,
 )
 
 
@@ -100,6 +102,26 @@ def test_agent_token_rotation_with_key_id() -> None:
     decoded = decode_agent_token_payload([fallback, primary], token)
     assert decoded == ("runner", 2)
     assert decode_agent_token_payload([fallback], token) is None
+
+
+def test_mint_and_verify_ssh_token_roundtrip() -> None:
+    secret = "ssh-secret"
+    token = mint_ssh_token(secret=secret, job_id=77, session_id="sess", ttl_seconds=60)
+    decoded = verify_ssh_token(secret, token)
+    assert decoded is not None
+    assert decoded["job_id"] == 77
+    assert decoded["session_id"] == "sess"
+
+
+def test_verify_ssh_token_expired() -> None:
+    secret = "ssh-expired"
+    token = mint_ssh_token(secret=secret, job_id=1, session_id="old", ttl_seconds=-5)
+    assert verify_ssh_token(secret, token) is None
+
+
+def test_verify_ssh_token_wrong_secret() -> None:
+    token = mint_ssh_token(secret="first", job_id=2, session_id="abc", ttl_seconds=30)
+    assert verify_ssh_token("second", token) is None
 
 
 def test_require_metrics_access_with_valid_token() -> None:

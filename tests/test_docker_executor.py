@@ -163,6 +163,11 @@ def test_get_container_image_custom_label(mock_settings, sample_job):
     image = executor._get_container_image(sample_job)
     assert image == "python:3.9-slim"
 
+    # Prebuilt image alias should map to maintained image
+    sample_job.labels = ["image:ubuntu-2204"]
+    image = executor._get_container_image(sample_job)
+    assert image == "nimbus/ubuntu-2204-runner:latest"
+
 
 def test_get_container_image_mapped_labels(mock_settings, sample_job):
     """Test container image selection with mapped labels."""

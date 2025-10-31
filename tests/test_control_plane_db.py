@@ -13,6 +13,7 @@ from nimbus.common.schemas import (
     RunnerRegistrationToken,
 )
 from nimbus.control_plane import db
+from nimbus.control_plane.jobs import enqueue_job, lease_job_with_fence, _host_satisfies_requirements
 
 
 @pytest_asyncio.fixture
@@ -47,6 +48,22 @@ def _make_assignment(
         runner_registration=registration,
         metadata=metadata or {},
     )
+
+
+class FakeRedis:
+    def __init__(self) -> None:
+        self._items: list[str] = []
+
+    async def lpush(self, key: str, value: str) -> None:
+        self._items.insert(0, value)
+
+    async def rpop(self, key: str) -> str | None:
+        if not self._items:
+            return None
+        return self._items.pop()
+
+    def snapshot(self) -> list[str]:
+        return list(self._items)
 
 
 @pytest.mark.asyncio
@@ -215,6 +232,80 @@ async def test_allocate_and_manage_ssh_sessions(session):
 
     freed_port = await db.allocate_ssh_port(session, agent_id="agent-x", port_start=6000, port_end=6002)
     assert freed_port == 6000
+
+
+def test_host_satisfies_requirements_matrix():
+    capable = {"cpu_cores": 16.0, "mem_total_mb": 65536.0, "has_nvme": 1.0}
+    assert _host_satisfies_requirements(capable, ["cpu-high", "memory-high", "storage-nvme"])
+
+    limited_cpu = {"cpu_cores": 2.0, "mem_total_mb": 65536.0, "has_nvme": 1.0}
+    assert not _host_satisfies_requirements(limited_cpu, ["cpu-high"])
+
+    default_labels = {"cpu_cores": 4.0}
+    assert _host_satisfies_requirements(default_labels, ["linux"])
+
+
+@pytest.mark.asyncio
+async def test_lease_job_with_hardware_filter(session):
+    redis = FakeRedis()
+    assignment = _make_assignment(505, labels=["firecracker", "cpu-high"])
+    await db.record_job_queued(session, assignment)
+    await session.commit()
+
+    await enqueue_job(redis, assignment)
+
+    # Insufficient hardware should skip job
+    result = await lease_job_with_fence(
+        redis,
+        session,
+        agent_id="agent-A",
+        ttl_seconds=300,
+        capabilities=["firecracker"],
+        hardware={"cpu_cores": 2.0},
+    )
+    assert result is None
+    assert redis.snapshot()  # Job returned to queue
+
+    # Adequate hardware should lease successfully
+    result = await lease_job_with_fence(
+        redis,
+        session,
+        agent_id="agent-A",
+        ttl_seconds=300,
+        capabilities=["firecracker"],
+        hardware={"cpu_cores": 12.0, "mem_total_mb": 32768.0, "has_nvme": 1.0},
+    )
+    assert result is not None
+    leased_assignment, fence = result
+    assert leased_assignment.job_id == assignment.job_id
+    assert isinstance(fence, int)
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_job_status_timeseries(session):
+    assignment_a = _make_assignment(601, owner_id=222)
+    assignment_b = _make_assignment(602, owner_id=222)
+    await db.record_job_queued(session, assignment_a)
+    await db.record_job_queued(session, assignment_b)
+    await session.commit()
+
+    await db.record_status_update(
+        session,
+        JobStatusUpdate(agent_id="agent-1", job_id=assignment_a.job_id, status="succeeded", message=None),
+    )
+    await db.record_status_update(
+        session,
+        JobStatusUpdate(agent_id="agent-2", job_id=assignment_b.job_id, status="failed", message=None),
+    )
+    await session.commit()
+
+    series = await db.job_status_timeseries(session, days=7, org_id=assignment_a.repository.owner_id)
+    assert series
+    latest = series[-1]
+    assert latest["total"] == 2
+    assert latest["counts"]["succeeded"] == 1
+    assert latest["counts"]["failed"] == 1
 
 
 @pytest.mark.asyncio
