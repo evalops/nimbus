@@ -14,3 +14,9 @@ class DataNotFoundError(Exception):
     """Minimal stand-in for botocore.exceptions.DataNotFoundError."""
 
     pass
+
+
+class UnknownServiceError(Exception):
+    """Minimal stand-in for botocore.exceptions.UnknownServiceError."""
+
+    pass
