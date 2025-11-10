@@ -475,7 +475,14 @@ class DockerExecutor:
         
         # Add cache token if available
         if job.cache_token:
-            env["ACTIONS_CACHE_URL"] = f"http://cache-proxy:8080/cache/"
+            cache_proxy_url = None
+            if self._settings is not None:
+                cache_proxy_url = getattr(self._settings, "cache_proxy_url", None)
+            if cache_proxy_url:
+                base_url = str(cache_proxy_url).rstrip("/")
+            else:
+                base_url = "http://cache-proxy:8080"
+            env["ACTIONS_CACHE_URL"] = f"{base_url}/github-cache"
             env["ACTIONS_RUNTIME_TOKEN"] = job.cache_token.token
         
         return env

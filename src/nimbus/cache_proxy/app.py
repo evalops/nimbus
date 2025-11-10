@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
 
 import boto3
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
 import structlog
 from opentelemetry import trace
 from sqlalchemy import create_engine, text
@@ -24,6 +25,7 @@ from ..common.security import verify_cache_token, validate_cache_scope
 from ..common.metrics import GLOBAL_REGISTRY, Counter, Gauge, Histogram
 from ..common.observability import configure_logging, configure_tracing, instrument_fastapi_app
 from ..common.http_security import require_metrics_access
+from .github_cache import GitHubCacheStore
 
 
 def sanitize_key(storage_dir: Path, cache_key: str) -> Path:
@@ -280,6 +282,7 @@ class CacheProxyState:
         self.backend = backend
         self.metrics = metrics
         self.logger = structlog.get_logger("nimbus.cache_proxy").bind(backend=backend.status().get("backend"))
+        self.github_cache = GitHubCacheStore(metrics.engine)
 
     def enforce_storage_limit(self) -> None:
         max_bytes = self.settings.max_storage_bytes
@@ -325,6 +328,56 @@ class CacheProxyState:
         if org_id is None or delta == 0:
             return 0
         return self.metrics.add_org_bytes(int(org_id), delta)
+
+
+GITHUB_CACHE_PREFIX = "/github-cache"
+GITHUB_CACHE_SERVICE_BASE = f"{GITHUB_CACHE_PREFIX}/github.actions.results.api.v1.CacheService"
+
+
+class GitHubCacheScopeModel(BaseModel):
+    scope: str = ""
+    permission: int = 0
+
+
+class GitHubCacheMetadataModel(BaseModel):
+    repository_id: int
+    scope: list[GitHubCacheScopeModel] = Field(default_factory=list)
+
+
+class GitHubCreateCacheEntryRequest(BaseModel):
+    metadata: GitHubCacheMetadataModel
+    key: str
+    version: str
+
+
+class GitHubCreateCacheEntryResponse(BaseModel):
+    ok: bool
+    signed_upload_url: str | None = None
+
+
+class GitHubFinalizeCacheEntryUploadRequest(BaseModel):
+    metadata: GitHubCacheMetadataModel
+    key: str
+    size_bytes: int
+    version: str
+
+
+class GitHubFinalizeCacheEntryUploadResponse(BaseModel):
+    ok: bool
+    entry_id: str | None = None
+
+
+class GitHubGetCacheEntryDownloadURLRequest(BaseModel):
+    metadata: GitHubCacheMetadataModel
+    key: str
+    restore_keys: list[str] = Field(default_factory=list)
+    version: str
+
+
+class GitHubGetCacheEntryDownloadURLResponse(BaseModel):
+    ok: bool
+    signed_download_url: str | None = None
+    matched_key: str | None = None
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_requests_total", "Total cache proxy requests"))
@@ -389,6 +442,10 @@ class CacheMetrics:
                     """
                 )
             )
+
+    @property
+    def engine(self) -> Engine:
+        return self._engine
 
     def record_hit(self, cache_key: str, bytes_served: int) -> None:
         with self._engine.begin() as conn:
@@ -572,6 +629,254 @@ def create_app() -> FastAPI:
             state.logger.info("http_request", **log_kwargs)
 
         return response
+
+    @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/CreateCacheEntry")
+    async def github_create_cache_entry(
+        payload: GitHubCreateCacheEntryRequest,
+        request: Request,
+        state: CacheProxyState = Depends(get_state),
+        cache_token: CacheToken = Depends(require_cache_token),
+    ) -> GitHubCreateCacheEntryResponse:
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "push", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks push scope")
+
+        repository_id = payload.metadata.repository_id
+        scopes = [scope.scope for scope in payload.metadata.scope]
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("github_cache.create", attributes={
+            "nimbus.org_id": org_id,
+            "nimbus.repository_id": repository_id,
+            "nimbus.cache_key": payload.key,
+            "nimbus.cache_version": payload.version,
+        }):
+            entry, evicted = state.github_cache.reserve_entry(
+                org_id=org_id,
+                repository_id=repository_id,
+                scopes=scopes,
+                cache_key=payload.key,
+                version=payload.version,
+            )
+
+            for old in evicted:
+                try:
+                    await state.backend.delete(old.storage_key)
+                except HTTPException:
+                    pass
+                state.metrics.delete(old.storage_key)
+                if old.size_bytes:
+                    state.update_org_usage(old.org_id, -old.size_bytes)
+            TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
+
+            base_url = str(request.base_url).rstrip("/")
+            upload_url = (
+                f"{base_url}{GITHUB_CACHE_PREFIX}/uploads/{entry.entry_id}?token={entry.upload_token}"
+            )
+            state.logger.info(
+                "github_cache_reserve",
+                cache_key=payload.key,
+                repository_id=repository_id,
+                org_id=org_id,
+                entry_id=entry.entry_id,
+            )
+            return GitHubCreateCacheEntryResponse(ok=True, signed_upload_url=upload_url)
+
+    @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/FinalizeCacheEntryUpload")
+    async def github_finalize_cache_entry_upload(
+        payload: GitHubFinalizeCacheEntryUploadRequest,
+        state: CacheProxyState = Depends(get_state),
+        cache_token: CacheToken = Depends(require_cache_token),
+    ) -> GitHubFinalizeCacheEntryUploadResponse:
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "push", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks push scope")
+
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("github_cache.finalize", attributes={
+            "nimbus.org_id": org_id,
+            "nimbus.repository_id": payload.metadata.repository_id,
+            "nimbus.cache_key": payload.key,
+            "nimbus.cache_version": payload.version,
+        }) as span:
+            try:
+                entry = state.github_cache.mark_committed(
+                    org_id=org_id,
+                    repository_id=payload.metadata.repository_id,
+                    cache_key=payload.key,
+                    version=payload.version,
+                    expected_size=payload.size_bytes,
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+            span.set_attribute("nimbus.entry_id", entry.entry_id)
+            state.logger.info(
+                "github_cache_finalized",
+                cache_key=payload.key,
+                repository_id=payload.metadata.repository_id,
+                org_id=org_id,
+                entry_id=entry.entry_id,
+                size_bytes=entry.size_bytes,
+            )
+            return GitHubFinalizeCacheEntryUploadResponse(ok=True, entry_id=entry.entry_id)
+
+    @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/GetCacheEntryDownloadURL")
+    async def github_get_cache_entry_download_url(
+        payload: GitHubGetCacheEntryDownloadURLRequest,
+        request: Request,
+        state: CacheProxyState = Depends(get_state),
+        cache_token: CacheToken = Depends(require_cache_token),
+    ) -> GitHubGetCacheEntryDownloadURLResponse:
+        org_id = cache_token.organization_id
+        if not validate_cache_scope(cache_token, "pull", org_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks pull scope")
+
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("github_cache.get_download_url", attributes={
+            "nimbus.org_id": org_id,
+            "nimbus.repository_id": payload.metadata.repository_id,
+            "nimbus.cache_key": payload.key,
+            "nimbus.cache_version": payload.version,
+        }):
+            entry = state.github_cache.find_for_download(
+                org_id=org_id,
+                repository_id=payload.metadata.repository_id,
+                cache_key=payload.key,
+                version=payload.version,
+                restore_keys=payload.restore_keys,
+            )
+            if entry is None:
+                MISS_COUNTER.inc()
+                return GitHubGetCacheEntryDownloadURLResponse(ok=False)
+
+            base_url = str(request.base_url).rstrip("/")
+            download_url = (
+                f"{base_url}{GITHUB_CACHE_PREFIX}/downloads/{entry.entry_id}?token={entry.download_token}"
+            )
+            state.logger.info(
+                "github_cache_lookup_hit",
+                cache_key=entry.cache_key,
+                repository_id=entry.repository_id,
+                org_id=entry.org_id,
+                entry_id=entry.entry_id,
+            )
+            return GitHubGetCacheEntryDownloadURLResponse(
+                ok=True,
+                signed_download_url=download_url,
+                matched_key=entry.cache_key,
+            )
+
+    @app.put(f"{GITHUB_CACHE_PREFIX}/uploads/{{entry_id}}", status_code=status.HTTP_204_NO_CONTENT)
+    async def github_cache_upload(
+        entry_id: str,
+        request: Request,
+        token: str = Query(...),
+        state: CacheProxyState = Depends(get_state),
+    ) -> Response:
+        entry = state.github_cache.get_by_id(entry_id)
+        if entry is None or not state.github_cache.validate_upload_token(entry_id, token):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown cache entry")
+
+        content_length = request.headers.get("content-length")
+        if content_length:
+            size = int(content_length)
+            if size > state.settings.max_artifact_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Artifact exceeds max size: {state.settings.max_artifact_bytes} bytes",
+                )
+
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("github_cache.upload", attributes={
+            "nimbus.entry_id": entry.entry_id,
+            "nimbus.org_id": entry.org_id,
+            "nimbus.cache_key": entry.cache_key,
+        }) as span:
+            try:
+                await state.backend.write(entry.storage_key, request.stream())
+                size_bytes = await state.backend.head(entry.storage_key)
+            except Exception as exc:  # noqa: BLE001
+                state.logger.exception(
+                    "github_cache_upload_failed",
+                    cache_key=entry.cache_key,
+                    entry_id=entry.entry_id,
+                    error=str(exc),
+                )
+                raise
+
+            try:
+                entry = state.github_cache.mark_uploaded(entry_id, size_bytes=size_bytes)
+            except KeyError as exc:
+                await state.backend.delete(entry.storage_key)
+                state.metrics.delete(entry.storage_key)
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            bytes_total = state.update_org_usage(entry.org_id, size_bytes)
+            quota = state.settings.org_storage_quota_bytes
+            if quota is not None and bytes_total > quota:
+                state.update_org_usage(entry.org_id, -size_bytes)
+                await state.backend.delete(entry.storage_key)
+                state.metrics.delete(entry.storage_key)
+                state.github_cache.delete_entry(entry.entry_id)
+                ORG_QUOTA_VIOLATIONS_COUNTER.inc()
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Org {entry.org_id} exceeded cache quota",
+                )
+
+            state.metrics.record_hit(entry.storage_key, size_bytes)
+            BYTES_WRITTEN_COUNTER.inc(size_bytes)
+            HIT_COUNTER.inc()
+            TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
+            state.logger.info(
+                "github_cache_upload",
+                cache_key=entry.cache_key,
+                entry_id=entry.entry_id,
+                size_bytes=size_bytes,
+                org_id=entry.org_id,
+            )
+            span.set_attribute("nimbus.bytes_written", size_bytes)
+            span.set_attribute("nimbus.org_bytes_total", bytes_total)
+            state.enforce_storage_limit()
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get(f"{GITHUB_CACHE_PREFIX}/downloads/{{entry_id}}")
+    async def github_cache_download(
+        entry_id: str,
+        token: str = Query(...),
+        state: CacheProxyState = Depends(get_state),
+    ) -> StreamingResponse:
+        entry = state.github_cache.get_by_id(entry_id)
+        if entry is None or not state.github_cache.validate_download_token(entry_id, token):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache entry not found")
+
+        REQUEST_COUNTER.inc()
+        with TRACER.start_as_current_span("github_cache.download", attributes={
+            "nimbus.entry_id": entry.entry_id,
+            "nimbus.org_id": entry.org_id,
+            "nimbus.cache_key": entry.cache_key,
+        }):
+            try:
+                data = await state.backend.read(entry.storage_key)
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    state.metrics.record_miss(entry.storage_key)
+                    MISS_COUNTER.inc()
+                raise
+
+        state.metrics.record_hit(entry.storage_key, len(data))
+        HIT_COUNTER.inc()
+        BYTES_READ_COUNTER.inc(len(data))
+        state.github_cache.record_access(entry.entry_id)
+        state.logger.info(
+            "github_cache_download",
+            cache_key=entry.cache_key,
+            entry_id=entry.entry_id,
+            size_bytes=len(data),
+            org_id=entry.org_id,
+        )
+        return StreamingResponse(iter([data]), media_type="application/octet-stream")
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(
