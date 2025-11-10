@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
 
 import boto3
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import structlog
@@ -353,6 +353,7 @@ class GitHubCreateCacheEntryRequest(BaseModel):
 class GitHubCreateCacheEntryResponse(BaseModel):
     ok: bool
     signed_upload_url: str | None = None
+    upload_token: str | None = None
 
 
 class GitHubFinalizeCacheEntryUploadRequest(BaseModel):
@@ -378,6 +379,7 @@ class GitHubGetCacheEntryDownloadURLResponse(BaseModel):
     ok: bool
     signed_download_url: str | None = None
     matched_key: str | None = None
+    download_token: str | None = None
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_requests_total", "Total cache proxy requests"))
@@ -669,9 +671,7 @@ def create_app() -> FastAPI:
             TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
 
             base_url = str(request.base_url).rstrip("/")
-            upload_url = (
-                f"{base_url}{GITHUB_CACHE_PREFIX}/uploads/{entry.entry_id}?token={entry.upload_token}"
-            )
+            upload_url = f"{base_url}{GITHUB_CACHE_PREFIX}/uploads/{entry.entry_id}"
             state.logger.info(
                 "github_cache_reserve",
                 cache_key=payload.key,
@@ -679,7 +679,11 @@ def create_app() -> FastAPI:
                 org_id=org_id,
                 entry_id=entry.entry_id,
             )
-            return GitHubCreateCacheEntryResponse(ok=True, signed_upload_url=upload_url)
+            return GitHubCreateCacheEntryResponse(
+                ok=True,
+                signed_upload_url=upload_url,
+                upload_token=entry.upload_token,
+            )
 
     @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/FinalizeCacheEntryUpload")
     async def github_finalize_cache_entry_upload(
@@ -752,9 +756,7 @@ def create_app() -> FastAPI:
                 return GitHubGetCacheEntryDownloadURLResponse(ok=False)
 
             base_url = str(request.base_url).rstrip("/")
-            download_url = (
-                f"{base_url}{GITHUB_CACHE_PREFIX}/downloads/{entry.entry_id}?token={entry.download_token}"
-            )
+            download_url = f"{base_url}{GITHUB_CACHE_PREFIX}/downloads/{entry.entry_id}"
             state.logger.info(
                 "github_cache_lookup_hit",
                 cache_key=entry.cache_key,
@@ -766,13 +768,14 @@ def create_app() -> FastAPI:
                 ok=True,
                 signed_download_url=download_url,
                 matched_key=entry.cache_key,
+                download_token=entry.download_token,
             )
 
     @app.put(f"{GITHUB_CACHE_PREFIX}/uploads/{{entry_id}}", status_code=status.HTTP_204_NO_CONTENT)
     async def github_cache_upload(
         entry_id: str,
         request: Request,
-        token: str = Query(...),
+        token: str = Header(..., alias="X-GitHub-Cache-Token"),
         state: CacheProxyState = Depends(get_state),
     ) -> Response:
         entry = state.github_cache.get_by_id(entry_id)
@@ -797,6 +800,15 @@ def create_app() -> FastAPI:
             try:
                 await state.backend.write(entry.storage_key, request.stream())
                 size_bytes = await state.backend.head(entry.storage_key)
+                max_artifact = state.settings.max_artifact_bytes
+                if max_artifact is not None and size_bytes > max_artifact:
+                    await state.backend.delete(entry.storage_key)
+                    state.metrics.delete(entry.storage_key)
+                    state.github_cache.delete_entry(entry.entry_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Artifact exceeds max size: {max_artifact} bytes",
+                    )
             except Exception as exc:  # noqa: BLE001
                 state.logger.exception(
                     "github_cache_upload_failed",
@@ -844,7 +856,7 @@ def create_app() -> FastAPI:
     @app.get(f"{GITHUB_CACHE_PREFIX}/downloads/{{entry_id}}")
     async def github_cache_download(
         entry_id: str,
-        token: str = Query(...),
+        token: str = Header(..., alias="X-GitHub-Cache-Token"),
         state: CacheProxyState = Depends(get_state),
     ) -> StreamingResponse:
         entry = state.github_cache.get_by_id(entry_id)

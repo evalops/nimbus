@@ -52,9 +52,15 @@ def test_github_cache_roundtrip(client: TestClient, auth_headers: dict[str, str]
     assert body["ok"] is True
     upload_url = body["signed_upload_url"]
     assert upload_url
+    upload_token = body["upload_token"]
+    assert upload_token
 
     payload = b"cached-data"
-    upload_response = client.put(upload_url, content=payload)
+    upload_response = client.put(
+        upload_url,
+        content=payload,
+        headers={"X-GitHub-Cache-Token": upload_token},
+    )
     assert upload_response.status_code == 204
 
     finalize_payload = {
@@ -90,8 +96,13 @@ def test_github_cache_roundtrip(client: TestClient, auth_headers: dict[str, str]
     assert lookup_body["matched_key"] == create_payload["key"]
     download_url = lookup_body["signed_download_url"]
     assert download_url
+    download_token = lookup_body["download_token"]
+    assert download_token
 
-    download_response = client.get(download_url)
+    download_response = client.get(
+        download_url,
+        headers={"X-GitHub-Cache-Token": download_token},
+    )
     assert download_response.status_code == 200
     assert download_response.content == payload
 
@@ -108,8 +119,13 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
         json=first_payload,
         headers=auth_headers,
     )
-    upload_url = create_first.json()["signed_upload_url"]
-    client.put(upload_url, content=b"first")
+    create_first_body = create_first.json()
+    upload_url = create_first_body["signed_upload_url"]
+    client.put(
+        upload_url,
+        content=b"first",
+        headers={"X-GitHub-Cache-Token": create_first_body["upload_token"]},
+    )
     finalize_first = {
         "metadata": first_payload["metadata"],
         "key": first_payload["key"],
@@ -128,8 +144,13 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
         json=second_payload,
         headers=auth_headers,
     )
-    upload_second = create_second.json()["signed_upload_url"]
-    client.put(upload_second, content=b"second")
+    create_second_body = create_second.json()
+    upload_second = create_second_body["signed_upload_url"]
+    client.put(
+        upload_second,
+        content=b"second",
+        headers={"X-GitHub-Cache-Token": create_second_body["upload_token"]},
+    )
     finalize_second = {
         "metadata": second_payload["metadata"],
         "key": second_payload["key"],
@@ -156,7 +177,10 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
     body = response.json()
     assert body["ok"] is True
     assert body["matched_key"] == "linux-node-secondary"
-    download_response = client.get(body["signed_download_url"])
+    download_response = client.get(
+        body["signed_download_url"],
+        headers={"X-GitHub-Cache-Token": body["download_token"]},
+    )
     assert download_response.status_code == 200
     assert download_response.content == b"second"
 
@@ -172,8 +196,13 @@ def test_github_cache_enforces_org_scope(client: TestClient, auth_headers: dict[
         json=create_payload,
         headers=auth_headers,
     )
-    upload_url = response.json()["signed_upload_url"]
-    client.put(upload_url, content=b"scope")
+    response_body = response.json()
+    upload_url = response_body["signed_upload_url"]
+    client.put(
+        upload_url,
+        content=b"scope",
+        headers={"X-GitHub-Cache-Token": response_body["upload_token"]},
+    )
     finalize_payload = {
         "metadata": create_payload["metadata"],
         "key": create_payload["key"],

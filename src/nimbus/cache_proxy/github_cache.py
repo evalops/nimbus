@@ -179,6 +179,7 @@ class GitHubCacheStore:
                       AND repository_id = :repository_id
                       AND cache_key = :cache_key
                       AND version = :version
+                      AND status = 'uploaded'
                     RETURNING entry_id, org_id, repository_id, cache_key, version, scope,
                               storage_key, upload_token, download_token, status, size_bytes
                     """
@@ -194,7 +195,10 @@ class GitHubCacheStore:
             ).mappings().one_or_none()
 
         if row is None:
-            raise KeyError("Cache entry not found during finalization")
+            existing = self._fetch_entry(org_id, repository_id, cache_key, version)
+            if existing is None:
+                raise KeyError("Cache entry not found during finalization")
+            raise ValueError("Cache entry has not been uploaded yet")
         entry = self._row_to_entry(row)
         if expected_size and entry.size_bytes != expected_size:
             raise ValueError(
@@ -332,6 +336,39 @@ class GitHubCacheStore:
                 ),
                 {"entry_id": entry_id},
             )
+
+    def _fetch_entry(
+        self,
+        org_id: int,
+        repository_id: int,
+        cache_key: str,
+        version: str,
+    ) -> GitHubCacheEntry | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT entry_id, org_id, repository_id, cache_key, version, scope,
+                           storage_key, upload_token, download_token, status, size_bytes
+                    FROM github_cache_entries
+                    WHERE org_id = :org_id
+                      AND repository_id = :repository_id
+                      AND cache_key = :cache_key
+                      AND version = :version
+                    ORDER BY sequence DESC, updated_at DESC, created_at DESC, entry_id DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "org_id": org_id,
+                    "repository_id": repository_id,
+                    "cache_key": cache_key,
+                    "version": version,
+                },
+            ).mappings().one_or_none()
+        if row is None:
+            return None
+        return self._row_to_entry(row)
 
     def _initialise(self) -> None:
         with self._engine.begin() as conn:
