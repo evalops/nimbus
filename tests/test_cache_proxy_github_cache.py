@@ -54,12 +54,21 @@ def test_github_cache_roundtrip(client: TestClient, auth_headers: dict[str, str]
     assert upload_url
     upload_token = body["upload_token"]
     assert upload_token
+    entry_id = body["entry_id"]
+    correlation_id = body["correlation_id"]
+    assert entry_id
+    assert correlation_id
+    assert response.headers["X-Nimbus-Cache-Correlation"] == correlation_id
+    assert response.headers["X-Nimbus-Cache-Entry-Id"] == entry_id
 
     payload = b"cached-data"
     upload_response = client.put(
         upload_url,
         content=payload,
-        headers={"X-GitHub-Cache-Token": upload_token},
+        headers={
+            "X-GitHub-Cache-Token": upload_token,
+            "X-Nimbus-Cache-Correlation": correlation_id,
+        },
     )
     assert upload_response.status_code == 204
 
@@ -77,7 +86,8 @@ def test_github_cache_roundtrip(client: TestClient, auth_headers: dict[str, str]
     assert finalize_response.status_code == 200
     finalize_body = finalize_response.json()
     assert finalize_body["ok"] is True
-    assert finalize_body["entry_id"]
+    assert finalize_body["entry_id"] == entry_id
+    assert finalize_body["correlation_id"] == correlation_id
 
     lookup_payload = {
         "metadata": create_payload["metadata"],
@@ -98,10 +108,15 @@ def test_github_cache_roundtrip(client: TestClient, auth_headers: dict[str, str]
     assert download_url
     download_token = lookup_body["download_token"]
     assert download_token
+    assert lookup_body["entry_id"] == entry_id
+    assert lookup_body["correlation_id"] == correlation_id
 
     download_response = client.get(
         download_url,
-        headers={"X-GitHub-Cache-Token": download_token},
+        headers={
+            "X-GitHub-Cache-Token": download_token,
+            "X-Nimbus-Cache-Correlation": correlation_id,
+        },
     )
     assert download_response.status_code == 200
     assert download_response.content == payload
@@ -124,7 +139,10 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
     client.put(
         upload_url,
         content=b"first",
-        headers={"X-GitHub-Cache-Token": create_first_body["upload_token"]},
+        headers={
+            "X-GitHub-Cache-Token": create_first_body["upload_token"],
+            "X-Nimbus-Cache-Correlation": create_first_body["correlation_id"],
+        },
     )
     finalize_first = {
         "metadata": first_payload["metadata"],
@@ -149,7 +167,10 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
     client.put(
         upload_second,
         content=b"second",
-        headers={"X-GitHub-Cache-Token": create_second_body["upload_token"]},
+        headers={
+            "X-GitHub-Cache-Token": create_second_body["upload_token"],
+            "X-Nimbus-Cache-Correlation": create_second_body["correlation_id"],
+        },
     )
     finalize_second = {
         "metadata": second_payload["metadata"],
@@ -179,7 +200,10 @@ def test_github_cache_restore_keys(client: TestClient, auth_headers: dict[str, s
     assert body["matched_key"] == "linux-node-secondary"
     download_response = client.get(
         body["signed_download_url"],
-        headers={"X-GitHub-Cache-Token": body["download_token"]},
+        headers={
+            "X-GitHub-Cache-Token": body["download_token"],
+            "X-Nimbus-Cache-Correlation": body["correlation_id"],
+        },
     )
     assert download_response.status_code == 200
     assert download_response.content == b"second"
@@ -201,7 +225,10 @@ def test_github_cache_enforces_org_scope(client: TestClient, auth_headers: dict[
     client.put(
         upload_url,
         content=b"scope",
-        headers={"X-GitHub-Cache-Token": response_body["upload_token"]},
+        headers={
+            "X-GitHub-Cache-Token": response_body["upload_token"],
+            "X-Nimbus-Cache-Correlation": response_body["correlation_id"],
+        },
     )
     finalize_payload = {
         "metadata": create_payload["metadata"],

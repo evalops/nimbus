@@ -357,6 +357,7 @@ class CacheProxySettings(BaseSettings):
     max_storage_bytes: Optional[int] = env_field(None, "NIMBUS_CACHE_MAX_BYTES")
     max_artifact_bytes: int = env_field(100 * 1024 * 1024, "NIMBUS_CACHE_MAX_ARTIFACT_BYTES")  # 100MB default
     cache_eviction_batch_size: int = env_field(100, "NIMBUS_CACHE_EVICTION_BATCH")
+    github_cache_reservation_ttl_seconds: int = env_field(900, "NIMBUS_GITHUB_CACHE_RESERVATION_TTL")
     log_level: str = env_field("INFO", "NIMBUS_LOG_LEVEL")
     otel_exporter_endpoint: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_ENDPOINT")
     otel_exporter_headers: Optional[str] = env_field(None, "NIMBUS_OTEL_EXPORTER_HEADERS")

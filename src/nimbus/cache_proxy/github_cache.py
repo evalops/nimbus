@@ -23,13 +23,16 @@ class GitHubCacheEntry:
     download_token: str
     status: str
     size_bytes: int
+    correlation_id: str
+    expires_at: float | None
 
 
 class GitHubCacheStore:
     """SQL-backed store for GitHub Actions cache reservations."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, reservation_ttl_seconds: int) -> None:
         self._engine = engine
+        self._reservation_ttl_seconds = max(1, reservation_ttl_seconds)
         self._initialise()
 
     def reserve_entry(
@@ -47,14 +50,18 @@ class GitHubCacheStore:
         scope_str = ",".join(sorted({scope for scope in scopes if scope}))
         storage_key = self._build_storage_key(org_id, repository_id, cache_key, version, entry_id)
         sequence_value = time.time()
+        expires_at = sequence_value + float(self._reservation_ttl_seconds)
+        correlation_id = secrets.token_hex(12)
 
         evicted: list[GitHubCacheEntry] = []
         with self._engine.begin() as conn:
+            self._expire_reservations(conn)
             existing = conn.execute(
                 text(
                     """
                     SELECT entry_id, org_id, repository_id, cache_key, version, scope,
-                           storage_key, upload_token, download_token, status, size_bytes
+                           storage_key, upload_token, download_token, status, size_bytes,
+                           correlation_id, expires_at
                     FROM github_cache_entries
                     WHERE org_id = :org_id
                       AND repository_id = :repository_id
@@ -95,10 +102,12 @@ class GitHubCacheStore:
                     """
                     INSERT INTO github_cache_entries (
                         entry_id, org_id, repository_id, cache_key, version, scope,
-                        storage_key, upload_token, download_token, status, size_bytes, sequence
+                        storage_key, upload_token, download_token, status, size_bytes, sequence,
+                        correlation_id, expires_at
                     ) VALUES (
                         :entry_id, :org_id, :repository_id, :cache_key, :version, :scope,
-                        :storage_key, :upload_token, :download_token, :status, :size_bytes, :sequence
+                        :storage_key, :upload_token, :download_token, :status, :size_bytes, :sequence,
+                        :correlation_id, :expires_at
                     )
                     """
                 ),
@@ -115,6 +124,8 @@ class GitHubCacheStore:
                     "status": "reserved",
                     "size_bytes": 0,
                     "sequence": sequence_value,
+                    "correlation_id": correlation_id,
+                    "expires_at": expires_at,
                 },
             )
 
@@ -130,10 +141,13 @@ class GitHubCacheStore:
             download_token=download_token,
             status="reserved",
             size_bytes=0,
+            correlation_id=correlation_id,
+            expires_at=expires_at,
         )
         return entry, evicted
 
     def mark_uploaded(self, entry_id: str, *, size_bytes: int) -> GitHubCacheEntry:
+        cutoff = time.time()
         with self._engine.begin() as conn:
             row = conn.execute(
                 text(
@@ -141,16 +155,20 @@ class GitHubCacheStore:
                     UPDATE github_cache_entries
                     SET status = :status,
                         size_bytes = :size_bytes,
-                        updated_at = CURRENT_TIMESTAMP
+                        updated_at = CURRENT_TIMESTAMP,
+                        expires_at = NULL
                     WHERE entry_id = :entry_id
+                      AND (expires_at IS NULL OR expires_at >= :cutoff)
                     RETURNING entry_id, org_id, repository_id, cache_key, version, scope,
-                              storage_key, upload_token, download_token, status, size_bytes
+                              storage_key, upload_token, download_token, status, size_bytes,
+                              correlation_id, expires_at
                     """
                 ),
                 {
                     "entry_id": entry_id,
                     "size_bytes": size_bytes,
                     "status": "uploaded",
+                    "cutoff": cutoff,
                 },
             ).mappings().one_or_none()
 
@@ -174,14 +192,16 @@ class GitHubCacheStore:
                     UPDATE github_cache_entries
                     SET status = :status,
                         sequence = :sequence,
-                        updated_at = CURRENT_TIMESTAMP
+                        updated_at = CURRENT_TIMESTAMP,
+                        expires_at = NULL
                     WHERE org_id = :org_id
                       AND repository_id = :repository_id
                       AND cache_key = :cache_key
                       AND version = :version
                       AND status = 'uploaded'
                     RETURNING entry_id, org_id, repository_id, cache_key, version, scope,
-                              storage_key, upload_token, download_token, status, size_bytes
+                              storage_key, upload_token, download_token, status, size_bytes,
+                              correlation_id, expires_at
                     """
                 ),
                 {
@@ -216,12 +236,14 @@ class GitHubCacheStore:
         version: str,
         restore_keys: Sequence[str],
     ) -> GitHubCacheEntry | None:
-        with self._engine.connect() as conn:
+        with self._engine.begin() as conn:
+            self._expire_reservations(conn)
             exact = conn.execute(
                 text(
                     """
                     SELECT entry_id, org_id, repository_id, cache_key, version, scope,
-                           storage_key, upload_token, download_token, status, size_bytes
+                           storage_key, upload_token, download_token, status, size_bytes,
+                           correlation_id, expires_at
                     FROM github_cache_entries
                     WHERE org_id = :org_id
                       AND repository_id = :repository_id
@@ -247,7 +269,8 @@ class GitHubCacheStore:
                     text(
                         """
                         SELECT entry_id, org_id, repository_id, cache_key, version, scope,
-                               storage_key, upload_token, download_token, status, size_bytes
+                               storage_key, upload_token, download_token, status, size_bytes,
+                               correlation_id, expires_at
                         FROM github_cache_entries
                         WHERE org_id = :org_id
                           AND repository_id = :repository_id
@@ -271,20 +294,32 @@ class GitHubCacheStore:
         return None
 
     def get_by_id(self, entry_id: str) -> GitHubCacheEntry | None:
-        with self._engine.connect() as conn:
+        cutoff = time.time()
+        with self._engine.begin() as conn:
             row = conn.execute(
                 text(
                     """
                     SELECT entry_id, org_id, repository_id, cache_key, version, scope,
-                           storage_key, upload_token, download_token, status, size_bytes
+                           storage_key, upload_token, download_token, status, size_bytes,
+                           correlation_id, expires_at
                     FROM github_cache_entries
                     WHERE entry_id = :entry_id
                     """
                 ),
                 {"entry_id": entry_id},
             ).mappings().one_or_none()
-        if row is None:
-            return None
+            if row is None:
+                return None
+            if (
+                row["status"] == "reserved"
+                and row["expires_at"] is not None
+                and float(row["expires_at"]) < cutoff
+            ):
+                conn.execute(
+                    text("DELETE FROM github_cache_entries WHERE entry_id = :entry_id"),
+                    {"entry_id": entry_id},
+                )
+                return None
         return self._row_to_entry(row)
 
     def delete_entry(self, entry_id: str) -> None:
@@ -293,36 +328,6 @@ class GitHubCacheStore:
                 text("DELETE FROM github_cache_entries WHERE entry_id = :entry_id"),
                 {"entry_id": entry_id},
             )
-
-    def validate_upload_token(self, entry_id: str, token: str) -> bool:
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT upload_token FROM github_cache_entries
-                    WHERE entry_id = :entry_id
-                    """
-                ),
-                {"entry_id": entry_id},
-            ).mappings().one_or_none()
-        if row is None:
-            return False
-        return row["upload_token"] == token
-
-    def validate_download_token(self, entry_id: str, token: str) -> bool:
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT download_token FROM github_cache_entries
-                    WHERE entry_id = :entry_id
-                    """
-                ),
-                {"entry_id": entry_id},
-            ).mappings().one_or_none()
-        if row is None:
-            return False
-        return row["download_token"] == token
 
     def record_access(self, entry_id: str) -> None:
         with self._engine.begin() as conn:
@@ -337,6 +342,28 @@ class GitHubCacheStore:
                 {"entry_id": entry_id},
             )
 
+    def _expire_reservations(self, conn) -> None:
+        cutoff = time.time()
+        rows = conn.execute(
+            text(
+                """
+                SELECT entry_id
+                FROM github_cache_entries
+                WHERE status = 'reserved'
+                  AND expires_at IS NOT NULL
+                  AND expires_at < :cutoff
+                """
+            ),
+            {"cutoff": cutoff},
+        ).mappings().all()
+        if not rows:
+            return
+        for row in rows:
+            conn.execute(
+                text("DELETE FROM github_cache_entries WHERE entry_id = :entry_id"),
+                {"entry_id": row["entry_id"]},
+            )
+
     def _fetch_entry(
         self,
         org_id: int,
@@ -344,12 +371,14 @@ class GitHubCacheStore:
         cache_key: str,
         version: str,
     ) -> GitHubCacheEntry | None:
-        with self._engine.connect() as conn:
+        cutoff = time.time()
+        with self._engine.begin() as conn:
             row = conn.execute(
                 text(
                     """
                     SELECT entry_id, org_id, repository_id, cache_key, version, scope,
-                           storage_key, upload_token, download_token, status, size_bytes
+                           storage_key, upload_token, download_token, status, size_bytes,
+                           correlation_id, expires_at
                     FROM github_cache_entries
                     WHERE org_id = :org_id
                       AND repository_id = :repository_id
@@ -366,8 +395,23 @@ class GitHubCacheStore:
                     "version": version,
                 },
             ).mappings().one_or_none()
-        if row is None:
-            return None
+            if row is None:
+                return None
+            if (
+                row["status"] == "reserved"
+                and row["expires_at"] is not None
+                and float(row["expires_at"]) < cutoff
+            ):
+                conn.execute(
+                    text(
+                        """
+                        DELETE FROM github_cache_entries
+                        WHERE entry_id = :entry_id
+                        """
+                    ),
+                    {"entry_id": row["entry_id"]},
+                )
+                return None
         return self._row_to_entry(row)
 
     def _initialise(self) -> None:
@@ -388,6 +432,8 @@ class GitHubCacheStore:
                         status TEXT NOT NULL,
                         size_bytes INTEGER NOT NULL DEFAULT 0,
                         sequence REAL NOT NULL DEFAULT 0,
+                        correlation_id TEXT NOT NULL DEFAULT '',
+                        expires_at REAL,
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )
@@ -413,6 +459,28 @@ class GitHubCacheStore:
                 )
             except Exception:
                 pass
+            try:
+                conn.execute(
+                    text(
+                        """
+                        ALTER TABLE github_cache_entries
+                        ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''
+                        """
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                conn.execute(
+                    text(
+                        """
+                        ALTER TABLE github_cache_entries
+                        ADD COLUMN expires_at REAL
+                        """
+                    )
+                )
+            except Exception:
+                pass
 
     @staticmethod
     def _row_to_entry(row: Mapping[str, object]) -> GitHubCacheEntry:
@@ -428,6 +496,8 @@ class GitHubCacheStore:
             download_token=str(row["download_token"]),
             status=str(row["status"]),
             size_bytes=int(row["size_bytes"]),
+            correlation_id=str(row.get("correlation_id", "")),
+            expires_at=(float(row["expires_at"]) if row.get("expires_at") is not None else None),
         )
 
     @staticmethod

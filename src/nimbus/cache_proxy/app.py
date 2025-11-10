@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
@@ -282,7 +283,10 @@ class CacheProxyState:
         self.backend = backend
         self.metrics = metrics
         self.logger = structlog.get_logger("nimbus.cache_proxy").bind(backend=backend.status().get("backend"))
-        self.github_cache = GitHubCacheStore(metrics.engine)
+        self.github_cache = GitHubCacheStore(
+            metrics.engine,
+            reservation_ttl_seconds=settings.github_cache_reservation_ttl_seconds,
+        )
 
     def enforce_storage_limit(self) -> None:
         max_bytes = self.settings.max_storage_bytes
@@ -354,6 +358,8 @@ class GitHubCreateCacheEntryResponse(BaseModel):
     ok: bool
     signed_upload_url: str | None = None
     upload_token: str | None = None
+    entry_id: str | None = None
+    correlation_id: str | None = None
 
 
 class GitHubFinalizeCacheEntryUploadRequest(BaseModel):
@@ -366,6 +372,7 @@ class GitHubFinalizeCacheEntryUploadRequest(BaseModel):
 class GitHubFinalizeCacheEntryUploadResponse(BaseModel):
     ok: bool
     entry_id: str | None = None
+    correlation_id: str | None = None
 
 
 class GitHubGetCacheEntryDownloadURLRequest(BaseModel):
@@ -380,6 +387,8 @@ class GitHubGetCacheEntryDownloadURLResponse(BaseModel):
     signed_download_url: str | None = None
     matched_key: str | None = None
     download_token: str | None = None
+    entry_id: str | None = None
+    correlation_id: str | None = None
 
 
 REQUEST_COUNTER = GLOBAL_REGISTRY.register(Counter("nimbus_cache_requests_total", "Total cache proxy requests"))
@@ -600,6 +609,8 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def record_latency(request: Request, call_next):  # noqa: ANN001 - FastAPI middleware signature
         start = time.perf_counter()
+        request_id = request.headers.get("X-Request-ID") or secrets.token_hex(12)
+        request.state.request_id = request_id  # type: ignore[attr-defined]
         state = request.app.state.cache_state  # type: ignore[attr-defined]
         try:
             response = await call_next(request)
@@ -610,6 +621,7 @@ def create_app() -> FastAPI:
                 "http_request_error",
                 method=request.method,
                 path=request.url.path,
+                request_id=request_id,
                 duration_ms=round(duration * 1000, 2),
             )
             raise
@@ -617,11 +629,14 @@ def create_app() -> FastAPI:
         duration = time.perf_counter() - start
         CACHE_LATENCY_HISTOGRAM.observe(duration)
 
+        response.headers["X-Nimbus-Request-Id"] = request_id
+
         log_kwargs = {
             "method": request.method,
             "path": request.url.path,
             "status": response.status_code,
             "duration_ms": round(duration * 1000, 2),
+            "request_id": request_id,
         }
         if response.status_code >= 500:
             state.logger.error("http_request", **log_kwargs)
@@ -636,6 +651,7 @@ def create_app() -> FastAPI:
     async def github_create_cache_entry(
         payload: GitHubCreateCacheEntryRequest,
         request: Request,
+        response: Response,
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> GitHubCreateCacheEntryResponse:
@@ -646,12 +662,16 @@ def create_app() -> FastAPI:
         repository_id = payload.metadata.repository_id
         scopes = [scope.scope for scope in payload.metadata.scope]
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("github_cache.create", attributes={
+        span_attributes = {
             "nimbus.org_id": org_id,
             "nimbus.repository_id": repository_id,
             "nimbus.cache_key": payload.key,
             "nimbus.cache_version": payload.version,
-        }):
+        }
+        request_id = getattr(request.state, "request_id", None)  # type: ignore[attr-defined]
+        if request_id:
+            span_attributes["nimbus.request_id"] = request_id
+        with TRACER.start_as_current_span("github_cache.create", attributes=span_attributes) as span:
             entry, evicted = state.github_cache.reserve_entry(
                 org_id=org_id,
                 repository_id=repository_id,
@@ -659,35 +679,60 @@ def create_app() -> FastAPI:
                 cache_key=payload.key,
                 version=payload.version,
             )
+            span.set_attribute("nimbus.entry_id", entry.entry_id)
+            span.set_attribute("nimbus.correlation_id", entry.correlation_id)
 
+            logger = state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id)
             for old in evicted:
-                try:
-                    await state.backend.delete(old.storage_key)
-                except HTTPException:
-                    pass
+                evicted_logger = state.logger.bind(entry_id=old.entry_id, correlation_id=old.correlation_id)
+                if old.size_bytes > 0:
+                    try:
+                        await state.backend.delete(old.storage_key)
+                    except HTTPException as exc:
+                        evicted_logger.warning(
+                            "github_cache_eviction_delete_failed",
+                            cache_key=old.cache_key,
+                            error=str(exc),
+                        )
                 state.metrics.delete(old.storage_key)
                 if old.size_bytes:
                     state.update_org_usage(old.org_id, -old.size_bytes)
+                evicted_logger.info(
+                    "github_cache_evicted",
+                    cache_key=old.cache_key,
+                    repository_id=old.repository_id,
+                    org_id=old.org_id,
+                    bytes_reclaimed=old.size_bytes,
+                )
             TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
 
             base_url = str(request.base_url).rstrip("/")
             upload_url = f"{base_url}{GITHUB_CACHE_PREFIX}/uploads/{entry.entry_id}"
-            state.logger.info(
+            response.headers["X-Nimbus-Cache-Entry-Id"] = entry.entry_id
+            response.headers["X-Nimbus-Cache-Correlation"] = entry.correlation_id
+            if request_id:
+                response.headers.setdefault("X-Nimbus-Request-Id", request_id)
+            logger.info(
                 "github_cache_reserve",
                 cache_key=payload.key,
                 repository_id=repository_id,
                 org_id=org_id,
                 entry_id=entry.entry_id,
+                correlation_id=entry.correlation_id,
             )
             return GitHubCreateCacheEntryResponse(
                 ok=True,
                 signed_upload_url=upload_url,
                 upload_token=entry.upload_token,
+                entry_id=entry.entry_id,
+                correlation_id=entry.correlation_id,
             )
 
     @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/FinalizeCacheEntryUpload")
     async def github_finalize_cache_entry_upload(
         payload: GitHubFinalizeCacheEntryUploadRequest,
+        request: Request,
+        response: Response,
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> GitHubFinalizeCacheEntryUploadResponse:
@@ -696,12 +741,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks push scope")
 
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("github_cache.finalize", attributes={
+        span_attributes = {
             "nimbus.org_id": org_id,
             "nimbus.repository_id": payload.metadata.repository_id,
             "nimbus.cache_key": payload.key,
             "nimbus.cache_version": payload.version,
-        }) as span:
+        }
+        request_id = getattr(request.state, "request_id", None)  # type: ignore[attr-defined]
+        if request_id:
+            span_attributes["nimbus.request_id"] = request_id
+        with TRACER.start_as_current_span("github_cache.finalize", attributes=span_attributes) as span:
             try:
                 entry = state.github_cache.mark_committed(
                     org_id=org_id,
@@ -716,7 +765,13 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
             span.set_attribute("nimbus.entry_id", entry.entry_id)
-            state.logger.info(
+            span.set_attribute("nimbus.correlation_id", entry.correlation_id)
+            response.headers["X-Nimbus-Cache-Entry-Id"] = entry.entry_id
+            response.headers["X-Nimbus-Cache-Correlation"] = entry.correlation_id
+            if request_id:
+                response.headers.setdefault("X-Nimbus-Request-Id", request_id)
+            logger = state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id)
+            logger.info(
                 "github_cache_finalized",
                 cache_key=payload.key,
                 repository_id=payload.metadata.repository_id,
@@ -724,12 +779,17 @@ def create_app() -> FastAPI:
                 entry_id=entry.entry_id,
                 size_bytes=entry.size_bytes,
             )
-            return GitHubFinalizeCacheEntryUploadResponse(ok=True, entry_id=entry.entry_id)
+            return GitHubFinalizeCacheEntryUploadResponse(
+                ok=True,
+                entry_id=entry.entry_id,
+                correlation_id=entry.correlation_id,
+            )
 
     @app.post(f"{GITHUB_CACHE_SERVICE_BASE}/GetCacheEntryDownloadURL")
     async def github_get_cache_entry_download_url(
         payload: GitHubGetCacheEntryDownloadURLRequest,
         request: Request,
+        response: Response,
         state: CacheProxyState = Depends(get_state),
         cache_token: CacheToken = Depends(require_cache_token),
     ) -> GitHubGetCacheEntryDownloadURLResponse:
@@ -738,12 +798,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cache token lacks pull scope")
 
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("github_cache.get_download_url", attributes={
+        span_attributes = {
             "nimbus.org_id": org_id,
             "nimbus.repository_id": payload.metadata.repository_id,
             "nimbus.cache_key": payload.key,
             "nimbus.cache_version": payload.version,
-        }):
+        }
+        request_id = getattr(request.state, "request_id", None)  # type: ignore[attr-defined]
+        if request_id:
+            span_attributes["nimbus.request_id"] = request_id
+        with TRACER.start_as_current_span("github_cache.get_download_url", attributes=span_attributes) as span:
             entry = state.github_cache.find_for_download(
                 org_id=org_id,
                 repository_id=payload.metadata.repository_id,
@@ -757,7 +821,14 @@ def create_app() -> FastAPI:
 
             base_url = str(request.base_url).rstrip("/")
             download_url = f"{base_url}{GITHUB_CACHE_PREFIX}/downloads/{entry.entry_id}"
-            state.logger.info(
+            response.headers["X-Nimbus-Cache-Entry-Id"] = entry.entry_id
+            response.headers["X-Nimbus-Cache-Correlation"] = entry.correlation_id
+            if request_id:
+                response.headers.setdefault("X-Nimbus-Request-Id", request_id)
+            logger = state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id)
+            span.set_attribute("nimbus.entry_id", entry.entry_id)
+            span.set_attribute("nimbus.correlation_id", entry.correlation_id)
+            logger.info(
                 "github_cache_lookup_hit",
                 cache_key=entry.cache_key,
                 repository_id=entry.repository_id,
@@ -769,6 +840,8 @@ def create_app() -> FastAPI:
                 signed_download_url=download_url,
                 matched_key=entry.cache_key,
                 download_token=entry.download_token,
+                entry_id=entry.entry_id,
+                correlation_id=entry.correlation_id,
             )
 
     @app.put(f"{GITHUB_CACHE_PREFIX}/uploads/{{entry_id}}", status_code=status.HTTP_204_NO_CONTENT)
@@ -779,7 +852,7 @@ def create_app() -> FastAPI:
         state: CacheProxyState = Depends(get_state),
     ) -> Response:
         entry = state.github_cache.get_by_id(entry_id)
-        if entry is None or not state.github_cache.validate_upload_token(entry_id, token):
+        if entry is None or entry.upload_token != token:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown cache entry")
 
         content_length = request.headers.get("content-length")
@@ -792,11 +865,24 @@ def create_app() -> FastAPI:
                 )
 
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("github_cache.upload", attributes={
+        client_correlation = request.headers.get("X-Nimbus-Cache-Correlation")
+        if client_correlation and client_correlation != entry.correlation_id:
+            state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id).warning(
+                "github_cache_correlation_mismatch",
+                expected=entry.correlation_id,
+                provided=client_correlation,
+            )
+        span_attributes = {
             "nimbus.entry_id": entry.entry_id,
             "nimbus.org_id": entry.org_id,
             "nimbus.cache_key": entry.cache_key,
-        }) as span:
+            "nimbus.correlation_id": entry.correlation_id,
+        }
+        request_id = getattr(request.state, "request_id", None)  # type: ignore[attr-defined]
+        if request_id:
+            span_attributes["nimbus.request_id"] = request_id
+        with TRACER.start_as_current_span("github_cache.upload", attributes=span_attributes) as span:
+            logger = state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id)
             try:
                 await state.backend.write(entry.storage_key, request.stream())
                 size_bytes = await state.backend.head(entry.storage_key)
@@ -810,7 +896,7 @@ def create_app() -> FastAPI:
                         detail=f"Artifact exceeds max size: {max_artifact} bytes",
                     )
             except Exception as exc:  # noqa: BLE001
-                state.logger.exception(
+                logger.exception(
                     "github_cache_upload_failed",
                     cache_key=entry.cache_key,
                     entry_id=entry.entry_id,
@@ -841,7 +927,7 @@ def create_app() -> FastAPI:
             BYTES_WRITTEN_COUNTER.inc(size_bytes)
             HIT_COUNTER.inc()
             TOTAL_ENTRIES_GAUGE.set(float(state.metrics.total_entries()))
-            state.logger.info(
+            logger.info(
                 "github_cache_upload",
                 cache_key=entry.cache_key,
                 entry_id=entry.entry_id,
@@ -851,24 +937,45 @@ def create_app() -> FastAPI:
             span.set_attribute("nimbus.bytes_written", size_bytes)
             span.set_attribute("nimbus.org_bytes_total", bytes_total)
             state.enforce_storage_limit()
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
+            headers = {
+                "X-Nimbus-Cache-Entry-Id": entry.entry_id,
+                "X-Nimbus-Cache-Correlation": entry.correlation_id,
+            }
+            if request_id:
+                headers["X-Nimbus-Request-Id"] = request_id
+            return Response(status_code=status.HTTP_204_NO_CONTENT, headers=headers)
 
     @app.get(f"{GITHUB_CACHE_PREFIX}/downloads/{{entry_id}}")
     async def github_cache_download(
         entry_id: str,
+        request: Request,
         token: str = Header(..., alias="X-GitHub-Cache-Token"),
         state: CacheProxyState = Depends(get_state),
     ) -> StreamingResponse:
         entry = state.github_cache.get_by_id(entry_id)
-        if entry is None or not state.github_cache.validate_download_token(entry_id, token):
+        if entry is None or entry.download_token != token:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cache entry not found")
 
+        client_correlation = request.headers.get("X-Nimbus-Cache-Correlation")
+        if client_correlation and client_correlation != entry.correlation_id:
+            state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id).warning(
+                "github_cache_correlation_mismatch",
+                expected=entry.correlation_id,
+                provided=client_correlation,
+            )
+
         REQUEST_COUNTER.inc()
-        with TRACER.start_as_current_span("github_cache.download", attributes={
+        span_attributes = {
             "nimbus.entry_id": entry.entry_id,
             "nimbus.org_id": entry.org_id,
             "nimbus.cache_key": entry.cache_key,
-        }):
+            "nimbus.correlation_id": entry.correlation_id,
+        }
+        request_id = getattr(request.state, "request_id", None)  # type: ignore[attr-defined]
+        if request_id:
+            span_attributes["nimbus.request_id"] = request_id
+        with TRACER.start_as_current_span("github_cache.download", attributes=span_attributes):
+            logger = state.logger.bind(entry_id=entry.entry_id, correlation_id=entry.correlation_id)
             try:
                 data = await state.backend.read(entry.storage_key)
             except HTTPException as exc:
@@ -881,14 +988,19 @@ def create_app() -> FastAPI:
         HIT_COUNTER.inc()
         BYTES_READ_COUNTER.inc(len(data))
         state.github_cache.record_access(entry.entry_id)
-        state.logger.info(
+        logger.info(
             "github_cache_download",
             cache_key=entry.cache_key,
             entry_id=entry.entry_id,
             size_bytes=len(data),
             org_id=entry.org_id,
         )
-        return StreamingResponse(iter([data]), media_type="application/octet-stream")
+        response = StreamingResponse(iter([data]), media_type="application/octet-stream")
+        response.headers["X-Nimbus-Cache-Entry-Id"] = entry.entry_id
+        response.headers["X-Nimbus-Cache-Correlation"] = entry.correlation_id
+        if request_id:
+            response.headers.setdefault("X-Nimbus-Request-Id", request_id)
+        return response
 
     @app.put("/cache/{cache_key:path}", status_code=status.HTTP_201_CREATED)
     async def put_cache(
